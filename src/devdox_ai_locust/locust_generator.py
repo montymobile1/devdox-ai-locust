@@ -616,9 +616,6 @@ class LocustTestGenerator:
         template = self.jinja_env.get_template("test_data.py.j2")
         return template.render()
 
-
-        return content
-
     def _generate_config_file(self, api_info: Dict[str, Any]) -> str:
         """Generate config.py file content"""
         template = self.jinja_env.get_template("config.py.j2")

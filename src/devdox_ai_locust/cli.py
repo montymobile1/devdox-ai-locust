@@ -108,7 +108,7 @@ def _show_run_instructions(output_dir, users, spawn_rate, run_time, host):
         f"--run-time {run_time} --host {default_host}"
     )
 
-    console.print(f"\n[bold]Alternative: Use the run command[/bold]")
+    console.print("\n[bold]Alternative: Use the run command[/bold]")
     console.print(f"  devdox-loadtest run {output_dir}/{main_file} --host {default_host}")
 
 

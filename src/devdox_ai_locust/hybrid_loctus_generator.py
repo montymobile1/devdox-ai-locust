@@ -78,7 +78,7 @@ class EnhancementProcessor:
 
         return enhanced_files, enhancements
 
-    async def process_domain_flows_enhancement(self, base_files: Dict[str, str],
+    async def process_domain_flows_enhancement(self,
                                                endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
         Dict[str, str], List[str]]:
         """Process domain flows enhancement"""
@@ -234,7 +234,7 @@ class HybridLocustGenerator:
                 endpoints, api_info, output_dir
             )
 
-            #directory_files = self.template_generator.fix_indent(directory_files)
+
             base_files = self.template_generator.fix_indent(base_files)
 
             # Step 2: Enhance with AI if available
@@ -391,7 +391,7 @@ class HybridLocustGenerator:
         # Process each enhancement type
         enhancement_tasks = [
             processor.process_main_locust_enhancement(base_files, endpoints, api_info),
-            processor.process_domain_flows_enhancement(base_files, endpoints, api_info),
+            processor.process_domain_flows_enhancement( endpoints, api_info),
             processor.process_test_data_enhancement(base_files, endpoints, api_info),
             processor.process_validation_enhancement(base_files, endpoints, api_info),
         ]
