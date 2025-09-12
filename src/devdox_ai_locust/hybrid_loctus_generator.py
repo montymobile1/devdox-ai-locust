@@ -25,6 +25,8 @@ from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfi
 logger = logging.getLogger(__name__)
 
 
+test_data_file_path = "test_data.py"
+
 @dataclass
 class AIEnhancementConfig:
     """Configuration for AI enhancement"""
@@ -33,8 +35,8 @@ class AIEnhancementConfig:
     max_tokens: int = 8000
     temperature: float = 0.3
     timeout: int = 60
-    enhance_workflows: bool = True
-    enhance_test_data: bool = True
+    enhance_workflows: bool = False
+    enhance_test_data: bool = False
     enhance_validation: bool = False
     create_domain_flows: bool = False
     update_main_locust: bool = True
@@ -125,7 +127,7 @@ class EnhancementProcessor:
 
             enhanced_workflow = await self.locust_generator._enhance_workflows(
                 base_content=value,
-                test_data_content=base_files.get("test_data.py", ""),
+                test_data_content=base_files.get(test_data_file_path , ""),
                 base_workflow=base_workflow_files,
                 grouped_enpoints=endpoints_for_workflow,
                 auth_endpoints=auth_endpoints
@@ -148,10 +150,10 @@ class EnhancementProcessor:
 
         if self.ai_config.enhance_test_data:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
-                base_files.get("test_data.py", ""), endpoints, api_info
+                base_files.get(test_data_file_path , ""), endpoints, api_info
             )
             if enhanced_test_data:
-                enhanced_files["test_data.py"] = enhanced_test_data
+                enhanced_files[test_data_file_path ] = enhanced_test_data
                 enhancements.append("smart_test_data")
 
         return enhanced_files, enhancements

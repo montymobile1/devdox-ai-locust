@@ -418,33 +418,59 @@ class LocustTestGenerator:
         if not query_params:
             return "params = {}"
 
-        code_lines = ["params = {"]
+        param_lines = []
         for param in query_params:
-            if (
-                not param.required and secrets.randbelow(100) > 70
-            ):  # Sometimes skip optional params
+            if self._should_skip_optional_param(param):
                 continue
 
-            if param.type.startswith("integer"):
-                default = param.default if param.default is not None else "None"
-                code_lines.append(
-                    f'"{param.name}": data_generator.generate_integer(default={default}),'
-                )
-            elif param.type == "string":
-                default = f'"{param.default}"' if param.default else "None"
-                code_lines.append(
-                    f'"{param.name}": data_generator.generate_string(default={default}),'
-                )
-            elif param.type == "boolean":
-                code_lines.append(f'"{param.name}": data_generator.generate_boolean(),')
-            else:
-                code_lines.append(
-                    f'"{param.name}": data_generator.generate_value("{param.type}"),'
-                )
+            param_line = self._generate_param_line(param)
+            param_lines.append(param_line)
 
-        code_lines.append("            }")
+        return self._format_params_dict(param_lines)
 
-        return "\n".join(code_lines)
+    def _should_skip_optional_param(self, param) -> bool:
+        """Randomly skip optional parameters 30% of the time"""
+        return not param.required and secrets.randbelow(100) > 70
+
+    def _generate_param_line(self, param) -> str:
+        """Generate a single parameter line based on its type"""
+        param_generators = {
+            "integer": self._generate_integer_param,
+            "string": self._generate_string_param,
+            "boolean": self._generate_boolean_param
+        }
+
+        # Handle integer types that might have prefixes like "integer64"
+        param_type = "integer" if param.type.startswith("integer") else param.type
+
+        generator = param_generators.get(param_type, self._generate_generic_param)
+        return generator(param)
+
+    def _generate_integer_param(self, param) -> str:
+        """Generate integer parameter line"""
+        default = param.default if param.default is not None else "None"
+        return f'"{param.name}": data_generator.generate_integer(default={default}),'
+
+    def _generate_string_param(self, param) -> str:
+        """Generate string parameter line"""
+        default = f'"{param.default}"' if param.default else "None"
+        return f'"{param.name}": data_generator.generate_string(default={default}),'
+
+    def _generate_boolean_param(self, param) -> str:
+        """Generate boolean parameter line"""
+        return f'"{param.name}": data_generator.generate_boolean(),'
+
+    def _generate_generic_param(self, param) -> str:
+        """Generate generic parameter line for unknown types"""
+        return f'"{param.name}": data_generator.generate_value("{param.type}"),'
+
+    def _format_params_dict(self, param_lines: list[str]) -> str:
+        """Format parameter lines into a dictionary structure"""
+        if not param_lines:
+            return "params = {}"
+
+        lines = ["params = {"] + [f"    {line}" for line in param_lines] + ["}"]
+        return "\n".join(lines)
 
     def _generate_request_body_code(self, endpoint: Endpoint) -> str:
         """Generate code for request body"""
