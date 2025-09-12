@@ -1,0 +1,70 @@
+"""
+Locust performance tests for {{ api_info.get('title', 'API') }}
+Generated on: {{ generated_at }}
+
+API Information:
+- Title: {{ api_info.get('title', 'Unknown') }}
+- Version: {{ api_info.get('version', 'Unknown') }}
+- Base URL: {{ api_info.get('base_url', 'http://localhost') }}
+"""
+
+from locust import HttpUser, task, between, events
+from locust.runners import MasterRunner
+import json
+import random
+import logging
+from typing import Dict, Any, Optional
+from urllib.parse import urljoin
+from workflows.base_workflow import BaseAPIUser
+{{ import_group_tasks }}
+
+from test_data import TestDataGenerator
+from utils import ResponseValidator, RequestLogger, PerformanceMonitor
+from config import LoadTestConfig
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize components
+config = LoadTestConfig()
+data_generator = TestDataGenerator()
+response_validator = ResponseValidator()
+performance_monitor = PerformanceMonitor()
+
+
+class APITaskMethods:
+    """Mixin class containing all API task methods"""
+
+    {{ task_methods_content }}
+
+    tasks = {{ tasks_str }}
+
+
+{{ generated_task_classes }}
+
+
+# Event handlers
+@events.request.add_listener
+def on_request(request_type, name, response_time, response_length, exception, context, **kwargs):
+    performance_monitor.on_request_event(
+        request_type, name, response_time, response_length, exception, context
+    )
+
+
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    logger.info("Load test starting...")
+    performance_monitor.test_start()
+
+
+@events.test_stop.add_listener
+def on_test_stop(environment, **kwargs):
+    logger.info("Load test stopping...")
+    performance_monitor.test_stop()
+    performance_monitor.generate_report()
+
+
+if __name__ == "__main__":
+    from locust.main import main
+    main()

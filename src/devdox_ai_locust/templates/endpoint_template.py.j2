@@ -1,0 +1,34 @@
+"""
+Locust performance tests for {{group}}
+Generated on: {{ generated_at }}
+
+API Information:
+- Title: {{ api_info.title }}
+- Version: {{ api_info.version }}
+- Base URL: {{ api_info.base_url }}
+"""
+
+from locust import HttpUser, task, between, events, SequentialTaskSet
+from locust.runners import MasterRunner
+import logging
+
+from test_data import TestDataGenerator
+from utils import ResponseValidator, RequestLogger, PerformanceMonitor
+from workflows.base_workflow import BaseAPIUser, BaseTaskMethods
+from config import LoadTestConfig
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize components
+config = LoadTestConfig()
+data_generator = TestDataGenerator()
+response_validator = ResponseValidator()
+performance_monitor = PerformanceMonitor()
+
+
+class {{group}}TaskMethods(SequentialTaskSet, BaseTaskMethods):
+    """Mixin class containing all API task methods"""
+
+    {{task_methods_content}}
