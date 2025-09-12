@@ -9,7 +9,7 @@ import os
 import re
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, Template
 from dataclasses import dataclass
@@ -51,6 +51,127 @@ class EnhancementResult:
     errors: List[str]
     processing_time: float
 
+
+class EnhancementProcessor:
+    """Handles individual enhancement operations"""
+
+    def __init__(self, ai_config, locust_generator):
+        self.ai_config = ai_config
+        self.locust_generator = locust_generator
+
+    async def process_main_locust_enhancement(self, base_files: Dict[str, str],
+                                              endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
+        Dict[str, str], List[str]]:
+        """Process main locustfile enhancement"""
+        enhanced_files = {}
+        enhancements = []
+
+        if self.ai_config.update_main_locust:
+            enhanced_content = await self.locust_generator._enhance_locustfile(
+                base_files.get("locustfile.py", ""), endpoints, api_info
+            )
+            if enhanced_content:
+                enhanced_files['locustfile.py'] = enhanced_content
+                enhancements.append("main_locust_update")
+
+        return enhanced_files, enhancements
+
+    async def process_domain_flows_enhancement(self, base_files: Dict[str, str],
+                                               endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
+        Dict[str, str], List[str]]:
+        """Process domain flows enhancement"""
+        enhanced_files = {}
+        enhancements = []
+
+        if self.ai_config.create_domain_flows:
+            domain_flows = await self.locust_generator._generate_domain_flows(endpoints, api_info)
+            if domain_flows:
+                enhanced_files["custom_flows.py"] = domain_flows
+                enhancements.append("domain_flows")
+
+        return enhanced_files, enhancements
+
+    async def process_workflow_enhancements(self, base_files: Dict[str, str],
+                                            directory_files: List[Dict[str, Any]],
+                                            grouped_endpoints: Dict[str, List[Endpoint]]) -> Tuple[
+        List[Dict[str, Any]], List[str]]:
+        """Process workflow enhancements"""
+        enhanced_directory_files = []
+        enhancements = []
+
+        if not self.ai_config.enhance_workflows:
+            return enhanced_directory_files, enhancements
+
+        base_workflow_files = self.locust_generator.get_files_by_key(directory_files, 'base_workflow.py')
+
+        for workflow_item in directory_files:
+            enhanced_workflow_item = await self._enhance_single_workflow(
+                workflow_item, base_files, base_workflow_files, grouped_endpoints
+            )
+            if enhanced_workflow_item:
+                enhanced_directory_files.append(enhanced_workflow_item['files'])
+                enhancements.extend(enhanced_workflow_item['enhancements'])
+
+        return enhanced_directory_files, enhancements
+
+    async def _enhance_single_workflow(self, workflow_item: Dict[str, Any],
+                                       base_files: Dict[str, str], base_workflow_files: str,
+                                       grouped_endpoints: Dict[str, List[Endpoint]]) -> Dict[str, Any]:
+        """Enhance a single workflow file"""
+        for key, value in workflow_item.items():
+            workflow_key = key.replace("_workflow.py", "")
+            endpoints_for_workflow = grouped_endpoints.get(workflow_key, [])
+            auth_endpoints = grouped_endpoints.get('Authentication', [])
+
+            enhanced_workflow = await self.locust_generator._enhance_workflows(
+                base_content=value,
+                test_data_content=base_files.get("test_data.py", ""),
+                base_workflow=base_workflow_files,
+                grouped_enpoints=endpoints_for_workflow,
+                auth_endpoints=auth_endpoints
+            )
+
+            if enhanced_workflow:
+                return {
+                    'files': {key: enhanced_workflow},
+                    'enhancements': [f"enhanced_workflows_{key}"]
+                }
+
+        return None
+
+    async def process_test_data_enhancement(self, base_files: Dict[str, str],
+                                            endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
+        Dict[str, str], List[str]]:
+        """Process test data enhancement"""
+        enhanced_files = {}
+        enhancements = []
+
+        if self.ai_config.enhance_test_data:
+            enhanced_test_data = await self.locust_generator.enhance_test_data_file(
+                base_files.get("test_data.py", ""), endpoints, api_info
+            )
+            if enhanced_test_data:
+                enhanced_files["test_data.py"] = enhanced_test_data
+                enhancements.append("smart_test_data")
+
+        return enhanced_files, enhancements
+
+    async def process_validation_enhancement(self, base_files: Dict[str, str],
+                                             endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
+        Dict[str, str], List[str]]:
+        """Process validation enhancement"""
+        enhanced_files = {}
+        enhancements = []
+
+        if self.ai_config.enhance_validation:
+            enhanced_validation = await self.locust_generator._enhance_validation(
+                base_files.get("utils.py", ""), endpoints, api_info
+            )
+            if enhanced_validation:
+                enhanced_files["utils.py"] = enhanced_validation
+                enhancements.append("advanced_validation")
+
+        return enhanced_files, enhancements
 
 class HybridLocustGenerator:
     """
@@ -214,93 +335,30 @@ class HybridLocustGenerator:
 
 
 
+
     async def _enhance_with_ai(
-        self,
-        base_files: Dict[str, str],
-
-        endpoints: List[Endpoint],
-        api_info: Dict[str, Any],
-        directory_files:   List[Dict[str, Any]],
-        grouped_enpoints:  Dict[str, List[Endpoint]]
+            self,
+            base_files: Dict[str, str],
+            endpoints: List[Endpoint],
+            api_info: Dict[str, Any],
+            directory_files: List[Dict[str, Any]],
+            grouped_endpoints: Dict[str, List[Endpoint]]
     ) -> EnhancementResult:
-        """Enhance base files with AI"""
+        """Enhance base files with AI - Refactored for reduced cognitive complexity"""
         start_time = asyncio.get_event_loop().time()
-        enhanced_files = base_files.copy()
-        enhanced_directory_files = []
-        enhancements_applied = []
-        errors = []
+
         try:
-
-            if self.ai_config.update_main_locust:
-                enhanced_files['locustfile.py'] = await self._enhance_locustfile(
-                    base_files.get("locustfile.py", ""), endpoints, api_info
-                )
-
-
-            # Enhancement 1: Domain-specific user flows
-            if self.ai_config.create_domain_flows:
-                domain_flows = await self._generate_domain_flows(endpoints, api_info)
-                if domain_flows:
-                    enhanced_files["custom_flows.py"] = domain_flows
-                    enhancements_applied.append("domain_flows")
-
-
-            # Enhancement 2: Enhanced custom workflows
-            if self.ai_config.enhance_workflows:
-                base_workflow_files = self.get_files_by_key(directory_files, 'base_workflow.py')
-
-                for items in directory_files:
-                    for key, value in items.items():
-
-
-                        enhanced_workflow = await self._enhance_workflows(
-                            base_content= value,
-                            test_data_content= base_files.get("test_data.py", ""),
-                            base_workflow= base_workflow_files,
-                            grouped_enpoints=grouped_enpoints.get(key.replace("_workflow.py","")),
-                            auth_endpoints=grouped_enpoints.get('Authentication',[])
-                        )
-                        if enhanced_workflow:
-                            enhanced_directory_files.append({key: enhanced_workflow})
-
-                            enhancements_applied.append(f"enhanced_workflows_{key}")
-
-            # Enhancement 3: Smart test data generation
-            if self.ai_config.enhance_test_data:
-
-                enhanced_test_data = await self.enhance_test_data_file(
-                    base_files.get("test_data.py", ""), endpoints, api_info
-                )
-
-                if enhanced_test_data:
-                    enhanced_files["test_data.py"] = enhanced_test_data
-
-                    enhancements_applied.append("smart_test_data")
-
-
-            # Enhancement 4: Advanced response validation
-            if self.ai_config.enhance_validation:
-                enhanced_validation = await self._enhance_validation(
-                    base_files.get("utils.py", ""), endpoints, api_info
-                )
-                if enhanced_validation:
-                    enhanced_files["utils.py"] = enhanced_validation
-                    enhancements_applied.append("advanced_validation")
+            enhancement_result = await self._process_all_enhancements(
+                base_files, endpoints, api_info, directory_files, grouped_endpoints
+            )
 
             processing_time = asyncio.get_event_loop().time() - start_time
+            enhancement_result.processing_time = processing_time
 
-            return EnhancementResult(
-                success=True,
-                enhanced_files=enhanced_files,
-                enhanced_directory_files=enhanced_directory_files,
-                enhancements_applied=enhancements_applied,
-                errors=errors,
-                processing_time=processing_time,
-            )
+            return enhancement_result
 
         except Exception as e:
             logger.error(f"AI enhancement failed: {e}")
-
             processing_time = asyncio.get_event_loop().time() - start_time
 
             return EnhancementResult(
@@ -312,6 +370,62 @@ class HybridLocustGenerator:
                 processing_time=processing_time,
             )
 
+    async def _process_all_enhancements(
+            self,
+            base_files: Dict[str, str],
+            endpoints: List[Endpoint],
+            api_info: Dict[str, Any],
+            directory_files: List[Dict[str, Any]],
+            grouped_endpoints: Dict[str, List[Endpoint]]
+    ) -> EnhancementResult:
+        """Process all enhancements using the enhancement processor"""
+        processor = EnhancementProcessor(self.ai_config, self)
+
+        enhanced_files = base_files.copy()
+        enhanced_directory_files = []
+        enhancements_applied = []
+        errors = []
+
+        # Process each enhancement type
+        enhancement_tasks = [
+            processor.process_main_locust_enhancement(base_files, endpoints, api_info),
+            processor.process_domain_flows_enhancement(base_files, endpoints, api_info),
+            processor.process_test_data_enhancement(base_files, endpoints, api_info),
+            processor.process_validation_enhancement(base_files, endpoints, api_info),
+        ]
+
+        # Execute file-based enhancements concurrently
+        file_enhancement_results = await asyncio.gather(*enhancement_tasks, return_exceptions=True)
+
+        # Process results from file-based enhancements
+        for result in file_enhancement_results:
+            if isinstance(result, Exception):
+                errors.append(str(result))
+                continue
+
+            files, enhancements = result
+            enhanced_files.update(files)
+            enhancements_applied.extend(enhancements)
+
+        # Process workflow enhancements separately (more complex logic)
+        try:
+            workflow_files, workflow_enhancements = await processor.process_workflow_enhancements(
+                base_files, directory_files, grouped_endpoints
+            )
+            enhanced_directory_files.extend(workflow_files)
+            enhancements_applied.extend(workflow_enhancements)
+        except Exception as e:
+            errors.append(f"Workflow enhancement error: {str(e)}")
+
+        return EnhancementResult(
+            success=len(errors) == 0,
+            enhanced_files=enhanced_files,
+            enhanced_directory_files=enhanced_directory_files,
+            enhancements_applied=enhancements_applied,
+            errors=errors,
+            processing_time=0  # Will be set by caller
+        )
+
     async def _generate_domain_flows(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]
     ) -> Optional[str]:
@@ -320,31 +434,15 @@ class HybridLocustGenerator:
         # Analyze endpoints to determine domain
         domain_analysis = self._analyze_api_domain(endpoints, api_info)
 
-        prompt = f"""Based on this API analysis, create domain-specific user flows for Locust testing:
-
-API Analysis:
-{domain_analysis}
-
-Endpoints Available:
-{self._format_endpoints_for_prompt(endpoints)}  # Limit for token efficiency
-
-Generate a Python file with domain-specific user flow classes that extend the base CustomUserFlow.
-Focus on realistic business workflows that users would actually perform.
-
-Requirements:
-1. Create 2-3 domain-specific flow classes
-2. Use sequential tasks for related API calls and use coorelation between them
-3. To check payload and update it if it is not valid
-4. Each flow should represent a complete business process
-5. Include proper error handling and realistic wait times
-6. Use the available endpoints in logical sequences
-7. Add meaningful logging and data tracking
-
-Always return your code wrapped in <code></code> tags with no explanations outside the tags DO NOT TRUNCATE THE CODE. 
-IMPORTANT: Return the SAME code with ONLY formatting fixes. Do not enhance or add anything
-Format: <code>your_python_code_here</code>"""
 
         try:
+            template = self.jinja_env.get_template('workflow.j2')
+
+            # Render enhanced content
+            prompt = template.render(domain_analysis=domain_analysis,
+                                     endpoints=self._format_endpoints_for_prompt(endpoints)
+                                     )
+
             enhanced_content = await self._call_ai_service(prompt)
 
             if enhanced_content :
@@ -436,128 +534,11 @@ Format: <code>your_python_code_here</code>"""
 
         return ""
 
-    async def _generate_performance_scenarios(
-        self, endpoints: List[Endpoint], api_info: Dict[str, Any]
-    ) -> Optional[str]:
-        """Generate performance testing scenarios"""
 
-        performance_analysis = self._analyze_performance_patterns(endpoints)
 
-        prompt = f"""Create performance testing scenarios for this API:
-
-API: {api_info.get('title', 'Unknown API')}
-Performance Analysis:
-{performance_analysis}
-
-Create a Python file with specialized performance testing scenarios:
-1. Spike testing scenarios
-2. Stress testing patterns
-3. Volume testing with bulk operations
-4. Endurance testing scenarios
-5. Resource leak detection tests
-
-Each scenario should be a Locust user class with specific performance goals.
-Output: Complete Python file content only."""
-
-        try:
-            enhanced_content = await self._call_ai_service(prompt)
-            if enhanced_content and self._validate_python_code(enhanced_content):
-                return enhanced_content
-        except Exception as e:
-            logger.warning(f"Performance scenarios generation failed: {e}")
-
-        return None
-
-    def _fix_message_sequence(self, messages: List[Dict]) -> List[Dict]:
-        """Ensure proper message sequence for Together AI"""
-        if not messages:
-            return []
-
-        fixed_messages = []
-        last_role = None
-
-        for message in messages:
-            role = message['role']
-
-            # Skip system messages in sequence checking
-            if role == 'system':
-                fixed_messages.append(message)
-                continue
-
-            # Avoid consecutive messages from same role
-            if role == last_role:
-                # If we have consecutive user or assistant messages, merge them
-                if fixed_messages and fixed_messages[-1]['role'] == role:
-                    # Merge with previous message
-                    fixed_messages[-1]['content'] += '\n\n' + message['content']
-                else:
-                    fixed_messages.append(message)
-            else:
-                fixed_messages.append(message)
-
-            last_role = role
-
-        return fixed_messages
-
-    def _validate_and_clean_messages(self, messages: List[Dict]) -> List[Dict]:
-        """Validate and clean message format for Together AI"""
-        if not messages:
-            return []
-
-        validated_messages = []
-
-        for i, message in enumerate(messages):
-            try:
-                # Ensure message is a dictionary
-                if not isinstance(message, dict):
-                    logger.warning(f"Message {i} is not a dict, skipping: {type(message)}")
-                    continue
-
-                # Ensure required fields exist
-                if 'role' not in message or 'content' not in message:
-                    logger.warning(f"Message {i} missing role or content, skipping: {message}")
-                    continue
-
-                # Validate role
-                role = message.get('role')
-                if role not in ['system', 'user', 'assistant']:
-                    logger.warning(f"Message {i} has invalid role '{role}', skipping")
-                    continue
-
-                # Validate and clean content
-                content = message.get('content')
-                if content is None:
-                    logger.warning(f"Message {i} has None content, skipping")
-                    continue
-
-                # Convert content to string and clean
-                content = str(content).strip()
-                if not content:
-                    logger.warning(f"Message {i} has empty content after cleaning, skipping")
-                    continue
-
-                # Create clean message
-                clean_message = {
-                    "role": role,
-                    "content": content
-                }
-
-                validated_messages.append(clean_message)
-
-            except Exception as e:
-                logger.error(f"Error processing message {i}: {e}")
-                continue
-
-        # Ensure alternating user/assistant pattern (except for system)
-        final_messages = self._fix_message_sequence(validated_messages)
-
-        return final_messages
-
-    async def _call_ai_service(self, prompt: str, old_messages: List[Dict] = None) -> Optional[str]:
+    async def _call_ai_service(self, prompt: str) -> Optional[str]:
         """Call AI service with retry logic and validation"""
-        if old_messages is None:
-            old_messages = []
-        validated_old_messages = self._validate_and_clean_messages(old_messages)
+
 
         messages = [
             {
@@ -568,9 +549,7 @@ Output: Complete Python file content only."""
             },
             {"role": "user", "content": prompt},
         ]
-        # Add old messages if they exist
-        if validated_old_messages:
-            messages.extend(validated_old_messages)
+
 
 
         for attempt in range(3):  # Retry logic

@@ -1,0 +1,23 @@
+Based on this API analysis, create domain-specific user flows for Locust testing:
+
+API Analysis:
+{{domain_analysis}}
+
+Endpoints Available:
+{{ endpoints }}  # Limit for token efficiency
+
+Generate a Python file with domain-specific user flow classes that extend the base CustomUserFlow.
+Focus on realistic business workflows that users would actually perform.
+
+Requirements:
+1. Create 2-3 domain-specific flow classes
+2. Use sequential tasks for related API calls and use coorelation between them
+3. To check payload and update it if it is not valid
+4. Each flow should represent a complete business process
+5. Include proper error handling and realistic wait times
+6. Use the available endpoints in logical sequences
+7. Add meaningful logging and data tracking
+
+Always return your code wrapped in <code></code> tags with no explanations outside the tags DO NOT TRUNCATE THE CODE.
+IMPORTANT: Return the SAME code with ONLY formatting fixes. Do not enhance or add anything
+Format: <code>your_python_code_here</code>
