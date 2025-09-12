@@ -6,7 +6,7 @@ Generates Locust performance test files from parsed OpenAPI endpoints.
 
 import json
 import re
-import random
+import secrets
 from typing import List, Tuple, Dict, Any
 import black
 from jinja2 import Environment, FileSystemLoader, Template
@@ -61,7 +61,8 @@ class LocustTestGenerator:
             loader=FileSystemLoader(self.template_dir),
             trim_blocks=True,
             lstrip_blocks=True,
-            keep_trailing_newline=True
+            keep_trailing_newline=True,
+            autoescape=False
         )
 
 
@@ -420,7 +421,7 @@ class LocustTestGenerator:
         code_lines = ["params = {"]
         for param in query_params:
             if (
-                not param.required and random.random() > 0.7
+                not param.required and secrets.randbelow(100) > 70
             ):  # Sometimes skip optional params
                 continue
 

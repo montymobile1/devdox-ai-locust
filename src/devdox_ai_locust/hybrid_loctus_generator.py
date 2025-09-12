@@ -84,7 +84,8 @@ class HybridLocustGenerator:
             loader=FileSystemLoader(str(self.prompt_dir)),
             trim_blocks=True,
             lstrip_blocks=True,
-            keep_trailing_newline=True
+            keep_trailing_newline=True,
+            autoescape=False
         )
 
 
