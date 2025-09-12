@@ -14,6 +14,7 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+application_json_type = 'application/json'
 
 class ParameterType(Enum):
     QUERY = "query"
@@ -243,7 +244,7 @@ class OpenAPIParser:
 
         # Get the first content type (prioritize JSON)
         content_types = list(content.keys())
-        preferred_types = ['application/json', 'application/x-www-form-urlencoded', 'multipart/form-data']
+        preferred_types = [application_json_type, 'application/x-www-form-urlencoded', 'multipart/form-data']
 
         content_type = None
         for preferred in preferred_types:
@@ -294,9 +295,9 @@ class OpenAPIParser:
 
             if content:
                 # Prioritize JSON content type
-                if 'application/json' in content:
-                    content_type = 'application/json'
-                    media_type = content['application/json']
+                if application_json_type in content:
+                    content_type = application_json_type
+                    media_type = content[application_json_type]
                 else:
                     content_type = list(content.keys())[0]
                     media_type = content[content_type]
