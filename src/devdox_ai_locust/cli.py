@@ -38,7 +38,7 @@ def _setup_output_directory(output):
     return output_dir
 
 def _display_configuration(swagger_url, output_dir, users, spawn_rate,
-                                   run_time, host, auth, custom_requirement, dry_run, timeout):
+                                   run_time, host, auth, custom_requirement, dry_run):
 
             table = Table(title="Generation Configuration")
             table.add_column("Setting", style="cyan")
@@ -54,7 +54,6 @@ def _display_configuration(swagger_url, output_dir, users, spawn_rate,
             table.add_row("Authentication", "Enabled" if auth else "Disabled")
             table.add_row("Custom Requirement", custom_requirement or "None")
             table.add_row("Dry Run", "Yes" if dry_run else "No")
-            table.add_row("Timeout", f"{timeout}s")
 
             console.print(table)
 
@@ -113,14 +112,19 @@ def _show_run_instructions(output_dir, users, spawn_rate, run_time, host):
 
 
 
-async def _process_api_schema(swagger_url, timeout, verbose):
+async def _process_api_schema(swagger_url, verbose):
     """Fetch and parse API schema"""
     # Fetch API schema
     source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
-
     is_url = swagger_url.startswith(('http://', 'https://'))
     with console.status(f"[bold green]Fetching API schema from {'URL' if is_url else 'file'}..."):
-        api_schema = await get_api_schema(source_request, timeout=timeout)
+        # Use timeout context manager instead of parameter
+        try:
+            async with asyncio.timeout(30):  # 30 second timeout
+                api_schema = await get_api_schema(source_request)
+        except asyncio.TimeoutError:
+            console.print("[red]✗[/red] Timeout while fetching API schema")
+            sys.exit(1)
 
     if not api_schema:
         console.print("[red]✗[/red] Failed to fetch API schema")
@@ -218,17 +222,16 @@ def cli(ctx, verbose):
 @click.option('--custom-requirement', type=str, help='Custom requirements for test generation')
 @click.option('--together-api-key', type=str, envvar='TOGETHER_API_KEY',
               help='Together AI API key (can also be set via TOGETHER_API_KEY env var)')
-@click.option('--timeout', type=int, default=30, help='Timeout for URL requests (seconds)')
 @click.pass_context
 def generate(ctx, swagger_url, output, config,  users, spawn_rate, run_time, host, auth, dry_run,
-             custom_requirement, together_api_key, timeout):
+             custom_requirement, together_api_key):
     """Generate Locust test files from API documentation URL or file"""
 
     try:
         # Run the async generation
         asyncio.run(_async_generate(
             ctx, swagger_url, output, config,  users, spawn_rate,
-            run_time, host, auth, dry_run, custom_requirement, together_api_key, timeout
+            run_time, host, auth, dry_run, custom_requirement, together_api_key
         ))
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -239,7 +242,7 @@ def generate(ctx, swagger_url, output, config,  users, spawn_rate, run_time, hos
 
 
 async def _async_generate(ctx, swagger_url, output, config,  users, spawn_rate,
-                          run_time, host, auth, dry_run, custom_requirement, together_api_key, timeout):
+                          run_time, host, auth, dry_run, custom_requirement, together_api_key):
     """Async function to handle the generation process"""
 
     start_time = datetime.now(timezone.utc)
@@ -254,10 +257,10 @@ async def _async_generate(ctx, swagger_url, output, config,  users, spawn_rate,
         # Display configuration
         if ctx.obj['verbose']:
             _display_configuration(swagger_url, output_dir, users, spawn_rate,
-                                   run_time, host, auth, custom_requirement, dry_run, timeout)
+                                   run_time, host, auth, custom_requirement, dry_run)
 
         _, endpoints, api_info = await _process_api_schema(
-            swagger_url, timeout, ctx.obj['verbose']
+            swagger_url, ctx.obj['verbose']
         )
 
         created_files = await _generate_and_create_tests(

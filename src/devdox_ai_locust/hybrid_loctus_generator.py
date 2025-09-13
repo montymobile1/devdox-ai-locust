@@ -768,7 +768,7 @@ class HybridLocustGenerator:
                 if len(part) > 2 and part.isalpha():  # Likely a resource name
                     resources.add(part)
 
-        return sorted(list(resources))
+        return sorted(resources)
 
     async def _create_test_files_safely(
             self,
