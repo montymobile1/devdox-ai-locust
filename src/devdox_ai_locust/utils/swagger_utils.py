@@ -120,7 +120,7 @@ async def _fetch_from_file(file_path: str) -> str:
 def _sanitize_filename(self, filename: str) -> str:
     # Remove directory components and sanitize
     clean_name = os.path.basename(filename)
-    clean_name = re.sub(r'[^\w\-_\.]', '', clean_name)
+    clean_name = re.sub(r'[^\w\-\.]', '', clean_name)
     if not clean_name or clean_name.startswith('.'):
         clean_name = f"generated_{uuid.uuid4().hex[:8]}.py"
     return clean_name
