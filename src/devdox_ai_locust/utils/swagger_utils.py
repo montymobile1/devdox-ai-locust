@@ -11,13 +11,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def get_api_schema(source: SwaggerProcessingRequest, timeout: int = 30) -> Optional[str]:
+async def get_api_schema(source: SwaggerProcessingRequest) -> Optional[str]:
     """
     Get API schema content from URL or file path based on source dictionary.
 
     Args:
         source (dict): Dictionary containing swagger_source ("url" or "file") and swagger_url/swagger_path
-        timeout (int): Request timeout in seconds for URLs (default: 30)
+
 
     Expected source structure:
         {
@@ -42,7 +42,7 @@ async def get_api_schema(source: SwaggerProcessingRequest, timeout: int = 30) ->
         swagger_url = source.swagger_url.strip()
         if not swagger_url:
             raise ValueError("Missing 'swagger_url' for url source")
-        return await _fetch_from_url(swagger_url, timeout)
+        return await _fetch_from_url(swagger_url)
 
     except Exception as e:
         source_info = getattr(source, 'swagger_url' , 'unknown')
@@ -51,14 +51,14 @@ async def get_api_schema(source: SwaggerProcessingRequest, timeout: int = 30) ->
         raise
 
 
-async def _fetch_from_url(url: str, timeout: int) -> str:
+async def _fetch_from_url(url: str) -> str:
     """Fetch schema content from URL."""
     headers = {
         'User-Agent': 'API-Schema-Fetcher/1.0',
         'Accept': 'application/json, application/yaml, text/yaml, text/plain, */*'
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         try:
             response = await client.get(url, headers=headers)
             response.raise_for_status()

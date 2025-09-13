@@ -143,7 +143,7 @@ class EnhancementProcessor:
         return None
 
     async def process_test_data_enhancement(self, base_files: Dict[str, str],
-                                            endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
+                                            endpoints: List[Endpoint]) -> Tuple[
         Dict[str, str], List[str]]:
         """Process test data enhancement"""
         enhanced_files = {}
@@ -160,7 +160,7 @@ class EnhancementProcessor:
         return enhanced_files, enhancements
 
     async def process_validation_enhancement(self, base_files: Dict[str, str],
-                                             endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
+                                             endpoints: List[Endpoint]) -> Tuple[
         Dict[str, str], List[str]]:
         """Process validation enhancement"""
         enhanced_files = {}
@@ -393,8 +393,8 @@ class HybridLocustGenerator:
         enhancement_tasks = [
             processor.process_main_locust_enhancement(base_files, endpoints, api_info),
             processor.process_domain_flows_enhancement( endpoints, api_info),
-            processor.process_test_data_enhancement(base_files, endpoints, api_info),
-            processor.process_validation_enhancement(base_files, endpoints, api_info),
+            processor.process_test_data_enhancement(base_files, endpoints),
+            processor.process_validation_enhancement(base_files, endpoints)
         ]
 
         # Execute file-based enhancements concurrently
