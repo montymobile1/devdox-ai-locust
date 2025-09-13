@@ -91,7 +91,7 @@ def _show_generated_files(created_files, verbose):
 
 def _show_run_instructions(output_dir, users, spawn_rate, run_time, host):
     """Display instructions for running the generated tests"""
-    console.print(f"\n[bold]To run tests:[/bold]")
+    console.print("\n[bold]To run tests:[/bold]")
     console.print(f"  cd {output_dir}")
 
     default_host = host or 'http://localhost:8000'
@@ -109,7 +109,7 @@ def _show_run_instructions(output_dir, users, spawn_rate, run_time, host):
     )
 
     console.print("\n[bold]Alternative: Use the run command[/bold]")
-    console.print(f"  devdox-loadtest run {output_dir}/{main_file} --host {default_host}")
+    console.print(f"  devdox_ai_locust run {output_dir}/{main_file} --host {default_host}")
 
 
 
@@ -306,7 +306,7 @@ def run(ctx, test_file, users, spawn_rate, run_time, host, headless):
         if ctx.obj['verbose']:
             console.print(f"[blue]Running command:[/blue] {' '.join(cmd)}")
 
-        console.print(f"[green]Starting Locust test...[/green]")
+        console.print("[green]Starting Locust test...[/green]")
         subprocess.run(cmd, check=True)
 
     except subprocess.CalledProcessError as e:

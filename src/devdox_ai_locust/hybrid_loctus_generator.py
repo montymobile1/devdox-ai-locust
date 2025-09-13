@@ -20,6 +20,7 @@ import shutil
 from devdox_ai_locust.utils.open_ai_parser import (
     Endpoint
 )
+from devdox_ai_locust.utils.file_creation import (FileCreationConfig, SafeFileCreator)
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
 
 logger = logging.getLogger(__name__)
@@ -770,137 +771,101 @@ class HybridLocustGenerator:
         return sorted(list(resources))
 
     async def _create_test_files_safely(
-        self,
-        test_files: Dict[str, str],
-        output_path: Path,
-        max_file_size: int = 1024 * 1024,  # 1MB limit
-    ) -> list:
-        """
-        Create test files safely with comprehensive security and error handling
-        """
-        created_files = []
-        temp_dir = output_path / f"temp_{uuid.uuid4().hex[:8]}"
+            self,
+            test_files: Dict[str, str],
+            output_path: Path,
+            max_file_size: int = 1024 * 1024,
+    ) -> List[dict]:
+        """Create test files safely with reduced complexity"""
 
-        # Security validation
-        allowed_extensions = {
-            ".py",
-            ".md",
-            ".txt",
-            ".sh",
-            ".yml",
-            ".yaml",
-            ".json",
-            ".example",
-        }
-
-        try:
-            # Ensure output directory exists
-            output_path.mkdir(parents=True, exist_ok=True)
-            temp_dir.mkdir(parents=True, exist_ok=True)
-
-            for filename, content in test_files.items():
-                try:
-                    # Security checks
-                    clean_filename = self._sanitize_filename(filename)
-
-                    file_extension = Path(clean_filename).suffix.lower()
-
-
-                    if file_extension not in allowed_extensions:
-                        logger.warning(
-                            f"⚠️ Skipping file with disallowed extension: {filename}"
-                        )
-                        continue
-
-                    if len(content.encode("utf-8")) > max_file_size:
-                        logger.warning(f"⚠️ File too large, truncating: {filename}")
-                        content = content[: max_file_size // 2]  # Safe truncation
-
-
-
-                    # Create file in temp directory first (atomic operation)
-                    temp_file_path = temp_dir / clean_filename
-                    await asyncio.to_thread(
-                        temp_file_path.write_text, content, encoding="utf-8"
-                    )
-
-                    # Set appropriate permissions
-                    if clean_filename.endswith(".sh"):
-                        temp_file_path.chmod(0o755)  # Executable
-                    else:
-                        temp_file_path.chmod(0o644)  # Read/write
-
-                    created_files.append(
-                        {
-                            "filename": clean_filename,
-                            "temp_path": temp_file_path,
-                            "final_path": output_path / clean_filename,
-                            "size": len(content.encode("utf-8")),
-                            "type": file_extension.lstrip("."),
-                        }
-                    )
-
-                    logger.info(f"📄 Prepared: {clean_filename} ({len(content)} chars)")
-
-                except Exception as e:
-                    logger.error(f"❌ Failed to prepare file {filename}: {e}")
-                    continue
-
-            # Atomic move to final location (all or nothing)
-            if created_files:
-                for file_info in created_files:
-                    try:
-                        await asyncio.to_thread(
-                            shutil.move,
-                            str(file_info["temp_path"]),
-                            str(file_info["final_path"]),
-                        )
-                        file_info["path"] = file_info["final_path"]
-                        logger.info(f"✅ Created: {file_info['filename']}")
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Failed to move file {file_info['filename']}: {e}"
-                        )
-                        # Remove from created_files if move failed
-                        created_files = [f for f in created_files if f != file_info]
-
-            return created_files
-
-        except Exception as e:
-            logger.error(f"❌ File creation process failed: {e}")
+        if not test_files:
             return []
 
+        # Setup
+        config = FileCreationConfig()
+        config.MAX_FILE_SIZE = max_file_size
+        creator = SafeFileCreator(config)
+        temp_dir = output_path / f"temp_{uuid.uuid4().hex[:8]}"
+
+        try:
+            return await self._process_file_creation(creator, test_files, output_path, temp_dir)
         finally:
-            # Always clean up temp directory
-            if temp_dir.exists():
-                try:
-                    await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to cleanup temp directory: {e}")
+            await self._cleanup_temp_directory(temp_dir)
 
-    def _sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename to prevent security issues"""
-        # Remove directory components
-        clean_name = os.path.basename(filename).lower()
+    async def _process_file_creation(
+            self,
+            creator: SafeFileCreator,
+            test_files: Dict[str, str],
+            output_path: Path,
+            temp_dir: Path
+    ) -> List[dict]:
+        """Process the file creation workflow"""
 
-        # Remove dangerous characters
-        clean_name = re.sub(r'[<>:"/\\|?*]', "", clean_name)
-        # Replace spaces with underscores
-        clean_name = clean_name.replace("- ", "_")
+        # Ensure directories exist
+        output_path.mkdir(parents=True, exist_ok=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Ensure reasonable length
-        if len(clean_name) > 255:
-            name_part, ext = os.path.splitext(clean_name)
-            clean_name = name_part[:250] + ext
+        # Prepare files in temp directory
+        prepared_files = await self._prepare_files_in_temp(creator, test_files, temp_dir)
 
-        # Prevent hidden files and ensure not empty
-        safe_dotfiles = {".env.example", ".gitignore", ".env.template"}
-        if not clean_name or (
-            clean_name.startswith(".") and clean_name not in safe_dotfiles
-        ):
-            clean_name = f"generated_{uuid.uuid4().hex[:8]}.py"
+        if not prepared_files:
+            return []
 
-        return clean_name
+        # Move files atomically to final location
+        return await creator.move_files_atomically(prepared_files, output_path)
+
+    async def _prepare_files_in_temp(
+            self,
+            creator: SafeFileCreator,
+            test_files: Dict[str, str],
+            temp_dir: Path
+    ) -> List[dict]:
+        """Prepare all files in temporary directory"""
+
+        prepared_files = []
+
+        for filename, content in test_files.items():
+            file_result = await self._prepare_single_file(creator, filename, content, temp_dir)
+            if file_result:
+                prepared_files.append(file_result)
+
+        return prepared_files
+
+    async def _prepare_single_file(
+            self,
+            creator: SafeFileCreator,
+            filename: str,
+            content: str,
+            temp_dir: Path
+    ) -> dict:
+        """Prepare a single file, return None if failed"""
+
+        try:
+            # Validate file
+            is_valid, clean_filename, processed_content = creator.validate_file(filename, content)
+            if not is_valid:
+                return None
+
+            # Create temp file
+            file_info = await creator.create_temp_file(clean_filename, processed_content, temp_dir)
+            logger.info(f"Prepared: {clean_filename} ({len(processed_content)} chars)")
+            return file_info
+
+        except Exception as e:
+            logger.error(f"Failed to prepare file {filename}: {e}")
+            return None
+
+
+    async def _cleanup_temp_directory(self, temp_dir: Path) -> None:
+        """Clean up temporary directory"""
+        if temp_dir.exists():
+            try:
+                await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup temp directory: {e}")
+
+
+
 
     def _validate_python_code(self, content: str) -> bool:
         """Validate Python code syntax"""
