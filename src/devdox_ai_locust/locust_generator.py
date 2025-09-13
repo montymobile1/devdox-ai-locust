@@ -96,7 +96,6 @@ class LocustTestGenerator:
         self,
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-        output_dir: str = "locust_tests",
     ) ->Tuple[Dict[str, str], List[Dict[str, Any]]]:
         """
         Generate complete Locust test suite from parsed endpoints
@@ -161,7 +160,7 @@ class LocustTestGenerator:
 
                 workflows.append({ file_name: file_content})
 
-            workflows.append({f"base_workflow.py":  self.generate_base_common_file(api_info)})
+            workflows.append({f"base_workflow.py: { self.generate_base_common_file(api_info)}"})
 
             return workflows
 
@@ -281,7 +280,7 @@ class LocustTestGenerator:
             'task_methods_content':task_methods_content,
             'tasks_str':tasks_str,
             'api_info': api_info,
-            'generated_task_classes':self._generate_user_classes(tasks_str),
+            'generated_task_classes':self._generate_user_classes(),
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
@@ -352,7 +351,7 @@ class LocustTestGenerator:
 
         except Exception as e:
             logger.error(f"Failed to generate task method for 535 endpoint: {e}")
-            return None
+            return ""
 
     def _generate_method_name(self, endpoint: Endpoint) -> str:
         """Generate a valid Python method name from endpoint"""
@@ -572,12 +571,12 @@ class LocustTestGenerator:
 
         return "\n".join(methods)
 
-    def _generate_user_classes(self, tasks:str) -> str:
+    def _generate_user_classes(self) -> str:
         """
         **FIXED: Generate user classes with proper structure**
         """
 
-        return f'''
+        return '''
     class LightUser(BaseAPIUser, BaseTaskMethods):
         """Light user with occasional API usage patterns"""
         weight = 3

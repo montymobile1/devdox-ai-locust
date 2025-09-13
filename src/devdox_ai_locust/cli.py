@@ -246,7 +246,7 @@ async def _async_generate(ctx, swagger_url, output, config,  users, spawn_rate,
 
     try:
 
-        config_obj, api_key = _initialize_config(config, together_api_key)
+        _, api_key = _initialize_config(config, together_api_key)
         output_dir = _setup_output_directory(output)
 
 
@@ -256,7 +256,7 @@ async def _async_generate(ctx, swagger_url, output, config,  users, spawn_rate,
             _display_configuration(swagger_url, output_dir, users, spawn_rate,
                                    run_time, host, auth, custom_requirement, dry_run, timeout)
 
-        schema_data, endpoints, api_info = await _process_api_schema(
+        _, endpoints, api_info = await _process_api_schema(
             swagger_url, timeout, ctx.obj['verbose']
         )
 

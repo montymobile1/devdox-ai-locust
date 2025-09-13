@@ -151,7 +151,7 @@ class EnhancementProcessor:
 
         if self.ai_config.enhance_test_data:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
-                base_files.get(test_data_file_path , ""), endpoints, api_info
+                base_files.get(test_data_file_path , ""), endpoints
             )
             if enhanced_test_data:
                 enhanced_files[test_data_file_path ] = enhanced_test_data
@@ -168,7 +168,7 @@ class EnhancementProcessor:
 
         if self.ai_config.enhance_validation:
             enhanced_validation = await self.locust_generator._enhance_validation(
-                base_files.get("utils.py", ""), endpoints, api_info
+                base_files.get("utils.py", ""), endpoints
             )
             if enhanced_validation:
                 enhanced_files["utils.py"] = enhanced_validation
@@ -218,7 +218,7 @@ class HybridLocustGenerator:
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
         output_dir: str = "locust_tests",
-    ) -> Dict[str, str]:
+    ) ->  Tuple[Dict[str, str], Dict[str, str]]:
         """
         Generate Locust tests using hybrid approach
 
@@ -232,7 +232,7 @@ class HybridLocustGenerator:
             # Step 1: Generate reliable base structure
             logger.info("🔧 Generating base test structure with templates...")
             base_files, directory_files, grouped_enpoints = self.template_generator.generate_from_endpoints(
-                endpoints, api_info, output_dir
+                endpoints, api_info
             )
 
 
@@ -485,7 +485,7 @@ class HybridLocustGenerator:
         return ""
 
     async def enhance_test_data_file(
-        self, base_content: str, endpoints: List[Endpoint], api_info: Dict[str, Any]
+        self, base_content: str, endpoints: List[Endpoint]
     ) -> Optional[str]:
         """Enhance test data generation with domain knowledge"""
 
@@ -516,7 +516,7 @@ class HybridLocustGenerator:
         return ""
 
     async def _enhance_validation(
-        self, base_content: str, endpoints: List[Endpoint], api_info: Dict[str, Any]
+        self, base_content: str, endpoints: List[Endpoint]
     ) -> Optional[str]:
         """Enhance response validation with endpoint-specific checks"""
 
@@ -699,7 +699,7 @@ class HybridLocustGenerator:
                 if response.status_code.startswith("2"):  # Success responses
                     pattern = f"{ep.method} {ep.path} -> {response.status_code}"
                     if response.schema:
-                        pattern += f" (schema validation needed)"
+                        pattern += " (schema validation needed)"
                     patterns.append(pattern)
 
         return "\n".join(patterns[:10])
@@ -837,7 +837,7 @@ class HybridLocustGenerator:
             filename: str,
             content: str,
             temp_dir: Path
-    ) -> dict:
+    ) -> Optional[Dict[str, Any]]:
         """Prepare a single file, return None if failed"""
 
         try:
