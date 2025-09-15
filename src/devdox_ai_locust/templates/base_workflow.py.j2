@@ -1,0 +1,180 @@
+"""
+Locust performance tests for {{api_info.title}}
+
+API Information:
+- Title: {{api_info.title}}
+- Version: {{api_info.version}}
+- Base URL: {{api_info.base_url}}
+"""
+
+from locust import HttpUser, task, between, events, SequentialTaskSet
+import json
+import logging
+from typing import Dict, Any, Optional
+from urllib.parse import urljoin
+
+from test_data import TestDataGenerator
+from utils import ResponseValidator, RequestLogger, PerformanceMonitor
+from config import LoadTestConfig
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize components
+config = LoadTestConfig()
+data_generator = TestDataGenerator()
+response_validator = ResponseValidator()
+performance_monitor = PerformanceMonitor()
+
+
+class BaseTaskMethods:
+    """Mixin class with common task functionality - no inheritance conflicts"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._initialize_attributes()
+
+    def _initialize_attributes(self):
+        """Initialize all required attributes"""
+        if not hasattr(self, 'auth_token'):
+            self.auth_token = None
+        if not hasattr(self, 'user_data'):
+            self.user_data = {}
+        if not hasattr(self, 'request_count'):
+            self.request_count = 0
+        if not hasattr(self, 'default_headers'):
+            self._setup_authentication()
+            self._setup_headers()
+
+    def on_start(self):
+        """Initialize user session"""
+        self._initialize_attributes()
+        logger.info(f"TaskSet {self.__class__.__name__} started")
+
+    def on_stop(self):
+        """Cleanup when user stops"""
+        if hasattr(self, 'request_count'):
+            logger.info(f"TaskSet {self.__class__.__name__} stopped after {self.request_count} requests")
+        else:
+            logger.info(f"TaskSet {self.__class__.__name__} stopped after {self.request_count} requests")
+
+    def _setup_authentication(self):
+        """Setup authentication (override in subclasses if needed)"""
+        if not hasattr(self, 'auth_token'):
+            self.auth_token = None
+        if config.api_key:
+            self.auth_token = config.api_key
+
+    def _setup_headers(self):
+        """Setup default headers for all requests"""
+        if not hasattr(self, 'auth_token'):
+            self._setup_authentication()
+        self.default_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Locust-LoadTest/1.0"
+        }
+        if self.auth_token:
+            self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
+
+    def make_request(self, method: str, path: str, **kwargs) -> Optional[Dict]:
+        """Make HTTP request with logging, validation, and monitoring"""
+        self._initialize_attributes()
+        self.request_count += 1
+
+        try:
+            # Merge headers
+            request_headers = {**self.default_headers, **kwargs.get("headers", {})}
+
+            # Set content-type for POST/PUT/PATCH
+            if method.upper() in ["POST", "PUT", "PATCH"]:
+                if "json" in kwargs:
+                    request_headers["Content-Type"] = "application/json"
+                elif "data" in kwargs and isinstance(kwargs["data"], dict):
+                    request_headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+            kwargs["headers"] = request_headers
+
+            # Log request
+            RequestLogger.log_request(method, path, kwargs)
+
+            with self.client.request(
+                method=method,
+                url=urljoin(config.base_url, path),
+                catch_response=True,
+                **kwargs
+            ) as response:
+                # Validate and monitor
+                is_valid = response_validator.validate_response(response, method, path)
+                performance_monitor.record_response(response, method, path)
+
+                if not is_valid:
+                    response.failure(f"Response validation failed for {method} {path}")
+                    return None
+
+                try:
+                    return response.json() if response.content else None
+                except json.JSONDecodeError:
+                    if response.status_code < 400:
+                        return {"raw_content": response.text}
+                    response.failure(f"Invalid JSON response for {method} {path}")
+                    return None
+
+        except Exception as e:
+            logger.error(f"Request failed {method} {path}: {e}")
+            return None
+
+    def _store_response_data(self, method_name: str, data: Dict):
+        """Store response data for future requests"""
+        if not hasattr(self, 'user_data'):
+            self.user_data = {}
+        if data:
+            self.user_data[method_name] = data
+
+    def _get_stored_data(self, method_name: str, key: str = None):
+        """Retrieve stored response data from previous requests"""
+        stored_data = self.user_data.get(method_name)
+        if stored_data and key:
+            return stored_data.get(key)
+        return stored_data
+
+
+class BaseAPIUser(HttpUser):
+    """Base class for API users with common functionality"""
+
+    abstract = True
+    wait_time = between(0.5, 1.5)
+
+    def on_start(self):
+        """Initialize user session"""
+        self.auth_token = None
+        self.user_data = {}
+        self.request_count = 0
+
+        # Setup authentication if needed
+        self._setup_authentication()
+
+        # Initialize session headers
+        self._setup_headers()
+
+        logger.info(f"User {self.__class__.__name__} started")
+
+    def on_stop(self):
+        """Cleanup when user stops"""
+        logger.info(f"User {self.__class__.__name__} stopped after {self.request_count} requests")
+
+    def _setup_authentication(self):
+        """Setup authentication (override in subclasses if needed)"""
+        if config.api_key:
+            self.auth_token = config.api_key
+
+    def _setup_headers(self):
+        """Setup default headers for all requests"""
+        self.default_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Locust-LoadTest/1.0"
+        }
+        if self.auth_token:
+            self.default_headers["Authorization"] = f"Bearer {self.auth_token}"

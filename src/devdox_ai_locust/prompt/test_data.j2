@@ -1,0 +1,62 @@
+Enhance this test data generator with domain-specific realistic data while preserving ALL existing methods and their signatures:
+
+Current File:
+{{base_content}}
+
+API Schemas Found:
+{{ schemas_info }}
+
+API Endpoints Context:
+[
+{% for ep in endpoints -%}
+    "Path: {{ ep.path }}, Method: {{ ep.method }}, Tags: {{ ep.tags }}"{% if not loop.last %},{% endif %}
+{% endfor -%}
+]
+
+REQUIREMENTS - Enhance by adding NEW functionality while keeping ALL existing methods intact:
+
+1. **Domain-Specific Data Generators**:
+   - Add methods like `generate_affiliate_data()`, `generate_user_credentials()`, `generate_product_data()`
+   - Create realistic data based on API endpoint patterns (affiliate, user, product, etc.)
+   - Add specific payload generators for common API patterns
+
+2. **Realistic ID Generation**:
+   - Add `generate_realistic_id(entity_type: str)` for entity-specific IDs
+   - Create correlated IDs (user_id -> session_id -> transaction_id)
+   - Add methods like `generate_affiliate_id()`, `generate_partner_id()`, etc.
+
+3. **Payload Templates**:
+   - Add `get_payload_template(endpoint_path: str, method: str)`
+   - Create endpoint-specific payload generators
+   - Add `generate_login_payload()`, `generate_registration_payload()`, etc.
+
+4. **Data Relationships & Correlation**:
+   - Add session management: `create_user_session()`, `get_session_data()`
+   - Create data dependency chains (parent-child relationships)
+   - Add `link_related_entities(parent_id, child_type)` for realistic relationships
+
+5. **Smart Caching & Performance**:
+   - Add `cache_generated_data(key, data)` and `get_cached_data(key)`
+   - Create reusable entity pools for better performance
+   - Add `get_or_create_entity(entity_type, **kwargs)`
+
+6. **Specialized Pattern Generators**:
+   - Add `generate_api_key_data()`, `generate_webhook_payload()`
+   - Create `generate_pagination_data()`, `generate_filter_data()`
+   - Add `generate_error_scenarios()` for negative testing
+
+7. **Validation & Constraints**:
+   - Add `validate_generated_data(data, schema)`
+   - Create constraint-aware generation
+   - Add business rule validation
+
+CRITICAL CONSTRAINTS:
+- MUST preserve ALL existing method signatures exactly as they are
+- MUST keep all existing functionality working
+- MUST maintain backward compatibility
+- ADD new methods, don't modify existing ones
+- Keep the global `test_data_generator` instance
+
+Focus on making the data generation smarter and more realistic while ensuring all existing code that imports and uses this generator continues to work without changes.
+
+Output: Complete enhanced Python file with ALL existing content preserved + new intelligent features

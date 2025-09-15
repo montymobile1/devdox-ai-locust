@@ -1,0 +1,46 @@
+# 🚀 Load Testing Suite for {{ api_info.title }}
+
+[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Locust](https://img.shields.io/badge/locust-2.15+-green.svg)](https://locust.io/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Professional-grade performance testing suite for **{{ api_info.title }} {{ api_info.version }}** built with Locust.
+
+{% if api_info.description -%}
+{{ api_info.description }}
+{% endif %}
+
+## 📋 Table of Contents
+
+- [Quick Start](#-quick-start)
+- [Test Scenarios](#-test-scenarios)
+- [Configuration](#-configuration)
+- [Running Tests](#-running-tests)
+- [Monitoring & Reports](#-monitoring--reports)
+- [Advanced Features](#-advanced-features)
+- [Troubleshooting](#-troubleshooting)
+- [Best Practices](#-best-practices)
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Python 3.8+** with pip
+- **Network access** to the target API
+- **Minimum 2GB RAM** for load testing
+
+### Installation
+```bash
+# 1. Clone or download the test suite
+git clone <repository-url>
+cd load-testing-suite
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your API configuration
+
+# 4. Run your first test
+locust -f locust.py

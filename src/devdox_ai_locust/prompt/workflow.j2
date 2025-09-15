@@ -1,0 +1,145 @@
+CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
+        TASK: Enhance this Locust workflow file with realistic load testing patterns and LOGICAL TASK ORDERING.
+        STRICT REQUIREMENTS:
+        1. ONLY use these exact API endpoints from OpenAPI spec:
+        {{  grouped_enpoints }}
+        2. Check Authentication Endpoints :
+        {{ auth_endpoints }}
+            - If their is endpoints to login , add login task at the beginning of the workflow If we don't have login endpoint, we can't login and retry the task
+            - In case of getting 401 so login and retry the task
+            - If their is endpoints to logout , add logout task at the end of the workflow
+        3. PRESERVE EXISTING STRUCTURE:
+           - Keep ALL existing @task methods, classes, and functions
+           - DO NOT remove any existing functionality
+           - DO NOT change existing method signatures unless enhancing them
+           - ADD to existing methods, don't replace them
+       4. ADD NEW FUNCTIONALITY WHEN NEEDED:
+           - If an API endpoint requires specific IDs, ADD new methods to generate/store those IDs
+           - ADD new test data generators to test_data.py functions
+           - ADD new example usage patterns to example.py
+           - CREATE data flow between related API calls
+
+    5. DATA FLOW AND ID MANAGEMENT:
+       - ADD instance variables to store IDs (self.reseller_id, self.user_id, etc.)
+       - ADD methods to extract and store IDs from API responses
+       - ADD logic to use stored IDs in subsequent API calls
+       - CREATE realistic data dependencies between tasks
+
+    6. ENHANCEMENT AREAS (ADD, don't replace):
+       - ADD better error handling to existing methods
+       - ADD realistic test data usage from test_data.py
+       - ADD authentication handling if auth endpoints exist
+       - ADD cleanup methods for created resources
+       - ADD data correlation between sequential tasks
+
+
+        CURRENT WORKFLOW FILE:
+        {{base_content}}
+
+        BASE WORKFLOW: {{base_workflow}}
+
+        TEST DATA AVAILABLE: {{test_data_content}}
+        1. **REORDER TASKS FOR LOGICAL FLOW**: Arrange @task methods in a meaningful business workflow sequence:
+
+   - Start with data creation tasks (e.g., add_reseller)
+
+   - Follow with data retrieval to get IDs for subsequent operations (e.g., get_reseller, get_reseller_by_id)
+
+   - Then perform operations using those IDs (e.g., customize_corporate_price, available_reseller_properties)
+
+   - End with cleanup operations (e.g., delete_reseller)
+
+
+
+2. **DATA CORRELATION**: Use data from previous tasks in subsequent tasks:
+
+   - Store reseller IDs from add_reseller for use in get_reseller_by_id, customize_price, etc.
+
+   - Pass generated data between related API calls
+
+   - Maintain state between sequential tasks for realistic workflows
+
+3. Fix indentation issues
+
+
+4. **Test Data Enhancement** (if needed, suggest additions):
+       If APIs need specific data formats, suggest:
+       - New functions to add to test_data.py
+       - New example patterns to add to example.py
+       - New data generators for specific ID requirements
+
+
+
+5. Use realistic functions and classes from base_workflow.py and don't remove classes or functions from this file
+
+6. Add intelligent request chaining between related API calls
+
+7. Add authentication handling ONLY if auth endpoints exist in OpenAPI spec
+
+8. Add error recovery for existing methods
+
+9. Add data cleanup on stop for resources created during testing
+
+10. Improve data parameterization using available test data generators
+
+
+
+LOGICAL TASK SEQUENCE EXAMPLE:
+
+For reseller workflow, the logical order should be:
+
+1. add_reseller (create) → store reseller_id
+
+2. get_reseller (list/search)
+
+3. get_reseller_by_id (using stored reseller_id)
+
+4. available_reseller_properties (using reseller_id)
+
+5. customize_corporate_price (using reseller_id)
+
+6. customize_corporate_price_csv (using reseller_id)
+
+7. customize_price (using reseller_id)
+
+8. customize_price_csv (using reseller_id)
+
+9. topup_reseller_balance (using reseller_id)
+
+10. edit_reseller (using reseller_id)
+
+11. delete_reseller (cleanup using reseller_id)
+
+VALIDATION RULES:
+    - Every @task method must correspond to an actual OpenAPI endpoint
+    - PRESERVE all existing functionality
+    - ADD new functionality only where needed for data flow
+    - Use only test_data.py functions that exist or suggest new ones to ADD
+    - Ensure realistic user workflows with proper data dependencies
+    - ADD error handling and resource cleanup
+
+    SUGGESTIONS FOR ADDITIONS (if needed):
+    If the workflow needs new test data generators or example patterns,
+    provide suggestions for what to ADD to:
+
+    test_data.py additions:
+    ```python
+    # Suggest new functions to ADD (don't replace existing)
+    def get_specific_id_data():
+        # New function for ID-dependent APIs
+        pass
+    ```
+
+    example.py additions:
+    ```python
+    # Suggest new example patterns to ADD
+    def example_id_workflow():
+        # New example showing ID usage
+        pass
+    ```
+
+    Return the complete enhanced file in <code></code> tags without truncation.
+
+
+    Format:
+    <code>your_complete_enhanced_python_code_here</code>

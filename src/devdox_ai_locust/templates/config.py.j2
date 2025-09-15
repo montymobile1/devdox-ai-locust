@@ -1,0 +1,173 @@
+"""
+Configuration for Locust Load Tests
+"""
+
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Any
+from urllib.parse import urljoin
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+@dataclass
+class PerformanceThresholds:
+    """Performance thresholds for test validation"""
+    max_response_time_ms: int = 2000  # Maximum acceptable response time
+    max_95th_percentile_ms: int = 5000  # 95th percentile response time
+    max_error_rate_percent: float = 1.0  # Maximum error rate percentage
+    min_requests_per_second: float = 10.0  # Minimum RPS threshold
+
+
+@dataclass
+class LoadTestScenario:
+    """Load test scenario configuration"""
+    name: str
+    users: int
+    spawn_rate: int
+    run_time: str
+    description: str
+
+
+class LoadTestConfig:
+    """Main configuration class for load tests"""
+
+    def __init__(self):
+        # API Configuration
+        self.base_url = os.getenv('API_BASE_URL', '{{api_info.base_url}}')
+        self.api_version = os.getenv('API_VERSION', '{{api_info.version}}')
+        self.api_title = '{{api_info.title}}'
+
+        # Authentication
+        self.api_key = os.getenv('API_KEY')
+        self.auth_token = os.getenv('AUTH_TOKEN')
+        self.username = os.getenv('API_USERNAME')
+        self.password = os.getenv('API_PASSWORD')
+
+        # Load Test Parameters
+        self.users = int(os.getenv('LOCUST_USERS', '10'))
+        self.spawn_rate = int(os.getenv('LOCUST_SPAWN_RATE', '2'))
+        self.run_time = os.getenv('LOCUST_RUN_TIME', '5m')
+        self.host = os.getenv('LOCUST_HOST', self.base_url)
+
+        # Test Data Configuration
+        self.use_realistic_data = os.getenv('USE_REALISTIC_DATA', 'true').lower() == 'true'
+        self.data_seed = int(os.getenv('DATA_SEED', '42'))
+
+        # Monitoring and Reporting
+        self.enable_monitoring = os.getenv('ENABLE_MONITORING', 'true').lower() == 'true'
+        self.report_output_dir = os.getenv('REPORT_OUTPUT_DIR', './reports')
+        self.log_level = os.getenv('LOG_LEVEL', 'INFO')
+
+        # Performance Thresholds
+        self.thresholds = PerformanceThresholds(
+            max_response_time_ms=int(os.getenv('MAX_RESPONSE_TIME_MS', '2000')),
+            max_95th_percentile_ms=int(os.getenv('MAX_95TH_PERCENTILE_MS', '5000')),
+            max_error_rate_percent=float(os.getenv('MAX_ERROR_RATE_PERCENT', '1.0')),
+            min_requests_per_second=float(os.getenv('MIN_REQUESTS_PER_SECOND', '10.0'))
+        )
+
+        # Test Scenarios
+        self.scenarios = self._load_test_scenarios()
+
+        # Request Configuration
+        self.request_timeout = int(os.getenv('REQUEST_TIMEOUT', '30'))
+        self.max_retries = int(os.getenv('MAX_RETRIES', '3'))
+
+        # Load Balancing and Distribution
+        self.enable_distributed = os.getenv('ENABLE_DISTRIBUTED', 'false').lower() == 'true'
+        self.master_host = os.getenv('LOCUST_MASTER_HOST', 'localhost')
+        self.master_port = int(os.getenv('LOCUST_MASTER_PORT', '5557'))
+
+        # Feature Flags
+        self.enable_custom_flows = os.getenv('ENABLE_CUSTOM_FLOWS', 'true').lower() == 'true'
+        self.enable_response_validation = os.getenv('ENABLE_RESPONSE_VALIDATION', 'true').lower() == 'true'
+        self.enable_performance_monitoring = os.getenv('ENABLE_PERF_MONITORING', 'true').lower() == 'true'
+
+    def _load_test_scenarios(self) -> Dict[str, LoadTestScenario]:
+        """Load predefined test scenarios"""
+        return {
+            'smoke': LoadTestScenario(
+                name='Smoke Test',
+                users=5,
+                spawn_rate=1,
+                run_time='2m',
+                description='Quick smoke test to verify basic functionality'
+            ),
+            'load': LoadTestScenario(
+                name='Load Test',
+                users=50,
+                spawn_rate=5,
+                run_time='10m',
+                description='Standard load test with moderate user count'
+            ),
+            'stress': LoadTestScenario(
+                name='Stress Test',
+                users=200,
+                spawn_rate=10,
+                run_time='15m',
+                description='Stress test to find breaking points'
+            ),
+            'spike': LoadTestScenario(
+                name='Spike Test',
+                users=500,
+                spawn_rate=50,
+                run_time='5m',
+                description='Spike test with rapid user ramp-up'
+            ),
+            'soak': LoadTestScenario(
+                name='Soak Test',
+                users=100,
+                spawn_rate=5,
+                run_time='60m',
+                description='Long-running test to identify memory leaks'
+            )
+        }
+
+    def get_scenario(self, scenario_name: str) -> Optional[LoadTestScenario]:
+        """Get specific test scenario"""
+        return self.scenarios.get(scenario_name)
+
+    def get_headers(self) -> Dict[str, str]:
+        """Get default headers for requests"""
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'LoadTest/1.0'
+        }
+
+        if self.api_key:
+            headers['X-API-Key'] = self.api_key
+
+        if self.auth_token:
+            headers['Authorization'] = f'Bearer {self.auth_token}'
+
+        return headers
+
+    def get_full_url(self, path: str) -> str:
+        """Construct full URL from path"""
+        return urljoin(self.base_url, path.lstrip('/'))
+
+    def validate_config(self) -> List[str]:
+        """Validate configuration and return any errors"""
+        errors = []
+
+        if not self.base_url:
+            errors.append("Base URL is required")
+
+        if self.users <= 0:
+            errors.append("User count must be positive")
+
+        if self.spawn_rate <= 0:
+            errors.append("Spawn rate must be positive")
+
+        if self.spawn_rate > self.users:
+            errors.append("Spawn rate cannot exceed user count")
+
+        return errors
+
+
+# Global configuration instance
+config = LoadTestConfig()
+

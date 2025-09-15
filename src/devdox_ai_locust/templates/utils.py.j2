@@ -1,0 +1,335 @@
+"""
+Utility classes for Locust load testing
+"""
+
+import json
+import logging
+import time
+from datetime import datetime
+from typing import Dict, List, Any, Optional
+from pathlib import Path
+import csv
+from dataclasses import dataclass, asdict
+import statistics
+from collections import defaultdict
+
+import requests
+from locust.runners import MasterRunner
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ResponseMetric:
+    """Response metric data structure"""
+    method: str
+    endpoint: str
+    response_time: float
+    status_code: int
+    response_size: int
+    timestamp: datetime
+    success: bool
+    error_message: Optional[str] = None
+
+
+class ResponseValidator:
+    """Validates HTTP responses against expected criteria"""
+
+    def __init__(self):
+        self.validation_rules = {
+            'GET': {
+                'expected_status': [200, 202, 206],
+                'max_response_time_ms': 2000,
+                'required_headers': ['content-type'],
+                'forbidden_headers': ['x-debug', 'x-error-detail']
+            },
+            'POST': {
+                'expected_status': [200, 201, 202],
+                'max_response_time_ms': 3000,
+                'required_headers': ['content-type']
+            },
+            'PUT': {
+                'expected_status': [200, 202, 204],
+                'max_response_time_ms': 3000,
+                'required_headers': ['content-type']
+            },
+            'PATCH': {
+                'expected_status': [200, 202, 204],
+                'max_response_time_ms': 3000,
+                'required_headers': ['content-type']
+            },
+            'DELETE': {
+                'expected_status': [200, 202, 204],
+                'max_response_time_ms': 2000
+            }
+        }
+
+    def validate_response(self, response, method: str, endpoint: str) -> bool:
+        """Validate HTTP response against expected criteria"""
+        is_valid = True
+        method_upper = method.upper()
+        rules = self.validation_rules.get(method_upper, {})
+
+        # Validate status code
+        expected_status = rules.get('expected_status', [200])
+        if response.status_code not in expected_status:
+            logger.warning(f"Unexpected status code {response.status_code} for {method_upper} {endpoint}")
+            is_valid = False
+
+        # Validate response time
+        max_time = rules.get('max_response_time_ms', 5000)
+        if response.elapsed.total_seconds() * 1000 > max_time:
+            logger.warning(f"Slow response {response.elapsed.total_seconds() * 1000:.2f}ms for {method_upper} {endpoint}")
+            is_valid = False
+
+        # Check forbidden headers (security)
+        forbidden_headers = rules.get('forbidden_headers', [])
+        for header in forbidden_headers:
+            if header.lower() in [h.lower() for h in response.headers.keys()]:
+                logger.warning(f"Forbidden header '{header}' present for {method_upper} {endpoint}")
+                is_valid = False
+
+        # Validate JSON response structure
+        if response.status_code < 400 and 'application/json' in response.headers.get('content-type', ''):
+            try:
+                json_data = response.json()
+                if not self._validate_json_structure(json_data, method_upper, endpoint):
+                    is_valid = False
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON response for {method_upper} {endpoint}")
+                is_valid = False
+
+        return is_valid
+
+    def _validate_json_structure(self, json_data: Any, method: str, endpoint: str) -> bool:
+        """Validate JSON response structure"""
+        if method == 'GET' and isinstance(json_data, list):
+            if json_data and isinstance(json_data[0], dict):
+                return 'id' in json_data[0] or len(json_data[0]) > 0
+        elif method in ['POST', 'PUT', 'PATCH'] and isinstance(json_data, dict):
+            return len(json_data) > 0
+        return True
+
+    def add_custom_validation(self, method: str, validation_func):
+        """Add custom validation function for specific method"""
+        if not hasattr(self, 'custom_validators'):
+            self.custom_validators = {}
+        self.custom_validators[method] = validation_func
+
+
+class RequestLogger:
+    """Logs HTTP requests for debugging and analysis"""
+
+    def __init__(self, log_file: str = "requests.log"):
+        self.log_file = log_file
+        self.requests_logged = 0
+        self.file_handler = logging.FileHandler(log_file)
+        self.file_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        self.file_handler.setFormatter(formatter)
+
+        self.request_logger = logging.getLogger('request_logger')
+        self.request_logger.addHandler(self.file_handler)
+        self.request_logger.setLevel(logging.INFO)
+
+    @staticmethod
+    def log_request(method: str, url: str, kwargs: Dict):
+        logger.info(f"REQUEST: {method.upper()} {url}")
+        if 'params' in kwargs and kwargs['params']:
+            logger.debug(f"Query params: {kwargs['params']}")
+        if 'json' in kwargs and kwargs['json']:
+            logger.debug(f"JSON body: {json.dumps(kwargs['json'], indent=2)}")
+        if 'data' in kwargs and kwargs['data']:
+            logger.debug(f"Form data: {kwargs['data']}")
+
+    def log_response(self, response, method: str, url: str):
+        self.requests_logged += 1
+        log_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'method': method.upper(),
+            'url': url,
+            'status_code': response.status_code,
+            'response_time_ms': response.elapsed.total_seconds() * 1000,
+            'response_size': len(response.content) if response.content else 0
+        }
+        self.request_logger.info(json.dumps(log_entry))
+        if response.status_code >= 400:
+            logger.error(f"ERROR RESPONSE: {response.status_code} for {method.upper()} {url}")
+            if response.text:
+                logger.error(f"Error details: {response.text[:500]}")
+
+
+class PerformanceMonitor:
+    """Monitors and reports performance metrics"""
+
+    def __init__(self):
+        self.metrics: List[ResponseMetric] = []
+        self.start_time = None
+        self.end_time = None
+        self.request_counts = defaultdict(int)
+        self.error_counts = defaultdict(int)
+
+    def test_start(self):
+        self.start_time = datetime.now()
+        logger.info("Performance monitoring started")
+
+    def test_stop(self):
+        self.end_time = datetime.now()
+        logger.info("Performance monitoring stopped")
+
+    def record_response(self, response, method: str, endpoint: str):
+        metric = ResponseMetric(
+            method=method.upper(),
+            endpoint=endpoint,
+            response_time=response.elapsed.total_seconds() * 1000,
+            status_code=response.status_code,
+            response_size=len(response.content) if response.content else 0,
+            timestamp=datetime.now(),
+            success=response.status_code < 400
+        )
+        if not metric.success:
+            metric.error_message = response.text[:200]
+        self.metrics.append(metric)
+        endpoint_key = f"{method.upper()} {endpoint}"
+        self.request_counts[endpoint_key] += 1
+        if not metric.success:
+            self.error_counts[endpoint_key] += 1
+
+    def on_request_event(self, request_type, name, response_time, response_length, exception, context):
+        if exception:
+            logger.error(f"Request failed: {request_type} {name} - {exception}")
+
+    def get_statistics(self) -> Dict[str, Any]:
+        if not self.metrics:
+            return {}
+        response_times = [m.response_time for m in self.metrics]
+        successful_requests = [m for m in self.metrics if m.success]
+        stats = {
+            'total_requests': len(self.metrics),
+            'successful_requests': len(successful_requests),
+            'failed_requests': len(self.metrics) - len(successful_requests),
+            'error_rate': (len(self.metrics) - len(successful_requests)) / len(self.metrics) * 100,
+            'response_times': {
+                'min': min(response_times),
+                'max': max(response_times),
+                'mean': statistics.mean(response_times),
+                'median': statistics.median(response_times),
+                'p95': self._percentile(response_times, 95),
+                'p99': self._percentile(response_times, 99)
+            }
+        }
+        if self.start_time and self.end_time:
+            duration = (self.end_time - self.start_time).total_seconds()
+            stats['test_duration_seconds'] = duration
+            stats['requests_per_second'] = len(self.metrics) / duration
+        stats['endpoints'] = self._get_endpoint_stats()
+        return stats
+
+    def _percentile(self, data: List[float], percentile: int) -> float:
+        sorted_data = sorted(data)
+        index = int((percentile / 100) * len(sorted_data))
+        return sorted_data[min(index, len(sorted_data) - 1)]
+
+    def _get_endpoint_stats(self) -> Dict[str, Dict]:
+        endpoint_stats = {}
+        for endpoint_key in self.request_counts.keys():
+            endpoint_metrics = [m for m in self.metrics if f"{m.method} {m.endpoint}" == endpoint_key]
+            if endpoint_metrics:
+                response_times = [m.response_time for m in endpoint_metrics]
+                successful = len([m for m in endpoint_metrics if m.success])
+                endpoint_stats[endpoint_key] = {
+                    'total_requests': len(endpoint_metrics),
+                    'successful_requests': successful,
+                    'error_rate': (len(endpoint_metrics) - successful) / len(endpoint_metrics) * 100,
+                    'avg_response_time': statistics.mean(response_times),
+                    'p95_response_time': self._percentile(response_times, 95)
+                }
+        return endpoint_stats
+
+    def generate_report(self, output_dir: str = "./reports"):
+        Path(output_dir).mkdir(exist_ok=True)
+        stats = self.get_statistics()
+
+        json_file = Path(output_dir) / f"performance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(json_file, 'w') as f:
+            json.dump(stats, f, indent=2, default=str)
+
+        csv_file = Path(output_dir) / f"performance_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        with open(csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['timestamp', 'method', 'endpoint', 'response_time_ms', 'status_code', 'success'])
+            for metric in self.metrics:
+                writer.writerow([
+                    metric.timestamp,
+                    metric.method,
+                    metric.endpoint,
+                    metric.response_time,
+                    metric.status_code,
+                    metric.success
+                ])
+
+        self._generate_summary_report(stats, output_dir)
+        logger.info(f"Performance reports generated in {output_dir}")
+
+    def _generate_summary_report(self, stats: Dict, output_dir: str):
+        summary_file = Path(output_dir) / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(summary_file, 'w') as f:
+            f.write("PERFORMANCE TEST SUMMARY\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"Test Duration: {stats.get('test_duration_seconds', 0):.2f} seconds\n")
+            f.write(f"Total Requests: {stats.get('total_requests', 0)}\n")
+            f.write(f"Successful Requests: {stats.get('successful_requests', 0)}\n")
+            f.write(f"Failed Requests: {stats.get('failed_requests', 0)}\n")
+            f.write(f"Error Rate: {stats.get('error_rate', 0):.2f}%\n")
+            f.write(f"Requests/Second: {stats.get('requests_per_second', 0):.2f}\n\n")
+
+            response_times = stats.get('response_times', {})
+            f.write("RESPONSE TIMES\n")
+            f.write("-" * 20 + "\n")
+            f.write(f"Min: {response_times.get('min', 0):.2f}ms\n")
+            f.write(f"Max: {response_times.get('max', 0):.2f}ms\n")
+            f.write(f"Mean: {response_times.get('mean', 0):.2f}ms\n")
+            f.write(f"Median: {response_times.get('median', 0):.2f}ms\n")
+            f.write(f"95th Percentile: {response_times.get('p95', 0):.2f}ms\n")
+            f.write(f"99th Percentile: {response_times.get('p99', 0):.2f}ms\n\n")
+
+            endpoints = stats.get('endpoints', {})
+            if endpoints:
+                f.write("PER-ENDPOINT STATISTICS\n")
+                f.write("-" * 30 + "\n")
+                for endpoint, endpoint_stats in endpoints.items():
+                    f.write(f"\n{endpoint}:\n")
+                    f.write(f"  Requests: {endpoint_stats['total_requests']}\n")
+                    f.write(f"  Error Rate: {endpoint_stats['error_rate']:.2f}%\n")
+                    f.write(f"  Avg Response Time: {endpoint_stats['avg_response_time']:.2f}ms\n")
+                    f.write(f"  95th Percentile: {endpoint_stats['p95_response_time']:.2f}ms\n")
+
+
+class DataManager:
+    """Manages test data and state across users"""
+
+    def __init__(self):
+        self.shared_data = {}
+        self.user_data = {}
+
+    def store_shared_data(self, key: str, value: Any):
+        self.shared_data[key] = value
+
+    def get_shared_data(self, key: str) -> Any:
+        return self.shared_data.get(key)
+
+    def store_user_data(self, user_id: str, key: str, value: Any):
+        if user_id not in self.user_data:
+            self.user_data[user_id] = {}
+        self.user_data[user_id][key] = value
+
+    def get_user_data(self, user_id: str, key: str) -> Any:
+        return self.user_data.get(user_id, {}).get(key)
+
+    def cleanup_user_data(self, user_id: str):
+        if user_id in self.user_data:
+            del self.user_data[user_id]
+
+
+# Global instances
+data_manager = DataManager()
