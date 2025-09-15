@@ -171,7 +171,6 @@ async def _generate_and_create_tests(api_key, endpoints, api_info, output_dir,
         test_files, test_directories = await generator.generate_from_endpoints(
             endpoints=endpoints,
             api_info=api_info,
-            output_dir=str(output_dir),
             **generation_kwargs
         )
 

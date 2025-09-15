@@ -217,7 +217,6 @@ class HybridLocustGenerator:
         self,
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-        output_dir: str = "locust_tests",
     ) ->  Tuple[Dict[str, str], Dict[str, str]]:
         """
         Generate Locust tests using hybrid approach
