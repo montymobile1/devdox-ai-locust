@@ -83,38 +83,6 @@ async def _fetch_from_url(url: str) -> str:
             raise httpx.HTTPError(f"Request failed for URL {url}: {str(e)}")
 
 
-async def _fetch_from_file(file_path: str) -> str:
-    """Fetch schema content from file path."""
-    path = Path(file_path)
-
-    # Resolve relative paths
-    if not path.is_absolute():
-        path = path.resolve()
-
-    if not path.exists():
-        raise FileNotFoundError(f"File not found: {path}")
-
-    if not path.is_file():
-        raise ValueError(f"Path is not a file: {path}")
-
-    logger.info(f"Reading schema from file: {path}")
-
-    try:
-        # Use asyncio to read file without blocking
-        content = await asyncio.to_thread(path.read_text, encoding='utf-8')
-
-        if not content or not content.strip():
-            raise ValueError(f"Empty file: {path}")
-
-        return content.strip()
-
-    except UnicodeDecodeError:
-        # Try with different encoding if UTF-8 fails
-        try:
-            content = await asyncio.to_thread(path.read_text, encoding='latin-1')
-            return content.strip()
-        except Exception as e:
-            raise ValueError(f"Failed to read file {path} with encoding issues: {str(e)}")
 
 
 def _sanitize_filename(self, filename: str) -> str:

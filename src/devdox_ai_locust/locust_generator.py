@@ -37,17 +37,19 @@ class TestDataConfig:
 class LocustTestGenerator:
     """Generates Locust performance test files from OpenAPI endpoints"""
 
-    def __init__(self, test_config: TestDataConfig = None):
+    def __init__(self, test_config: TestDataConfig = None, jinja_env: Environment = None):
         self.test_config = test_config or TestDataConfig()
         self.generated_files = {}
         self.auth_token = None
         self.user_data = {}
         self.request_count = 0
 
+
         self.template_dir = self._find_project_root() / "templates"
 
-        self.template_dir.mkdir(exist_ok=True)
-        self._setup_templates()
+        self.template_dir.mkdir(parents=True, exist_ok=True)
+
+        self.jinja_env = jinja_env or self._setup_templates()
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -65,7 +67,6 @@ class LocustTestGenerator:
             autoescape=False
         )
 
-
     def fix_indent(self, base_files: Dict[str, str]) -> Dict[str, str]:
         """Fix indentation for generated files"""
         """
@@ -79,6 +80,7 @@ class LocustTestGenerator:
                 if isinstance(value, str):
                     try:
                         formatted_code = black.format_str(value, mode=mode)
+
                         updated_data[key] = formatted_code
                     except Exception:
                         # If it's not valid Python code, keep the original
@@ -108,22 +110,28 @@ class LocustTestGenerator:
         Returns:
             Dictionary of filename -> file content
         """
-        grouped_enpoint= self._group_endpoints_by_tag(endpoints)
+        try:
 
-        workflows_files= self.generate_workflows(grouped_enpoint, api_info)
+            grouped_enpoint= self._group_endpoints_by_tag(endpoints)
 
-        self.generated_files = {
+            workflows_files= self.generate_workflows(grouped_enpoint, api_info)
 
-            "locustfile.py": self._generate_main_locustfile(endpoints, api_info, list(grouped_enpoint.keys())),
-            "test_data.py": self._generate_test_data_file(),
-            "config.py": self._generate_config_file(api_info),
-            "utils.py": self._generate_utils_file(),
-            "custom_flows.py": self._generate_custom_flows_file(),
-            "requirements.txt": self._generate_requirements_file(),
-            'README.md': self._generate_readme_file(api_info),
-            ".env.example": self._generate_env_example(api_info)
-        }
-        return self.generated_files, workflows_files, grouped_enpoint
+            self.generated_files = {
+
+                "locustfile.py": self._generate_main_locustfile(endpoints, api_info, list(grouped_enpoint.keys())),
+                "test_data.py": self._generate_test_data_file(),
+                "config.py": self._generate_config_file(api_info),
+                "utils.py": self._generate_utils_file(),
+                "custom_flows.py": self._generate_custom_flows_file(),
+                "requirements.txt": self._generate_requirements_file(),
+                'README.md': self._generate_readme_file(api_info),
+                ".env.example": self._generate_env_example(api_info)
+            }
+
+            return self.generated_files, workflows_files, grouped_enpoint
+        except Exception as e:
+            logger.error(f"Failed to generate test suite: {e}")
+            return {}, [], {}
 
 
 
@@ -149,11 +157,9 @@ class LocustTestGenerator:
                             f"⚠️ Failed to generate task method for {getattr(endpoint, 'path', '?')}: {e}"
                         )
                         continue
-
                 if not task_methods:
                     logger.warning(f"No task methods generated from group {group}")
                     task_methods.append(self._generate_default_task_method())
-
                 indented_task_methods = self._indent_methods(task_methods, indent_level=1)
                 file_content = self._build_endpoint_template(api_info, indented_task_methods, group)
                 file_name = f"{group}_workflow.py".replace("-", "_")
@@ -166,6 +172,7 @@ class LocustTestGenerator:
 
         except Exception as e:
             logger.error(f"❌ Failed to generate test suite: {e}")
+
             return []
 
 
@@ -394,7 +401,9 @@ class LocustTestGenerator:
 
         code_lines = []
         for param in path_params:
+
             if param.type.startswith("integer"):
+
                 code_lines.append(f"{param.name} = data_generator.generate_integer()")
             elif param.type == "string":
                 if "id" in param.name.lower():
@@ -403,6 +412,7 @@ class LocustTestGenerator:
                     code_lines.append(
                         f"{param.name} = data_generator.generate_string()"
                     )
+
             else:
                 code_lines.append(
                     f'{param.name} = data_generator.generate_value("{param.type}")'

@@ -235,7 +235,6 @@ class HybridLocustGenerator:
                 endpoints, api_info
             )
 
-
             base_files = self.template_generator.fix_indent(base_files)
 
             # Step 2: Enhance with AI if available
@@ -264,11 +263,10 @@ class HybridLocustGenerator:
             return base_files,directory_files
 
         except Exception as e:
-            logger.error(f"Hybrid generation failed: {e}")
-            # Fallback to template-only
-            return self.template_generator.generate_from_endpoints(
-                endpoints, api_info, output_dir
-            ),[]
+            logger.error(f"Hybrid generation failed line 267 : {e}")
+
+
+            return {},[]
 
     def _should_enhance(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]

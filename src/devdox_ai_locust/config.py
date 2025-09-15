@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic_settings import BaseSettings
 
 
-search_path = "vault,public"
 
 class Settings(BaseSettings):
     """Application settings."""
