@@ -4,13 +4,18 @@ Pytest configuration and shared fixtures for devdox-ai-locust tests
 
 import asyncio
 import pytest
-from unittest.mock import Mock, AsyncMock, MagicMock
+from unittest.mock import Mock, AsyncMock
 from pathlib import Path
-from typing import Dict, List, Any
 import tempfile
 import shutil
 
-from devdox_ai_locust.utils.open_ai_parser import Endpoint, Parameter, RequestBody, Response, ParameterType
+from devdox_ai_locust.utils.open_ai_parser import (
+    Endpoint,
+    Parameter,
+    RequestBody,
+    Response,
+    ParameterType,
+)
 from devdox_ai_locust.schemas.processing_result import SwaggerProcessingRequest
 
 
@@ -38,11 +43,9 @@ def sample_openapi_schema():
         "info": {
             "title": "Test API",
             "version": "1.0.0",
-            "description": "A test API for load testing"
+            "description": "A test API for load testing",
         },
-        "servers": [
-            {"url": "https://api.example.com/v1"}
-        ],
+        "servers": [{"url": "https://api.example.com/v1"}],
         "paths": {
             "/users": {
                 "get": {
@@ -55,7 +58,7 @@ def sample_openapi_schema():
                             "name": "limit",
                             "in": "query",
                             "required": False,
-                            "schema": {"type": "integer", "minimum": 1, "maximum": 100}
+                            "schema": {"type": "integer", "minimum": 1, "maximum": 100},
                         }
                     ],
                     "responses": {
@@ -65,12 +68,12 @@ def sample_openapi_schema():
                                 "application/json": {
                                     "schema": {
                                         "type": "array",
-                                        "items": {"$ref": "#/components/schemas/User"}
+                                        "items": {"$ref": "#/components/schemas/User"},
                                     }
                                 }
-                            }
+                            },
                         }
-                    }
+                    },
                 },
                 "post": {
                     "operationId": "createUser",
@@ -82,7 +85,7 @@ def sample_openapi_schema():
                             "application/json": {
                                 "schema": {"$ref": "#/components/schemas/CreateUser"}
                             }
-                        }
+                        },
                     },
                     "responses": {
                         "201": {
@@ -91,10 +94,10 @@ def sample_openapi_schema():
                                 "application/json": {
                                     "schema": {"$ref": "#/components/schemas/User"}
                                 }
-                            }
+                            },
                         }
-                    }
-                }
+                    },
+                },
             },
             "/users/{id}": {
                 "get": {
@@ -106,7 +109,7 @@ def sample_openapi_schema():
                             "name": "id",
                             "in": "path",
                             "required": True,
-                            "schema": {"type": "integer"}
+                            "schema": {"type": "integer"},
                         }
                     ],
                     "responses": {
@@ -116,12 +119,10 @@ def sample_openapi_schema():
                                 "application/json": {
                                     "schema": {"$ref": "#/components/schemas/User"}
                                 }
-                            }
+                            },
                         },
-                        "404": {
-                            "description": "User not found"
-                        }
-                    }
+                        "404": {"description": "User not found"},
+                    },
                 }
             },
             "/auth/login": {
@@ -137,12 +138,12 @@ def sample_openapi_schema():
                                     "type": "object",
                                     "properties": {
                                         "username": {"type": "string"},
-                                        "password": {"type": "string"}
+                                        "password": {"type": "string"},
                                     },
-                                    "required": ["username", "password"]
+                                    "required": ["username", "password"],
                                 }
                             }
-                        }
+                        },
                     },
                     "responses": {
                         "200": {
@@ -153,15 +154,17 @@ def sample_openapi_schema():
                                         "type": "object",
                                         "properties": {
                                             "token": {"type": "string"},
-                                            "user": {"$ref": "#/components/schemas/User"}
-                                        }
+                                            "user": {
+                                                "$ref": "#/components/schemas/User"
+                                            },
+                                        },
                                     }
                                 }
-                            }
+                            },
                         }
-                    }
+                    },
                 }
-            }
+            },
         },
         "components": {
             "schemas": {
@@ -171,21 +174,21 @@ def sample_openapi_schema():
                         "id": {"type": "integer"},
                         "username": {"type": "string"},
                         "email": {"type": "string", "format": "email"},
-                        "createdAt": {"type": "string", "format": "date-time"}
+                        "createdAt": {"type": "string", "format": "date-time"},
                     },
-                    "required": ["id", "username", "email"]
+                    "required": ["id", "username", "email"],
                 },
                 "CreateUser": {
                     "type": "object",
                     "properties": {
                         "username": {"type": "string"},
                         "email": {"type": "string", "format": "email"},
-                        "password": {"type": "string"}
+                        "password": {"type": "string"},
                     },
-                    "required": ["username", "email", "password"]
-                }
+                    "required": ["username", "email", "password"],
+                },
             }
-        }
+        },
     }
 
 
@@ -205,7 +208,7 @@ def sample_endpoints():
                     location=ParameterType.QUERY,
                     required=False,
                     type="integer",
-                    description="Maximum number of users to return"
+                    description="Maximum number of users to return",
                 )
             ],
             request_body=None,
@@ -214,10 +217,10 @@ def sample_endpoints():
                     status_code="200",
                     description="Successful response",
                     content_type="application/json",
-                    schema={"type": "array", "items": {"type": "object"}}
+                    schema={"type": "array", "items": {"type": "object"}},
                 )
             ],
-            tags=["users"]
+            tags=["users"],
         ),
         Endpoint(
             path="/users",
@@ -233,21 +236,21 @@ def sample_endpoints():
                     "properties": {
                         "username": {"type": "string"},
                         "email": {"type": "string"},
-                        "password": {"type": "string"}
+                        "password": {"type": "string"},
                     },
-                    "required": ["username", "email", "password"]
+                    "required": ["username", "email", "password"],
                 },
-                required=True
+                required=True,
             ),
             responses=[
                 Response(
                     status_code="201",
                     description="User created",
                     content_type="application/json",
-                    schema={"type": "object"}
+                    schema={"type": "object"},
                 )
             ],
-            tags=["users"]
+            tags=["users"],
         ),
         Endpoint(
             path="/users/{id}",
@@ -261,7 +264,7 @@ def sample_endpoints():
                     location=ParameterType.PATH,
                     required=True,
                     type="integer",
-                    description="User ID"
+                    description="User ID",
                 )
             ],
             request_body=None,
@@ -270,14 +273,11 @@ def sample_endpoints():
                     status_code="200",
                     description="User found",
                     content_type="application/json",
-                    schema={"type": "object"}
+                    schema={"type": "object"},
                 ),
-                Response(
-                    status_code="404",
-                    description="User not found"
-                )
+                Response(status_code="404", description="User not found"),
             ],
-            tags=["users"]
+            tags=["users"],
         ),
         Endpoint(
             path="/auth/login",
@@ -292,11 +292,11 @@ def sample_endpoints():
                     "type": "object",
                     "properties": {
                         "username": {"type": "string"},
-                        "password": {"type": "string"}
+                        "password": {"type": "string"},
                     },
-                    "required": ["username", "password"]
+                    "required": ["username", "password"],
                 },
-                required=True
+                required=True,
             ),
             responses=[
                 Response(
@@ -307,13 +307,13 @@ def sample_endpoints():
                         "type": "object",
                         "properties": {
                             "token": {"type": "string"},
-                            "user": {"type": "object"}
-                        }
-                    }
+                            "user": {"type": "object"},
+                        },
+                    },
                 )
             ],
-            tags=["auth"]
-        )
+            tags=["auth"],
+        ),
     ]
 
 
@@ -325,7 +325,7 @@ def sample_api_info():
         "version": "1.0.0",
         "description": "A test API for load testing",
         "base_url": "https://api.example.com/v1",
-        "security_schemes": {}
+        "security_schemes": {},
     }
 
 
@@ -336,7 +336,7 @@ def mock_together_client():
     mock_response = Mock()
     mock_choice = Mock()
     mock_message = Mock()
-    
+
     # Configure the mock response
     mock_message.content = """<code>
 import locust
@@ -350,13 +350,13 @@ class TestUser(HttpUser):
         response = self.client.get("/test")
         assert response.status_code == 200
 </code>"""
-    
+
     mock_choice.message = mock_message
     mock_response.choices = [mock_choice]
-    
+
     # Mock the chat completions create method
     mock_client.chat.completions.create.return_value = mock_response
-    
+
     return mock_client
 
 
@@ -369,20 +369,18 @@ def mock_httpx_client():
     mock_response.text = '{"openapi": "3.0.0", "info": {"title": "Test API"}}'
     mock_response.headers = {"content-type": "application/json"}
     mock_response.raise_for_status.return_value = None
-    
+
     mock_client.get.return_value = mock_response
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = None
-    
+
     return mock_client
 
 
 @pytest.fixture
 def swagger_processing_request():
     """Sample SwaggerProcessingRequest for testing."""
-    return SwaggerProcessingRequest(
-        swagger_url="https://api.example.com/swagger.json"
-    )
+    return SwaggerProcessingRequest(swagger_url="https://api.example.com/swagger.json")
 
 
 @pytest.fixture
@@ -411,24 +409,25 @@ API_BASE_URL = "https://api.example.com"
         "requirements.txt": """
 locust>=2.0.0
 requests>=2.28.0
-        """
+        """,
     }
 
 
 @pytest.fixture
 def mock_file_system(temp_dir):
     """Mock file system operations for testing."""
+
     def mock_write_file(path: Path, content: str):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-    
+
     def mock_read_file(path: Path) -> str:
         return path.read_text()
-    
+
     return {
         "write_file": mock_write_file,
         "read_file": mock_read_file,
-        "temp_dir": temp_dir
+        "temp_dir": temp_dir,
     }
 
 
@@ -452,6 +451,7 @@ def mock_jinja_env(mock_jinja_template):
 def setup_logging():
     """Setup logging for tests."""
     import logging
+
     logging.basicConfig(level=logging.DEBUG)
 
 
@@ -489,6 +489,7 @@ paths:
 def ai_enhancement_config():
     """Sample AI enhancement configuration."""
     from devdox_ai_locust.hybrid_loctus_generator import AIEnhancementConfig
+
     return AIEnhancementConfig(
         model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
         max_tokens=4000,
@@ -498,5 +499,5 @@ def ai_enhancement_config():
         enhance_test_data=True,
         enhance_validation=True,
         create_domain_flows=True,
-        update_main_locust=True
+        update_main_locust=True,
     )

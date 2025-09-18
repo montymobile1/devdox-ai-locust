@@ -3,22 +3,19 @@ Tests for CLI module
 """
 
 import pytest
-import asyncio
 import tempfile
-import sys
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, patch
 from click.testing import CliRunner
-from pathlib import Path
 
 from devdox_ai_locust.cli import (
-    cli, 
-    _async_generate, 
-    _initialize_config, 
+    cli,
+    _async_generate,
+    _initialize_config,
     _setup_output_directory,
     _display_configuration,
     _show_results,
     _show_generated_files,
-    _show_run_instructions
+    _show_run_instructions,
 )
 from devdox_ai_locust.config import Settings
 
@@ -42,33 +39,33 @@ class TestCLI:
 
     def test_cli_help(self, cli_runner):
         """Test CLI help command."""
-        result = cli_runner.invoke(cli, ['--help'])
+        result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "DevDox AI LoadTest" in result.output
 
     def test_cli_version(self, cli_runner):
         """Test CLI version command."""
-        result = cli_runner.invoke(cli, ['--version'])
+        result = cli_runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
 
     def test_cli_verbose_flag(self, cli_runner):
         """Test CLI verbose flag."""
-        result = cli_runner.invoke(cli, ['--verbose', '--help'])
+        result = cli_runner.invoke(cli, ["--verbose", "--help"])
         assert result.exit_code == 0
 
     def test_generate_command_help(self, cli_runner):
         """Test generate command help."""
-        result = cli_runner.invoke(cli, ['generate', '--help'])
+        result = cli_runner.invoke(cli, ["generate", "--help"])
         assert result.exit_code == 0
         assert "Generate Locust test files" in result.output
 
     def test_run_command_help(self, cli_runner):
         """Test run command help."""
-        result = cli_runner.invoke(cli, ['run', '--help'])
+        result = cli_runner.invoke(cli, ["run", "--help"])
         assert result.exit_code == 0
         assert "Run generated Locust tests" in result.output
 
-    @patch('devdox_ai_locust.cli.Settings')
+    @patch("devdox_ai_locust.cli.Settings")
     def test_initialize_config_with_api_key(self, mock_settings_class):
         """Test config initialization with API key."""
         mock_settings = Mock()
@@ -77,11 +74,11 @@ class TestCLI:
         mock_settings_class.return_value = mock_settings
 
         config, api_key = _initialize_config(None, "provided-key")
-        
+
         assert api_key == "provided-key"
         assert config == mock_settings
 
-    @patch('devdox_ai_locust.cli.Settings')
+    @patch("devdox_ai_locust.cli.Settings")
     def test_initialize_config_from_settings(self, mock_settings_class):
         """Test config initialization from settings."""
         mock_settings = Mock()
@@ -90,12 +87,12 @@ class TestCLI:
         mock_settings_class.return_value = mock_settings
 
         config, api_key = _initialize_config(None, None)
-        
+
         assert api_key == "settings-key"
         assert config == mock_settings
 
-    @patch('devdox_ai_locust.cli.Settings')
-    @patch('devdox_ai_locust.cli.sys.exit')
+    @patch("devdox_ai_locust.cli.Settings")
+    @patch("devdox_ai_locust.cli.sys.exit")
     def test_initialize_config_no_api_key(self, mock_exit, mock_settings_class):
         """Test config initialization without API key."""
         mock_settings = Mock()
@@ -104,10 +101,10 @@ class TestCLI:
         mock_settings_class.return_value = mock_settings
 
         _initialize_config(None, None)
-        
+
         mock_exit.assert_called_once_with(1)
 
-    @patch('devdox_ai_locust.cli.Settings')
+    @patch("devdox_ai_locust.cli.Settings")
     def test_initialize_config_with_config_file(self, mock_settings_class):
         """Test config initialization with config file."""
         mock_settings = Mock()
@@ -116,7 +113,7 @@ class TestCLI:
         mock_settings_class.return_value = mock_settings
 
         config, api_key = _initialize_config("/path/to/config.yaml", None)
-        
+
         assert api_key == "config-file-key"
         assert config == mock_settings
         mock_settings.load_from_file.assert_called_once_with("/path/to/config.yaml")
@@ -125,108 +122,113 @@ class TestCLI:
         """Test output directory setup."""
         output_dir = temp_dir / "test_output"
         result = _setup_output_directory(str(output_dir))
-        
+
         assert result == output_dir
         assert output_dir.exists()
 
-    @patch('devdox_ai_locust.cli.asyncio.run')
-    @patch('devdox_ai_locust.cli._async_generate')
-    def test_generate_command_basic(self, mock_async_generate, mock_asyncio_run, cli_runner):
+    @patch("devdox_ai_locust.cli.asyncio.run")
+    @patch("devdox_ai_locust.cli._async_generate")
+    def test_generate_command_basic(
+        self, mock_async_generate, mock_asyncio_run, cli_runner
+    ):
         """Test basic generate command."""
         mock_async_generate.return_value = None
-        
+
         with tempfile.TemporaryDirectory() as temp_dir:
-            result = cli_runner.invoke(cli, [
-                'generate', 
-                'https://api.example.com/swagger.json',
-                '--output', temp_dir,
-                '--together-api-key', 'test-key'
-            ])
-            
+            _ = cli_runner.invoke(
+                cli,
+                [
+                    "generate",
+                    "https://api.example.com/swagger.json",
+                    "--output",
+                    temp_dir,
+                    "--together-api-key",
+                    "test-key",
+                ],
+            )
+
             # Should not crash, might fail due to async issues in testing
             mock_asyncio_run.assert_called_once()
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_run_command_basic(self, mock_subprocess, cli_runner, temp_dir):
         """Test basic run command."""
         # Create a dummy test file
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
-        
-        result = cli_runner.invoke(cli, [
-            'run',
-            str(test_file),
-            '--host', 'http://localhost:8000',
-            '--users', '10',
-            '--spawn-rate', '2'
-        ])
-        
+
+        _ = cli_runner.invoke(
+            cli,
+            [
+                "run",
+                str(test_file),
+                "--host",
+                "http://localhost:8000",
+                "--users",
+                "10",
+                "--spawn-rate",
+                "2",
+            ],
+        )
+
         # Should call subprocess.run with locust command
         mock_subprocess.assert_called_once()
         args = mock_subprocess.call_args[0][0]
-        assert 'locust' in args
+        assert "locust" in args
         assert str(test_file) in args
-        assert 'http://localhost:8000' in args
+        assert "http://localhost:8000" in args
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_run_command_headless(self, mock_subprocess, cli_runner, temp_dir):
         """Test run command with headless flag."""
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
-        
-        result = cli_runner.invoke(cli, [
-            'run',
-            str(test_file),
-            '--host', 'http://localhost:8000',
-            '--headless'
-        ])
-        
+
+        _ = cli_runner.invoke(
+            cli,
+            ["run", str(test_file), "--host", "http://localhost:8000", "--headless"],
+        )
+
         mock_subprocess.assert_called_once()
         args = mock_subprocess.call_args[0][0]
-        assert '--headless' in args
+        assert "--headless" in args
 
     def test_run_command_file_not_found(self, cli_runner):
         """Test run command with non-existent file."""
-        result = cli_runner.invoke(cli, [
-            'run',
-            '/non/existent/file.py',
-            '--host', 'http://localhost:8000'
-        ])
-        
+        result = cli_runner.invoke(
+            cli, ["run", "/non/existent/file.py", "--host", "http://localhost:8000"]
+        )
+
         assert result.exit_code != 0
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_run_command_subprocess_error(self, mock_subprocess, cli_runner, temp_dir):
         """Test run command with subprocess error."""
         from subprocess import CalledProcessError
-        
+
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
-        
-        mock_subprocess.side_effect = CalledProcessError(1, 'locust')
-        
-        result = cli_runner.invoke(cli, [
-            'run',
-            str(test_file),
-            '--host', 'http://localhost:8000'
-        ])
-        
+
+        mock_subprocess.side_effect = CalledProcessError(1, "locust")
+
+        result = cli_runner.invoke(
+            cli, ["run", str(test_file), "--host", "http://localhost:8000"]
+        )
+
         assert result.exit_code == 1
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_run_command_locust_not_found(self, mock_subprocess, cli_runner, temp_dir):
         """Test run command when locust is not installed."""
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
-        
+
         mock_subprocess.side_effect = FileNotFoundError()
-        
-        result = cli_runner.invoke(cli, [
-            'run',
-            str(test_file),
-            '--host', 'http://localhost:8000'
-        ])
-        
+
+        result = cli_runner.invoke(
+            cli, ["run", str(test_file), "--host", "http://localhost:8000"]
+        )
+
         assert result.exit_code == 1
 
 
@@ -234,11 +236,11 @@ class TestAsyncGenerate:
     """Test async generate functionality."""
 
     @pytest.mark.asyncio
-    @patch('devdox_ai_locust.cli._initialize_config')
-    @patch('devdox_ai_locust.cli._setup_output_directory')
-    @patch('devdox_ai_locust.cli._process_api_schema')
-    @patch('devdox_ai_locust.cli._generate_and_create_tests')
-    @patch('devdox_ai_locust.cli._show_results')
+    @patch("devdox_ai_locust.cli._initialize_config")
+    @patch("devdox_ai_locust.cli._setup_output_directory")
+    @patch("devdox_ai_locust.cli._process_api_schema")
+    @patch("devdox_ai_locust.cli._generate_and_create_tests")
+    @patch("devdox_ai_locust.cli._show_results")
     async def test_async_generate_success(
         self,
         mock_show_results,
@@ -248,7 +250,7 @@ class TestAsyncGenerate:
         mock_init_config,
         temp_dir,
         sample_endpoints,
-        sample_api_info
+        sample_api_info,
     ):
         """Test successful async generate."""
         # Setup mocks
@@ -256,27 +258,27 @@ class TestAsyncGenerate:
         mock_setup_output.return_value = temp_dir
         mock_process_schema.return_value = (None, sample_endpoints, sample_api_info)
         mock_generate_tests.return_value = ["test_file.py"]
-        
+
         # Create mock context
         mock_ctx = Mock()
-        mock_ctx.obj = {'verbose': False}
-        
+        mock_ctx.obj = {"verbose": False}
+
         # Test the function
         await _async_generate(
             mock_ctx,
-            'https://api.example.com/swagger.json',
-            'output',
+            "https://api.example.com/swagger.json",
+            "output",
             None,  # config
-            10,    # users
-            2,     # spawn_rate
-            '5m',  # run_time
+            10,  # users
+            2,  # spawn_rate
+            "5m",  # run_time
             None,  # host
             True,  # auth
-            False, # dry_run
+            False,  # dry_run
             None,  # custom_requirement
-            'test-api-key'
+            "test-api-key",
         )
-        
+
         # Verify calls
         mock_init_config.assert_called_once()
         mock_setup_output.assert_called_once()
@@ -285,40 +287,44 @@ class TestAsyncGenerate:
         mock_show_results.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch('devdox_ai_locust.cli._initialize_config')
-    @patch('devdox_ai_locust.cli._setup_output_directory')
-    @patch('devdox_ai_locust.cli._process_api_schema')
+    @patch("devdox_ai_locust.cli._initialize_config")
+    @patch("devdox_ai_locust.cli._setup_output_directory")
+    @patch("devdox_ai_locust.cli._process_api_schema")
     async def test_async_generate_schema_error(
-        self,
-        mock_process_schema,
-        mock_setup_output,
-        mock_init_config,
-        temp_dir
+        self, mock_process_schema, mock_setup_output, mock_init_config, temp_dir
     ):
         """Test async generate with schema processing error."""
         # Setup mocks
         mock_init_config.return_value = (Mock(), "test-api-key")
         mock_setup_output.return_value = temp_dir
         mock_process_schema.side_effect = Exception("Schema error")
-        
+
         # Create mock context
         mock_ctx = Mock()
-        mock_ctx.obj = {'verbose': False}
-        
+        mock_ctx.obj = {"verbose": False}
+
         # Test should raise exception
         with pytest.raises(Exception, match="Schema error"):
             await _async_generate(
                 mock_ctx,
-                'https://api.example.com/swagger.json',
-                'output',
-                None, 10, 2, '5m', None, True, False, None, 'test-api-key'
+                "https://api.example.com/swagger.json",
+                "output",
+                None,
+                10,
+                2,
+                "5m",
+                None,
+                True,
+                False,
+                None,
+                "test-api-key",
             )
 
     @pytest.mark.asyncio
-    @patch('devdox_ai_locust.cli._initialize_config')
-    @patch('devdox_ai_locust.cli._setup_output_directory')
-    @patch('devdox_ai_locust.cli._process_api_schema')
-    @patch('devdox_ai_locust.cli._generate_and_create_tests')
+    @patch("devdox_ai_locust.cli._initialize_config")
+    @patch("devdox_ai_locust.cli._setup_output_directory")
+    @patch("devdox_ai_locust.cli._process_api_schema")
+    @patch("devdox_ai_locust.cli._generate_and_create_tests")
     async def test_async_generate_with_verbose(
         self,
         mock_generate_tests,
@@ -327,7 +333,7 @@ class TestAsyncGenerate:
         mock_init_config,
         temp_dir,
         sample_endpoints,
-        sample_api_info
+        sample_api_info,
     ):
         """Test async generate with verbose output."""
         # Setup mocks
@@ -335,21 +341,29 @@ class TestAsyncGenerate:
         mock_setup_output.return_value = temp_dir
         mock_process_schema.return_value = (None, sample_endpoints, sample_api_info)
         mock_generate_tests.return_value = ["test_file.py"]
-        
+
         # Create mock context with verbose=True
         mock_ctx = Mock()
-        mock_ctx.obj = {'verbose': True}
-        
+        mock_ctx.obj = {"verbose": True}
+
         # Test the function
-        with patch('devdox_ai_locust.cli._display_configuration') as mock_display:
-            with patch('devdox_ai_locust.cli._show_results') as mock_show:
+        with patch("devdox_ai_locust.cli._display_configuration") as mock_display:
+            with patch("devdox_ai_locust.cli._show_results"):
                 await _async_generate(
                     mock_ctx,
-                    'https://api.example.com/swagger.json',
-                    'output',
-                    None, 10, 2, '5m', None, True, False, None, 'test-api-key'
+                    "https://api.example.com/swagger.json",
+                    "output",
+                    None,
+                    10,
+                    2,
+                    "5m",
+                    None,
+                    True,
+                    False,
+                    None,
+                    "test-api-key",
                 )
-                
+
                 # Should call display configuration when verbose
                 mock_display.assert_called_once()
 
@@ -369,20 +383,20 @@ class TestCLIHelperFunctions:
             host="http://localhost:8000",
             auth=True,
             custom_requirement="test requirement",
-            dry_run=False
+            dry_run=False,
         )
 
     def test_show_generated_files_verbose(self):
         """Test showing generated files in verbose mode."""
         files = ["file1.py", "file2.py", "file3.py"]
-        
+
         # Should not raise an exception
         _show_generated_files(files, verbose=True)
 
     def test_show_generated_files_non_verbose(self):
         """Test showing generated files in non-verbose mode."""
         files = [f"file{i}.py" for i in range(15)]  # More than 10 files
-        
+
         # Should not raise an exception
         _show_generated_files(files, verbose=False)
 
@@ -391,14 +405,14 @@ class TestCLIHelperFunctions:
         # Create a locustfile.py
         locustfile = temp_dir / "locustfile.py"
         locustfile.write_text("# Locust file")
-        
+
         # Should not raise an exception
         _show_run_instructions(
             output_dir=temp_dir,
             users=10,
             spawn_rate=2.0,
             run_time="5m",
-            host="http://localhost:8000"
+            host="http://localhost:8000",
         )
 
     def test_show_run_instructions_no_locustfile(self, temp_dir):
@@ -406,23 +420,23 @@ class TestCLIHelperFunctions:
         # Create some other Python file
         test_file = temp_dir / "test.py"
         test_file.write_text("# Test file")
-        
+
         # Should not raise an exception
         _show_run_instructions(
             output_dir=temp_dir,
             users=10,
             spawn_rate=2.0,
             run_time="5m",
-            host=None  # Test with None host
+            host=None,  # Test with None host
         )
 
-    @patch('devdox_ai_locust.cli.sys.exit')
+    @patch("devdox_ai_locust.cli.sys.exit")
     def test_show_results_no_files(self, mock_exit, temp_dir):
         """Test show results when no files were created."""
         from datetime import datetime, timezone
-        
+
         start_time = datetime.now(timezone.utc)
-        
+
         _show_results(
             created_files=[],
             output_dir=temp_dir,
@@ -432,18 +446,18 @@ class TestCLIHelperFunctions:
             users=10,
             spawn_rate=2.0,
             run_time="5m",
-            host="http://localhost:8000"
+            host="http://localhost:8000",
         )
-        
+
         mock_exit.assert_called_once_with(1)
 
     def test_show_results_success(self, temp_dir):
         """Test show results with successful file creation."""
         from datetime import datetime, timezone
-        
+
         start_time = datetime.now(timezone.utc)
         created_files = ["file1.py", "file2.py"]
-        
+
         # Should not raise an exception
         _show_results(
             created_files=created_files,
@@ -454,7 +468,7 @@ class TestCLIHelperFunctions:
             users=10,
             spawn_rate=2.0,
             run_time="5m",
-            host="http://localhost:8000"
+            host="http://localhost:8000",
         )
 
 
@@ -464,19 +478,17 @@ class TestCLIEdgeCases:
     def test_generate_command_exception_handling(self, cli_runner):
         """Test generate command exception handling."""
         # Test with invalid arguments that should cause an error
-        result = cli_runner.invoke(cli, [
-            'generate',
-            'invalid-url',
-            '--together-api-key', 'test-key'
-        ])
-        
+        result = cli_runner.invoke(
+            cli, ["generate", "invalid-url", "--together-api-key", "test-key"]
+        )
+
         # Should exit with error code
         assert result.exit_code != 0
 
     def test_main_function(self):
         """Test main function entry point."""
         from devdox_ai_locust.cli import main
-        
+
         # Test that main function exists and can be called
         # (We can't actually call it without arguments as it would invoke Click)
         assert callable(main)

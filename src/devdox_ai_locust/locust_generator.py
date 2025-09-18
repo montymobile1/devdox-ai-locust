@@ -7,18 +7,15 @@ Generates Locust performance test files from parsed OpenAPI endpoints.
 import json
 import re
 import secrets
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 import black
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader
 from pathlib import Path
 import logging
 from dataclasses import dataclass
-import textwrap
 from datetime import datetime
 
-from devdox_ai_locust.utils.open_ai_parser import (
-    Endpoint
-)
+from devdox_ai_locust.utils.open_ai_parser import Endpoint, Parameter
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +34,16 @@ class TestDataConfig:
 class LocustTestGenerator:
     """Generates Locust performance test files from OpenAPI endpoints"""
 
-    def __init__(self, test_config: TestDataConfig = None, jinja_env: Environment = None):
+    def __init__(
+        self,
+        test_config: Optional[TestDataConfig] = None,
+        jinja_env: Optional[Environment] = None,
+    ):
         self.test_config = test_config or TestDataConfig()
-        self.generated_files = {}
+        self.generated_files: Dict[str, str] = {}
         self.auth_token = None
-        self.user_data = {}
+        self.user_data: Dict[str, Any] = {}
         self.request_count = 0
-
 
         self.template_dir = self._find_project_root() / "templates"
 
@@ -57,21 +57,18 @@ class LocustTestGenerator:
 
         return current_path
 
-    def _setup_templates(self):
+    def _setup_templates(self) -> Environment:
         """Initialize Jinja2 environment and create default templates"""
-        self.jinja_env = Environment(
+        return Environment(
             loader=FileSystemLoader(self.template_dir),
             trim_blocks=True,
             lstrip_blocks=True,
             keep_trailing_newline=True,
-            autoescape=False
+            autoescape=False,
         )
 
     def fix_indent(self, base_files: Dict[str, str]) -> Dict[str, str]:
         """Fix indentation for generated files"""
-        """
-            Fixes indentation and formatting of Python code using Black.
-            """
         try:
             mode = black.Mode()
             updated_data = {}
@@ -82,11 +79,16 @@ class LocustTestGenerator:
                         formatted_code = black.format_str(value, mode=mode)
 
                         updated_data[key] = formatted_code
-                    except Exception:
-                        # If it's not valid Python code, keep the original
+                    except black.InvalidInput:
+                        # Not valid Python code, keep original
+                        logger.debug(f"Skipping formatting for {key}: not valid Python")
+                        updated_data[key] = value
+                    except Exception as format_error:
+                        # Other Black formatting errors, keep original and log
+                        logger.warning(f"Failed to format {key}: {format_error}")
                         updated_data[key] = value
                 else:
-                    updated_data[key] = value
+                    updated_data[key] = str(value)
 
             return updated_data
 
@@ -98,7 +100,7 @@ class LocustTestGenerator:
         self,
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-    ) ->Tuple[Dict[str, str], List[Dict[str, Any]]]:
+    ) -> Tuple[Dict[str, str], List[Dict[str, Any]], Dict[str, List[Endpoint]]]:
         """
         Generate complete Locust test suite from parsed endpoints
 
@@ -111,32 +113,33 @@ class LocustTestGenerator:
             Dictionary of filename -> file content
         """
         try:
+            grouped_enpoint = self._group_endpoints_by_tag(endpoints)
 
-            grouped_enpoint= self._group_endpoints_by_tag(endpoints)
-
-            workflows_files= self.generate_workflows(grouped_enpoint, api_info)
+            workflows_files = self.generate_workflows(grouped_enpoint, api_info)
 
             self.generated_files = {
-
-                "locustfile.py": self._generate_main_locustfile(endpoints, api_info, list(grouped_enpoint.keys())),
+                "locustfile.py": self._generate_main_locustfile(
+                    endpoints, api_info, list(grouped_enpoint.keys())
+                ),
                 "test_data.py": self._generate_test_data_file(),
                 "config.py": self._generate_config_file(api_info),
                 "utils.py": self._generate_utils_file(),
                 "custom_flows.py": self._generate_custom_flows_file(),
                 "requirements.txt": self._generate_requirements_file(),
-                'README.md': self._generate_readme_file(api_info),
-                ".env.example": self._generate_env_example(api_info)
+                "README.md": self._generate_readme_file(api_info),
+                ".env.example": self._generate_env_example(api_info),
             }
 
             return self.generated_files, workflows_files, grouped_enpoint
         except Exception as e:
             logger.error(f"Failed to generate test suite: {e}")
-            return {}, [], {}
-
-
+            empty_files: Dict[str, str] = {}
+            empty_workflows: List[Dict[str, Any]] = []
+            empty_grouped: Dict[str, List[Endpoint]] = {}
+            return empty_files, empty_workflows, empty_grouped
 
     def generate_workflows(
-            self, endpoints: Dict[str, List[Any]], api_info: Dict[str, Any]
+        self, endpoints: Dict[str, List[Any]], api_info: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
         Generate the workflows Locust test files with proper structure and no duplicates
@@ -160,13 +163,19 @@ class LocustTestGenerator:
                 if not task_methods:
                     logger.warning(f"No task methods generated from group {group}")
                     task_methods.append(self._generate_default_task_method())
-                indented_task_methods = self._indent_methods(task_methods, indent_level=1)
-                file_content = self._build_endpoint_template(api_info, indented_task_methods, group)
+                indented_task_methods = self._indent_methods(
+                    task_methods, indent_level=1
+                )
+                file_content = self._build_endpoint_template(
+                    api_info, indented_task_methods, group
+                )
                 file_name = f"{group}_workflow.py".replace("-", "_")
 
-                workflows.append({ file_name: file_content})
+                workflows.append({file_name: file_content})
 
-            workflows.append({f"base_workflow.py: { self.generate_base_common_file(api_info)}"})
+            workflows.append(
+                {"base_workflow.py": self.generate_base_common_file(api_info)}
+            )
 
             return workflows
 
@@ -175,17 +184,13 @@ class LocustTestGenerator:
 
             return []
 
-
-
-
-
-
     def _build_endpoint_template(
-            self, api_info: Dict[str, Any], task_methods_content: str,group:str
+        self, api_info: Dict[str, Any], task_methods_content: str, group: str
     ) -> str:
         template = self.jinja_env.get_template("endpoint_template.py.j2")
-        return template.render(api_info=api_info, group=group, task_methods_content=task_methods_content)
-
+        return template.render(
+            api_info=api_info, group=group, task_methods_content=task_methods_content
+        )
 
     def _generate_main_locustfile(
         self, endpoints: List[Any], api_info: Dict[str, Any], groups: List[str]
@@ -224,7 +229,9 @@ class LocustTestGenerator:
             indented_task_methods = ""
             # Generate the complete file content
             return self._build_locustfile_template(
-                api_info=api_info, task_methods_content=indented_task_methods, groups=groups
+                api_info=api_info,
+                task_methods_content=indented_task_methods,
+                groups=groups,
             )
 
         except Exception as e:
@@ -261,15 +268,13 @@ class LocustTestGenerator:
     def _generate_fallback_locustfile(self, api_info: Dict[str, Any]) -> str:
         """Generate a basic fallback locustfile when main generation fails"""
 
-
         template = self.jinja_env.get_template("fallback_locust.py.j2")
         return template.render(api_info=api_info)
 
     from typing import Dict, Any
 
     def _build_locustfile_template(
-            self, api_info: Dict[str, Any], task_methods_content: str,
-            groups: List[str]
+        self, api_info: Dict[str, Any], task_methods_content: str, groups: List[str]
     ) -> str:
         import_group_tasks = ""
         tasks = []
@@ -278,17 +283,17 @@ class LocustTestGenerator:
             class_name = group.replace("-", "")
             import_group_tasks += f"""from workflows.{file_name}_workflow import {class_name}TaskMethods\n"""
             tasks.append(f"{class_name}TaskMethods")
-        tasks_str = '[' + ','.join(tasks) + ']'
+        tasks_str = "[" + ",".join(tasks) + "]"
         template = self.jinja_env.get_template("locust.py.j2")
 
         # Prepare template context
         context = {
-            'import_group_tasks':import_group_tasks,
-            'task_methods_content':task_methods_content,
-            'tasks_str':tasks_str,
-            'api_info': api_info,
-            'generated_task_classes':self._generate_user_classes(),
-            'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            "import_group_tasks": import_group_tasks,
+            "task_methods_content": task_methods_content,
+            "tasks_str": tasks_str,
+            "api_info": api_info,
+            "generated_task_classes": self._generate_user_classes(),
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
         # Render the template
@@ -296,7 +301,6 @@ class LocustTestGenerator:
 
         logger.info("README generated successfully using template")
         return content
-
 
     def _generate_default_task_method(self) -> str:
         """Generate a default task method when no endpoints are available"""
@@ -327,8 +331,8 @@ class LocustTestGenerator:
             task_method = f'''@task({weight})
     def {method_name}(self):
         """
-        {getattr(endpoint, 'summary', f'{getattr(endpoint, "method", "GET")} {getattr(endpoint, "path", "")}')}
-        {getattr(endpoint, 'description', '')}
+        {getattr(endpoint, "summary", f"{getattr(endpoint, 'method', 'GET')} {getattr(endpoint, 'path', '')}")}
+        {getattr(endpoint, "description", "")}
         """
         try:
             # Generate path parameters
@@ -342,7 +346,7 @@ class LocustTestGenerator:
 
             # Make the request
             response_data = self.make_request(
-                method="{getattr(endpoint, 'method', 'GET').lower()}",
+                method="{getattr(endpoint, "method", "GET").lower()}",
                 path=f"{path_with_params}",
                 {self._generate_request_kwargs(endpoint)}
             )
@@ -401,9 +405,7 @@ class LocustTestGenerator:
 
         code_lines = []
         for param in path_params:
-
             if param.type.startswith("integer"):
-
                 code_lines.append(f"{param.name} = data_generator.generate_integer()")
             elif param.type == "string":
                 if "id" in param.name.lower():
@@ -437,16 +439,16 @@ class LocustTestGenerator:
 
         return self._format_params_dict(param_lines)
 
-    def _should_skip_optional_param(self, param) -> bool:
+    def _should_skip_optional_param(self, param: Parameter) -> bool:
         """Randomly skip optional parameters 30% of the time"""
         return not param.required and secrets.randbelow(100) > 70
 
-    def _generate_param_line(self, param) -> str:
+    def _generate_param_line(self, param: Parameter) -> str:
         """Generate a single parameter line based on its type"""
         param_generators = {
             "integer": self._generate_integer_param,
             "string": self._generate_string_param,
-            "boolean": self._generate_boolean_param
+            "boolean": self._generate_boolean_param,
         }
 
         # Handle integer types that might have prefixes like "integer64"
@@ -455,21 +457,21 @@ class LocustTestGenerator:
         generator = param_generators.get(param_type, self._generate_generic_param)
         return generator(param)
 
-    def _generate_integer_param(self, param) -> str:
+    def _generate_integer_param(self, param: Parameter) -> str:
         """Generate integer parameter line"""
         default = param.default if param.default is not None else "None"
         return f'"{param.name}": data_generator.generate_integer(default={default}),'
 
-    def _generate_string_param(self, param) -> str:
+    def _generate_string_param(self, param: Parameter) -> str:
         """Generate string parameter line"""
         default = f'"{param.default}"' if param.default else "None"
         return f'"{param.name}": data_generator.generate_string(default={default}),'
 
-    def _generate_boolean_param(self, param) -> str:
+    def _generate_boolean_param(self, param: Parameter) -> str:
         """Generate boolean parameter line"""
         return f'"{param.name}": data_generator.generate_boolean(),'
 
-    def _generate_generic_param(self, param) -> str:
+    def _generate_generic_param(self, param: Parameter) -> str:
         """Generate generic parameter line for unknown types"""
         return f'"{param.name}": data_generator.generate_value("{param.type}"),'
 
@@ -538,17 +540,33 @@ class LocustTestGenerator:
         self, endpoints: List[Endpoint]
     ) -> Dict[str, List[Endpoint]]:
         """Group endpoints by their tags"""
-        grouped = {}
-
+        grouped: Dict[str, List[Endpoint]] = {}
         # Define authentication-related keywords to check for in paths
         auth_keywords = [
-            'login', 'signin', 'sign-in', 'sign_in',
-            'logout', 'signout', 'sign-out', 'sign_out',
-            'auth', 'authenticate', 'authorization',
-            'token', 'refresh', 'verify',
-            'password', 'reset', 'forgot',
-            'register', 'signup', 'sign-up', 'sign_up',
-            'session', 'oauth', 'sso'
+            "login",
+            "signin",
+            "sign-in",
+            "sign_in",
+            "logout",
+            "signout",
+            "sign-out",
+            "sign_out",
+            "auth",
+            "authenticate",
+            "authorization",
+            "token",
+            "refresh",
+            "verify",
+            "password",
+            "reset",
+            "forgot",
+            "register",
+            "signup",
+            "sign-up",
+            "sign_up",
+            "session",
+            "oauth",
+            "sso",
         ]
 
         def is_auth_endpoint(endpoint_path: str) -> bool:
@@ -557,7 +575,6 @@ class LocustTestGenerator:
             return any(keyword in path_lower for keyword in auth_keywords)
 
         for endpoint in endpoints:
-
             tags = endpoint.tags if endpoint.tags else ["default"]
             if is_auth_endpoint(endpoint.path):
                 # Add to authentication group regardless of tags
@@ -630,7 +647,6 @@ class LocustTestGenerator:
         template = self.jinja_env.get_template("config.py.j2")
         return template.render(api_info=api_info)
 
-
     def _generate_utils_file(self) -> str:
         """Generate utils.py file content"""
         template = self.jinja_env.get_template("utils.py.j2")
@@ -639,7 +655,7 @@ class LocustTestGenerator:
     def _generate_custom_flows_file(self) -> str:
         """Generate custom_flows.py file content"""
         template = self.jinja_env.get_template("custom_flows.py.j2")
-        return  template.render()
+        return template.render()
 
     def _generate_requirements_file(self) -> str:
         """Generate requirements.txt file content"""
@@ -647,30 +663,30 @@ class LocustTestGenerator:
         content = template.render()
         return content
 
-    def _generate_env_example(self, api_info) -> str:
+    def _generate_env_example(self, api_info: Dict[str, Any]) -> str:
         """Generate .env.example file content"""
         try:
             template = self.jinja_env.get_template("env.example.j2")
 
             # Prepare environment variables context
             environment_vars = {
-                'API_BASE_URL': api_info.get('base_url', 'http://localhost:8000'),
-                'API_VERSION': api_info.get('version', 'v1'),
-                'API_TITLE': api_info.get('title', 'Your API Name'),
-                'LOCUST_USERS': '50',
-                'LOCUST_SPAWN_RATE': '5',
-                'LOCUST_RUN_TIME': '10m',
-                'LOCUST_HOST': api_info.get('base_url', 'http://localhost:8000'),
-                'USE_REALISTIC_DATA': 'true',
-                'DATA_SEED': '42',
-                'REQUEST_TIMEOUT': '30',
-                'MAX_RETRIES': '3'
+                "API_BASE_URL": api_info.get("base_url", "http://localhost:8000"),
+                "API_VERSION": api_info.get("version", "v1"),
+                "API_TITLE": api_info.get("title", "Your API Name"),
+                "LOCUST_USERS": "50",
+                "LOCUST_SPAWN_RATE": "5",
+                "LOCUST_RUN_TIME": "10m",
+                "LOCUST_HOST": api_info.get("base_url", "http://localhost:8000"),
+                "USE_REALISTIC_DATA": "true",
+                "DATA_SEED": "42",
+                "REQUEST_TIMEOUT": "30",
+                "MAX_RETRIES": "3",
             }
 
             context = {
-                'environment_vars': environment_vars,
-                'api_info': api_info,
-                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                "environment_vars": environment_vars,
+                "api_info": api_info,
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
             content = template.render(**context)
@@ -682,15 +698,14 @@ class LocustTestGenerator:
             return ""
 
     def _generate_readme_file(self, api_info: Dict[str, Any]) -> str:
-
         try:
             # Get the template
             template = self.jinja_env.get_template("readme.md.j2")
 
             # Prepare template context
             context = {
-                'api_info': api_info,
-                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                "api_info": api_info,
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
             # Render the template
@@ -700,8 +715,8 @@ class LocustTestGenerator:
             return content
 
         except Exception as e:
-                    logger.error(f"Error generating README: {e}")
-                    return ""
+            logger.error(f"Error generating README: {e}")
+            return ""
 
     def generate_base_common_file(self, api_info: Dict[str, Any]) -> str:
         template = self.jinja_env.get_template("base_workflow.py.j2")

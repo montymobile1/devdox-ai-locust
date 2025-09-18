@@ -5,28 +5,27 @@ Combines reliable template-based generation with LLM enhancement for creativity
 and domain-specific optimizations.
 """
 
-import os
 import re
 import asyncio
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader
 from dataclasses import dataclass
 import uuid
 import shutil
 
 
-from devdox_ai_locust.utils.open_ai_parser import (
-    Endpoint
-)
-from devdox_ai_locust.utils.file_creation import (FileCreationConfig, SafeFileCreator)
+from devdox_ai_locust.utils.open_ai_parser import Endpoint
+from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
+from together import Together
 
 logger = logging.getLogger(__name__)
 
 
 test_data_file_path = "test_data.py"
+
 
 @dataclass
 class AIEnhancementConfig:
@@ -36,10 +35,10 @@ class AIEnhancementConfig:
     max_tokens: int = 8000
     temperature: float = 0.3
     timeout: int = 60
-    enhance_workflows: bool = False
-    enhance_test_data: bool = False
-    enhance_validation: bool = False
-    create_domain_flows: bool = False
+    enhance_workflows: bool = True
+    enhance_test_data: bool = True
+    enhance_validation: bool = True
+    create_domain_flows: bool = True
     update_main_locust: bool = True
 
 
@@ -49,7 +48,7 @@ class EnhancementResult:
 
     success: bool
     enhanced_files: Dict[str, str]
-    enhanced_directory_files  :List[Dict[str, Any]]
+    enhanced_directory_files: List[Dict[str, Any]]
     enhancements_applied: List[str]
     errors: List[str]
     processing_time: float
@@ -58,123 +57,135 @@ class EnhancementResult:
 class EnhancementProcessor:
     """Handles individual enhancement operations"""
 
-    def __init__(self, ai_config, locust_generator):
+    def __init__(
+        self,
+        ai_config: Optional[AIEnhancementConfig],
+        locust_generator: "HybridLocustGenerator",
+    ) -> None:
         self.ai_config = ai_config
         self.locust_generator = locust_generator
 
-    async def process_main_locust_enhancement(self, base_files: Dict[str, str],
-                                              endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
-        Dict[str, str], List[str]]:
+    async def process_main_locust_enhancement(
+        self,
+        base_files: Dict[str, str],
+        endpoints: List[Endpoint],
+        api_info: Dict[str, Any],
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Process main locustfile enhancement"""
         enhanced_files = {}
         enhancements = []
 
-        if self.ai_config.update_main_locust:
+        if self.ai_config and self.ai_config.update_main_locust:
             enhanced_content = await self.locust_generator._enhance_locustfile(
                 base_files.get("locustfile.py", ""), endpoints, api_info
             )
             if enhanced_content:
-                enhanced_files['locustfile.py'] = enhanced_content
+                enhanced_files["locustfile.py"] = enhanced_content
                 enhancements.append("main_locust_update")
-
         return enhanced_files, enhancements
 
-    async def process_domain_flows_enhancement(self,
-                                               endpoints: List[Endpoint], api_info: Dict[str, Any]) -> Tuple[
-        Dict[str, str], List[str]]:
+    async def process_domain_flows_enhancement(
+        self, endpoints: List[Endpoint], api_info: Dict[str, Any]
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Process domain flows enhancement"""
         enhanced_files = {}
         enhancements = []
 
-        if self.ai_config.create_domain_flows:
-            domain_flows = await self.locust_generator._generate_domain_flows(endpoints, api_info)
+        if self.ai_config and self.ai_config.create_domain_flows:
+            domain_flows = await self.locust_generator._generate_domain_flows(
+                endpoints, api_info
+            )
             if domain_flows:
                 enhanced_files["custom_flows.py"] = domain_flows
                 enhancements.append("domain_flows")
 
         return enhanced_files, enhancements
 
-    async def process_workflow_enhancements(self, base_files: Dict[str, str],
-                                            directory_files: List[Dict[str, Any]],
-                                            grouped_endpoints: Dict[str, List[Endpoint]]) -> Tuple[
-        List[Dict[str, Any]], List[str]]:
+    async def process_workflow_enhancements(
+        self,
+        base_files: Dict[str, str],
+        directory_files: List[Dict[str, Any]],
+        grouped_endpoints: Dict[str, List[Endpoint]],
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """Process workflow enhancements"""
-        enhanced_directory_files = []
-        enhancements = []
+        enhanced_directory_files: List[Dict[str, Any]] = []
+        enhancements: List[str] = []
 
-        if not self.ai_config.enhance_workflows:
+        if self.ai_config and not self.ai_config.enhance_workflows:
             return enhanced_directory_files, enhancements
 
-        base_workflow_files = self.locust_generator.get_files_by_key(directory_files, 'base_workflow.py')
+        base_workflow_files = self.locust_generator.get_files_by_key(
+            directory_files, "base_workflow.py"
+        )
 
         for workflow_item in directory_files:
             enhanced_workflow_item = await self._enhance_single_workflow(
                 workflow_item, base_files, base_workflow_files, grouped_endpoints
             )
             if enhanced_workflow_item:
-                enhanced_directory_files.append(enhanced_workflow_item['files'])
-                enhancements.extend(enhanced_workflow_item['enhancements'])
+                enhanced_directory_files.append(enhanced_workflow_item["files"])
+                enhancements.extend(enhanced_workflow_item["enhancements"])
 
         return enhanced_directory_files, enhancements
 
-    async def _enhance_single_workflow(self, workflow_item: Dict[str, Any],
-                                       base_files: Dict[str, str], base_workflow_files: str,
-                                       grouped_endpoints: Dict[str, List[Endpoint]]) -> Dict[str, Any]:
+    async def _enhance_single_workflow(
+        self,
+        workflow_item: Dict[str, Any],
+        base_files: Dict[str, str],
+        base_workflow_files: str,
+        grouped_endpoints: Dict[str, List[Endpoint]],
+    ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
             workflow_key = key.replace("_workflow.py", "")
             endpoints_for_workflow = grouped_endpoints.get(workflow_key, [])
-            auth_endpoints = grouped_endpoints.get('Authentication', [])
-
+            auth_endpoints = grouped_endpoints.get("Authentication", [])
+            workflow_endpoints_dict = {workflow_key: endpoints_for_workflow}
             enhanced_workflow = await self.locust_generator._enhance_workflows(
                 base_content=value,
-                test_data_content=base_files.get(test_data_file_path , ""),
+                test_data_content=base_files.get(test_data_file_path, ""),
                 base_workflow=base_workflow_files,
-                grouped_enpoints=endpoints_for_workflow,
-                auth_endpoints=auth_endpoints
+                grouped_enpoints=workflow_endpoints_dict,
+                auth_endpoints=auth_endpoints,
             )
-
             if enhanced_workflow:
                 return {
-                    'files': {key: enhanced_workflow},
-                    'enhancements': [f"enhanced_workflows_{key}"]
+                    "files": {key: enhanced_workflow},
+                    "enhancements": [f"enhanced_workflows_{key}"],
                 }
 
         return None
 
-    async def process_test_data_enhancement(self, base_files: Dict[str, str],
-                                            endpoints: List[Endpoint]) -> Tuple[
-        Dict[str, str], List[str]]:
+    async def process_test_data_enhancement(
+        self, base_files: Dict[str, str], endpoints: List[Endpoint]
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Process test data enhancement"""
         enhanced_files = {}
         enhancements = []
-
-        if self.ai_config.enhance_test_data:
+        if self.ai_config and self.ai_config.enhance_test_data:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
-                base_files.get(test_data_file_path , ""), endpoints
+                base_files.get(test_data_file_path, ""), endpoints
             )
             if enhanced_test_data:
-                enhanced_files[test_data_file_path ] = enhanced_test_data
+                enhanced_files[test_data_file_path] = enhanced_test_data
                 enhancements.append("smart_test_data")
-
         return enhanced_files, enhancements
 
-    async def process_validation_enhancement(self, base_files: Dict[str, str],
-                                             endpoints: List[Endpoint]) -> Tuple[
-        Dict[str, str], List[str]]:
+    async def process_validation_enhancement(
+        self, base_files: Dict[str, str], endpoints: List[Endpoint]
+    ) -> Tuple[Dict[str, str], List[str]]:
         """Process validation enhancement"""
         enhanced_files = {}
         enhancements = []
-
-        if self.ai_config.enhance_validation:
+        if self.ai_config and self.ai_config.enhance_validation:
             enhanced_validation = await self.locust_generator._enhance_validation(
                 base_files.get("utils.py", ""), endpoints
             )
             if enhanced_validation:
                 enhanced_files["utils.py"] = enhanced_validation
                 enhancements.append("advanced_validation")
-
         return enhanced_files, enhancements
+
 
 class HybridLocustGenerator:
     """
@@ -183,18 +194,16 @@ class HybridLocustGenerator:
 
     def __init__(
         self,
-        ai_client=None,
-        ai_config: AIEnhancementConfig = None,
-        test_config: TestDataConfig = None,
-        prompt_dir:str = "prompt"
+        ai_client: Optional[Together] = None,
+        ai_config: Optional[AIEnhancementConfig] = None,
+        test_config: Optional[TestDataConfig] = None,
+        prompt_dir: str = "prompt",
     ):
         self.ai_client = ai_client
         self.ai_config = ai_config or AIEnhancementConfig()
         self.template_generator = LocustTestGenerator(test_config)
-        self.enhancement_cache = {}
-        self.prompt_dir =  self._find_project_root() /prompt_dir
+        self.prompt_dir = self._find_project_root() / prompt_dir
         self._setup_jinja_env()
-
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -202,22 +211,21 @@ class HybridLocustGenerator:
 
         return current_path
 
-    def _setup_jinja_env(self):
+    def _setup_jinja_env(self) -> None:
         """Setup Jinja2 environment with custom filters"""
         self.jinja_env = Environment(
             loader=FileSystemLoader(str(self.prompt_dir)),
             trim_blocks=True,
             lstrip_blocks=True,
             keep_trailing_newline=True,
-            autoescape=False
+            autoescape=False,
         )
-
 
     async def generate_from_endpoints(
         self,
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-    ) ->  Tuple[Dict[str, str], Dict[str, str]]:
+    ) -> Tuple[Dict[str, str], List[dict[str, Any]]]:
         """
         Generate Locust tests using hybrid approach
 
@@ -230,25 +238,25 @@ class HybridLocustGenerator:
         try:
             # Step 1: Generate reliable base structure
             logger.info("🔧 Generating base test structure with templates...")
-            base_files, directory_files, grouped_enpoints = self.template_generator.generate_from_endpoints(
-                endpoints, api_info
+            base_files, directory_files, grouped_enpoints = (
+                self.template_generator.generate_from_endpoints(endpoints, api_info)
             )
 
             base_files = self.template_generator.fix_indent(base_files)
-
             # Step 2: Enhance with AI if available
             if self.ai_client and self._should_enhance(endpoints, api_info):
-
                 logger.info("🤖 Enhancing tests with AI...")
                 enhancement_result = await self._enhance_with_ai(
                     base_files, endpoints, api_info, directory_files, grouped_enpoints
                 )
-
                 if enhancement_result.success:
                     logger.info(
                         f"✅ AI enhancements applied: {', '.join(enhancement_result.enhancements_applied)}"
                     )
-                    return enhancement_result.enhanced_files, enhancement_result.enhanced_directory_files
+                    return (
+                        enhancement_result.enhanced_files,
+                        enhancement_result.enhanced_directory_files,
+                    )
                 else:
                     logger.warning(
                         f"⚠️ AI enhancement failed, using template base: {', '.join(enhancement_result.errors)}"
@@ -259,13 +267,12 @@ class HybridLocustGenerator:
             processing_time = asyncio.get_event_loop().time() - start_time
             logger.info(f"⏱️ Generation completed in {processing_time:.2f}s")
 
-            return base_files,directory_files
+            return base_files, directory_files
 
         except Exception as e:
             logger.error(f"Hybrid generation failed line 267 : {e}")
 
-
-            return {},[]
+            return {}, []
 
     def _should_enhance(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]
@@ -310,39 +317,36 @@ class HybridLocustGenerator:
         return False
 
     async def _enhance_locustfile(
-            self, base_content: str, endpoints: List[Any], api_info: Dict[str, Any]
+        self, base_content: str, endpoints: List[Any], api_info: Dict[str, Any]
     ) -> Optional[str]:
         # Configuration
 
-
         try:
-                template = self.jinja_env.get_template('locust.j2')
+            template = self.jinja_env.get_template("locust.j2")
 
-                # Prepare context for template
-                context = {
-                    'base_content': base_content,
-                    'endpoints_for_prompt': self._format_endpoints_for_prompt(endpoints[:5]),
-                    'api_info': api_info
-
-                }
-                # Render enhanced content
-                prompt = template.render(**context)
-                enhanced_content = await self._call_ai_service(prompt)
-                return enhanced_content
+            # Prepare context for template
+            context = {
+                "base_content": base_content,
+                "endpoints_for_prompt": self._format_endpoints_for_prompt(
+                    endpoints[:5]
+                ),
+                "api_info": api_info,
+            }
+            # Render enhanced content
+            prompt = template.render(**context)
+            enhanced_content = await self._call_ai_service(prompt)
+            return enhanced_content
         except Exception as e:
-                logger.error(f"Enhancement failed: {e}")
-                return base_content
-
-
-
+            logger.error(f"Enhancement failed: {e}")
+            return base_content
 
     async def _enhance_with_ai(
-            self,
-            base_files: Dict[str, str],
-            endpoints: List[Endpoint],
-            api_info: Dict[str, Any],
-            directory_files: List[Dict[str, Any]],
-            grouped_endpoints: Dict[str, List[Endpoint]]
+        self,
+        base_files: Dict[str, str],
+        endpoints: List[Endpoint],
+        api_info: Dict[str, Any],
+        directory_files: List[Dict[str, Any]],
+        grouped_endpoints: Dict[str, List[Endpoint]],
     ) -> EnhancementResult:
         """Enhance base files with AI - Refactored for reduced cognitive complexity"""
         start_time = asyncio.get_event_loop().time()
@@ -371,31 +375,32 @@ class HybridLocustGenerator:
             )
 
     async def _process_all_enhancements(
-            self,
-            base_files: Dict[str, str],
-            endpoints: List[Endpoint],
-            api_info: Dict[str, Any],
-            directory_files: List[Dict[str, Any]],
-            grouped_endpoints: Dict[str, List[Endpoint]]
+        self,
+        base_files: Dict[str, str],
+        endpoints: List[Endpoint],
+        api_info: Dict[str, Any],
+        directory_files: List[Dict[str, Any]],
+        grouped_endpoints: Dict[str, List[Endpoint]],
     ) -> EnhancementResult:
         """Process all enhancements using the enhancement processor"""
         processor = EnhancementProcessor(self.ai_config, self)
 
         enhanced_files = base_files.copy()
         enhanced_directory_files = []
-        enhancements_applied = []
+        enhancements_applied: List[str] = []
         errors = []
-
         # Process each enhancement type
         enhancement_tasks = [
             processor.process_main_locust_enhancement(base_files, endpoints, api_info),
-            processor.process_domain_flows_enhancement( endpoints, api_info),
+            processor.process_domain_flows_enhancement(endpoints, api_info),
             processor.process_test_data_enhancement(base_files, endpoints),
-            processor.process_validation_enhancement(base_files, endpoints)
+            processor.process_validation_enhancement(base_files, endpoints),
         ]
 
         # Execute file-based enhancements concurrently
-        file_enhancement_results = await asyncio.gather(*enhancement_tasks, return_exceptions=True)
+        file_enhancement_results = await asyncio.gather(
+            *enhancement_tasks, return_exceptions=True
+        )
 
         # Process results from file-based enhancements
         for result in file_enhancement_results:
@@ -409,7 +414,11 @@ class HybridLocustGenerator:
 
         # Process workflow enhancements separately (more complex logic)
         try:
-            workflow_files, workflow_enhancements = await processor.process_workflow_enhancements(
+
+            (
+                workflow_files,
+                workflow_enhancements,
+            ) = await processor.process_workflow_enhancements(
                 base_files, directory_files, grouped_endpoints
             )
             enhanced_directory_files.extend(workflow_files)
@@ -423,7 +432,7 @@ class HybridLocustGenerator:
             enhanced_directory_files=enhanced_directory_files,
             enhancements_applied=enhancements_applied,
             errors=errors,
-            processing_time=0  # Will be set by caller
+            processing_time=0,  # Will be set by caller
         )
 
     async def _generate_domain_flows(
@@ -433,47 +442,47 @@ class HybridLocustGenerator:
 
         # Analyze endpoints to determine domain
         domain_analysis = self._analyze_api_domain(endpoints, api_info)
-
-
         try:
-            template = self.jinja_env.get_template('workflow.j2')
+            template = self.jinja_env.get_template("workflow.j2")
 
             # Render enhanced content
-            prompt = template.render(domain_analysis=domain_analysis,
-                                     endpoints=self._format_endpoints_for_prompt(endpoints)
-                                     )
+            prompt = template.render(
+                domain_analysis=domain_analysis,
+                endpoints=self._format_endpoints_for_prompt(endpoints),
+            )
 
             enhanced_content = await self._call_ai_service(prompt)
 
-            if enhanced_content :
+            if enhanced_content:
                 return enhanced_content
         except Exception as e:
             logger.warning(f"Domain flows generation failed: {e}")
 
         return ""
 
-    def get_files_by_key(self,directory_files, target_key):
+    def get_files_by_key(self, directory_files, target_key):
         """Return directory items that contain the specified key"""
         return [items for items in directory_files if target_key in items]
 
-
     async def _enhance_workflows(
-        self, base_content: str, test_data_content: str,base_workflow:str, grouped_enpoints: Dict[str, List[Endpoint]],auth_endpoints: List[Endpoint]
+        self,
+        base_content: str,
+        test_data_content: str,
+        base_workflow: str,
+        grouped_enpoints: Dict[str, List[Endpoint]],
+        auth_endpoints: List[Endpoint],
     ) -> Optional[str]:
-
-
         try:
-            template = self.jinja_env.get_template('workflow.j2')
-
+            template = self.jinja_env.get_template("workflow.j2")
 
             # Render enhanced content
-            prompt = template.render(grouped_enpoints=grouped_enpoints,
-                                     test_data_content=test_data_content,
-                                      base_workflow=base_workflow,
-                                      auth_endpoints=auth_endpoints,
-
-                                     base_content=base_content
-                                     )
+            prompt = template.render(
+                grouped_enpoints=grouped_enpoints,
+                test_data_content=test_data_content,
+                base_workflow=base_workflow,
+                auth_endpoints=auth_endpoints,
+                base_content=base_content,
+            )
             enhanced_content = await self._call_ai_service(prompt)
             return enhanced_content
         except Exception as e:
@@ -489,16 +498,14 @@ class HybridLocustGenerator:
         # Extract schema information
         schemas_info = self._extract_schema_patterns(endpoints)
 
-
         try:
-            template = self.jinja_env.get_template('test_data.j2')
+            template = self.jinja_env.get_template("test_data.j2")
 
             # Prepare context for template
             context = {
-                'base_content': base_content,
-                'schemas_info': schemas_info,
-                'endpoints': endpoints
-
+                "base_content": base_content,
+                "schemas_info": schemas_info,
+                "endpoints": endpoints,
             }
 
             # Render enhanced content
@@ -519,38 +526,32 @@ class HybridLocustGenerator:
 
         validation_patterns = self._extract_validation_patterns(endpoints)
         try:
-            template = self.jinja_env.get_template('validation.j2')
+            template = self.jinja_env.get_template("validation.j2")
 
             # Render enhanced content
-            prompt = template.render(base_content=base_content,
-                                     validation_patterns=validation_patterns
-
-                                     )
+            prompt = template.render(
+                base_content=base_content, validation_patterns=validation_patterns
+            )
             enhanced_content = await self._call_ai_service(prompt)
-            if enhanced_content :
+            if enhanced_content:
                 return enhanced_content
         except Exception as e:
             logger.warning(f"Validation enhancement failed: {e}")
 
         return ""
 
-
-
     async def _call_ai_service(self, prompt: str) -> Optional[str]:
         """Call AI service with retry logic and validation"""
-
 
         messages = [
             {
                 "role": "system",
                 "content": "You are an expert Python developer specializing in Locust load testing. Generate clean, production-ready code with proper error handling. "
-                           "Always return your code wrapped in <code></code> tags with no explanations outside the tags and DO NOT TRUNCATE THE CODE. "
-                           "Format: <code>your_python_code_here</code>",
+                "Always return your code wrapped in <code></code> tags with no explanations outside the tags and DO NOT TRUNCATE THE CODE. "
+                "Format: <code>your_python_code_here</code>",
             },
             {"role": "user", "content": prompt},
         ]
-
-
 
         for attempt in range(3):  # Retry logic
             try:
@@ -571,9 +572,10 @@ class HybridLocustGenerator:
                 if response.choices and response.choices[0].message:
                     content = response.choices[0].message.content.strip()
 
-
                     # Clean up the response
-                    content = self._clean_ai_response(self.extract_code_from_response(content))
+                    content = self._clean_ai_response(
+                        self.extract_code_from_response(content)
+                    )
 
                     if content:
                         return content
@@ -584,25 +586,22 @@ class HybridLocustGenerator:
             except Exception as e:
                 logger.warning(f"AI service error on attempt {attempt + 1}: {e}")
 
-
             if attempt < 2:  # Wait before retry
                 await asyncio.sleep(2**attempt)
 
         return ""
 
-    def extract_code_from_response(self,response_text):
+    def extract_code_from_response(self, response_text: str) -> str:
         # Extract content between <code> tags
 
-        code_match = re.search(r'<code>(.*?)</code>', response_text, re.DOTALL)
+        code_match = re.search(r"<code>(.*?)</code>", response_text, re.DOTALL)
         if code_match:
             content = code_match.group(1).strip()
             # Additional validation - ensure we got actual content
             if content and len(content) > 0:
                 return content
 
-
         return response_text.strip()
-
 
     def _clean_ai_response(self, content: str) -> str:
         """Clean and validate AI response"""
@@ -768,10 +767,10 @@ class HybridLocustGenerator:
         return sorted(resources)
 
     async def _create_test_files_safely(
-            self,
-            test_files: Dict[str, str],
-            output_path: Path,
-            max_file_size: int = 1024 * 1024,
+        self,
+        test_files: Dict[str, str],
+        output_path: Path,
+        max_file_size: int = 1024 * 1024,
     ) -> List[dict]:
         """Create test files safely with reduced complexity"""
 
@@ -785,16 +784,18 @@ class HybridLocustGenerator:
         temp_dir = output_path / f"temp_{uuid.uuid4().hex[:8]}"
 
         try:
-            return await self._process_file_creation(creator, test_files, output_path, temp_dir)
+            return await self._process_file_creation(
+                creator, test_files, output_path, temp_dir
+            )
         finally:
             await self._cleanup_temp_directory(temp_dir)
 
     async def _process_file_creation(
-            self,
-            creator: SafeFileCreator,
-            test_files: Dict[str, str],
-            output_path: Path,
-            temp_dir: Path
+        self,
+        creator: SafeFileCreator,
+        test_files: Dict[str, str],
+        output_path: Path,
+        temp_dir: Path,
     ) -> List[dict]:
         """Process the file creation workflow"""
 
@@ -803,7 +804,9 @@ class HybridLocustGenerator:
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         # Prepare files in temp directory
-        prepared_files = await self._prepare_files_in_temp(creator, test_files, temp_dir)
+        prepared_files = await self._prepare_files_in_temp(
+            creator, test_files, temp_dir
+        )
 
         if not prepared_files:
             return []
@@ -812,46 +815,44 @@ class HybridLocustGenerator:
         return await creator.move_files_atomically(prepared_files, output_path)
 
     async def _prepare_files_in_temp(
-            self,
-            creator: SafeFileCreator,
-            test_files: Dict[str, str],
-            temp_dir: Path
+        self, creator: SafeFileCreator, test_files: Dict[str, str], temp_dir: Path
     ) -> List[dict]:
         """Prepare all files in temporary directory"""
 
         prepared_files = []
 
         for filename, content in test_files.items():
-            file_result = await self._prepare_single_file(creator, filename, content, temp_dir)
+            file_result = await self._prepare_single_file(
+                creator, filename, content, temp_dir
+            )
             if file_result:
                 prepared_files.append(file_result)
 
         return prepared_files
 
     async def _prepare_single_file(
-            self,
-            creator: SafeFileCreator,
-            filename: str,
-            content: str,
-            temp_dir: Path
+        self, creator: SafeFileCreator, filename: str, content: str, temp_dir: Path
     ) -> Optional[Dict[str, Any]]:
         """Prepare a single file, return None if failed"""
 
         try:
             # Validate file
-            is_valid, clean_filename, processed_content = creator.validate_file(filename, content)
+            is_valid, clean_filename, processed_content = creator.validate_file(
+                filename, content
+            )
             if not is_valid:
                 return None
 
             # Create temp file
-            file_info = await creator.create_temp_file(clean_filename, processed_content, temp_dir)
+            file_info = await creator.create_temp_file(
+                clean_filename, processed_content, temp_dir
+            )
             logger.info(f"Prepared: {clean_filename} ({len(processed_content)} chars)")
             return file_info
 
         except Exception as e:
             logger.error(f"Failed to prepare file {filename}: {e}")
             return None
-
 
     async def _cleanup_temp_directory(self, temp_dir: Path) -> None:
         """Clean up temporary directory"""
@@ -860,9 +861,6 @@ class HybridLocustGenerator:
                 await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
             except Exception as e:
                 logger.warning(f"Failed to cleanup temp directory: {e}")
-
-
-
 
     def _validate_python_code(self, content: str) -> bool:
         """Validate Python code syntax"""
