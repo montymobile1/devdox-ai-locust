@@ -99,7 +99,12 @@ exclude = ["tests*"]
 
 
 [tool.setuptools.package-data]
-devdox_ai_locust = ["schemas/*.json"]
+devdox_ai_locust = ["schemas/*.json", "templates/*.j2", "py.typed"]
+
+# flake8 configuration (legacy - remove if using ruff)
+[tool.flake8]
+max-line-length = 88
+line-length = 88
 
 # Black code formatter
 [tool.black]
@@ -127,13 +132,13 @@ multi_line_output = 3
 line_length = 88
 known_first_party = ["devdox_ai_locust"]
 
-# Flake8 linter (in setup.cfg or .flake8 file)
-# [tool.flake8] # Not supported in pyproject.toml yet
-# You'll need a separate .flake8 or setup.cfg file for flake8
+
 
 # MyPy type checker
 [tool.mypy]
-mypy_path = ["src"]
+explicit_package_bases = true
+namespace_packages = true
+show_error_codes = true
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true

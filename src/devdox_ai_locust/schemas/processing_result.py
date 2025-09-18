@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field, field_validator, ValidationInfo
-from typing import Optional
+from pydantic import BaseModel, field_validator, ValidationInfo
+from typing import Optional, Type
 
 
 class SwaggerProcessingRequest(BaseModel):
@@ -7,16 +7,18 @@ class SwaggerProcessingRequest(BaseModel):
 
     @field_validator("swagger_url", mode="before")
     @classmethod
-    def coerce_to_string(cls, v):
+    def coerce_to_string(
+        cls: Type["SwaggerProcessingRequest"], v: Optional[str]
+    ) -> Optional[str]:
         if v is None:
             return v
         return str(v)
 
-
-    @field_validator('swagger_url')
+    @field_validator("swagger_url")
     @classmethod
-    def validate_url_when_source_is_url(cls, v, info: ValidationInfo):
-        # Access other field values through info.data
-        if info.data.get('swagger_source') == 'url' and not v:
-            raise ValueError('swagger_url is required when source is url')
+    def validate_url_when_source_is_url(
+        cls: Type["SwaggerProcessingRequest"], v: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        if info.data.get("swagger_source") == "url" and not v:
+            raise ValueError("swagger_url is required when source is url")
         return v

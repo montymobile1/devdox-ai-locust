@@ -1,9 +1,7 @@
-import asyncio
 import httpx
 import os
 import re
 import uuid
-from pathlib import Path
 from typing import Optional
 from devdox_ai_locust.schemas.processing_result import SwaggerProcessingRequest
 import logging
@@ -36,16 +34,16 @@ async def get_api_schema(source: SwaggerProcessingRequest) -> Optional[str]:
         Exception: For other unexpected errors
     """
 
-
-
     try:
+        if not source.swagger_url:
+            raise ValueError("Missing or empty 'swagger_url'")
         swagger_url = source.swagger_url.strip()
         if not swagger_url:
             raise ValueError("Missing 'swagger_url' for url source")
         return await _fetch_from_url(swagger_url)
 
     except Exception as e:
-        source_info = getattr(source, 'swagger_url' , 'unknown')
+        source_info = getattr(source, "swagger_url", "unknown")
 
         logger.error(f"Failed to get API schema from  source '{source_info}': {str(e)}")
         raise
@@ -54,8 +52,8 @@ async def get_api_schema(source: SwaggerProcessingRequest) -> Optional[str]:
 async def _fetch_from_url(url: str) -> str:
     """Fetch schema content from URL."""
     headers = {
-        'User-Agent': 'API-Schema-Fetcher/1.0',
-        'Accept': 'application/json, application/yaml, text/yaml, text/plain, */*'
+        "User-Agent": "API-Schema-Fetcher/1.0",
+        "Accept": "application/json, application/yaml, text/yaml, text/plain, */*",
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -64,8 +62,10 @@ async def _fetch_from_url(url: str) -> str:
             response.raise_for_status()
 
             # Check content type
-            content_type = response.headers.get('content-type', '').lower()
-            logger.info(f"Fetching schema from URL: {url}, Content-Type: {content_type}")
+            content_type = response.headers.get("content-type", "").lower()
+            logger.info(
+                f"Fetching schema from URL: {url}, Content-Type: {content_type}"
+            )
 
             # Read content as text
             content = response.text
@@ -76,19 +76,19 @@ async def _fetch_from_url(url: str) -> str:
             return content.strip()
 
         except httpx.HTTPStatusError as e:
-            raise httpx.HTTPError(f"HTTP {e.response.status_code}: {e.response.reason_phrase} for URL: {url}")
+            raise httpx.HTTPError(
+                f"HTTP {e.response.status_code}: {e.response.reason_phrase} for URL: {url}"
+            )
         except httpx.TimeoutException:
-            raise httpx.HTTPError(f"Request timeout after {timeout}s for URL: {url}")
+            raise httpx.HTTPError(f"Request timeout after 30s for URL: {url}")
         except httpx.RequestError as e:
             raise httpx.HTTPError(f"Request failed for URL {url}: {str(e)}")
-
-
 
 
 def _sanitize_filename(self, filename: str) -> str:
     # Remove directory components and sanitize
     clean_name = os.path.basename(filename)
-    clean_name = re.sub(r'[^\w\-\.]', '', clean_name)
-    if not clean_name or clean_name.startswith('.'):
+    clean_name = re.sub(r"[^\w\-\.]", "", clean_name)
+    if not clean_name or clean_name.startswith("."):
         clean_name = f"generated_{uuid.uuid4().hex[:8]}.py"
     return clean_name

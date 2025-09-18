@@ -62,10 +62,10 @@ dal generate --openapi-file ./api-spec.yaml --output ./load-tests
 
 # Generate with custom configuration
 devdox_ai_locust generate \
-  --openapi-url https://petstore.swagger.io/v2/swagger.json \
+   https://petstore.swagger.io/v2/swagger.json \
   --output ./petstore-tests \
   --together-api-key your_api_key \
-  --ai-enhanced
+  
 ```
 
 
@@ -75,20 +75,23 @@ devdox_ai_locust generate \
 ### Command Line Interface
 
 ```bash
-devdox_ai_locust generate [OPTIONS]
-
-Options:
-  --openapi-url TEXT         OpenAPI specification URL
-  --openapi-file PATH        Local OpenAPI specification file
-  --output PATH              Output directory for generated tests [default: ./locust_tests]
-  --together-api-key TEXT    Together AI API key (or set API_KEY env var)
-  --config PATH              Configuration file path
-  --ai-enhanced              Enable AI-enhanced generation [default: True]
-  --template-dir PATH        Custom template directory
-  --dry-run                  Preview generation without creating files
-  --verbose                  Enable verbose logging
-  --help                     Show this message and exit
+devdox_ai_locust generate [OPTIONS] SWAGGER_URL
 ```
+
+| Option | Short | Type | Description | Default |
+|--------|--------|------|-------------|---------|
+| `--output` | `-o` | Path | Output directory for generated tests | `output` |
+| `--config` | `-c` | Path | Configuration file path | None |
+| `--users` | `-u` | Integer | Number of simulated users | `10` |
+| `--spawn-rate` | `-r` | Float | User spawn rate (users/second) | `2` |
+| `--run-time` | `-t` | String | Test duration (e.g., 5m, 1h) | `5m` |
+| `--host` | `-H` | String | Target host URL | None |
+| `--auth/--no-auth` | | Boolean | Include authentication | `True` |
+| `--dry-run` | | Flag | Generate without running | `False` |
+| `--custom-requirement` | | String | Custom AI instructions | None |
+| `--together-api-key` | | String | Together AI API key | From env |
+
+
 
 
 ### Generated Test Structure
@@ -276,9 +279,8 @@ src/devdox_ai_locust/
 ```bash
 # Generate tests for an e-commerce API
 devdox_ai_locust generate \
-  --openapi-url https://api.shop.example.com/v1/openapi.json \
-  --output ./ecommerce-tests \
-  --ai-enhanced
+   https://api.shop.example.com/v1/openapi.json \
+  --output ./ecommerce-tests 
 
 # The generator will create:
 # - Product browsing scenarios
@@ -330,14 +332,6 @@ echo $API_KEY
 python -c "from together import Together; print(Together(api_key='your_key').models.list())"
 ```
 
-**Generation Failures**
-```bash
-# Run with verbose logging
-devdox_ai_locust generate --openapi-url ... --verbose
-
-# Use dry-run to preview
-devdox_ai_locust generate --openapi-url ... --dry-run
-```
 
 **Template Errors**
 ```bash
