@@ -15,7 +15,7 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 application_json_type = "application/json"
-
+localhost_url="http://localhost"
 
 class ParameterType(Enum):
     QUERY = "query"
@@ -410,14 +410,14 @@ class OpenAPIParser:
     def _extract_base_url(self) -> str:
         """Extract base URL from servers section"""
         if not isinstance(self.spec_data, dict):
-            return "http://localhost"
+            return localhost_url
 
         servers = self.spec_data.get("servers", [])
         if servers and isinstance(servers[0], dict):
-            url = servers[0].get("url", "http://localhost")
+            url = servers[0].get("url", localhost_url)
             if isinstance(url, str):
                 return url
-        return "http://localhost"
+        return localhost_url
 
     def _extract_security_schemes(self) -> Dict[str, Any]:
         """Extract security schemes from components"""
