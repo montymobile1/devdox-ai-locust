@@ -161,6 +161,8 @@ module = [
     "faker.*",
     "yaml.*",
     "rich.*",
+    "together",
+    "together.*",
 ]
 ignore_missing_imports = true
 
