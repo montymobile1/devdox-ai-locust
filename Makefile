@@ -54,7 +54,7 @@ test-ai:
 # Code quality targets
 lint:
 	ruff check src tests
-	mypy --explicit-package-bases src
+	mypy --package devdox_ai_locust
 
 format:
 	black src tests

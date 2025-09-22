@@ -3,9 +3,12 @@ Tests for CLI module
 """
 
 import pytest
+import asyncio
 import tempfile
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, AsyncMock
 from click.testing import CliRunner
+from datetime import datetime, timezone
+from pathlib import Path
 
 from devdox_ai_locust.cli import (
     cli,
@@ -16,6 +19,8 @@ from devdox_ai_locust.cli import (
     _show_results,
     _show_generated_files,
     _show_run_instructions,
+    _process_api_schema,
+    _generate_and_create_tests,
 )
 from devdox_ai_locust.config import Settings
 
@@ -32,6 +37,53 @@ def mock_settings():
     settings = Mock(spec=Settings)
     settings.API_KEY = "test-api-key"
     return settings
+
+
+@pytest.fixture
+def temp_dir():
+    """Create temporary directory for testing."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        yield Path(tmp_dir)
+
+
+@pytest.fixture
+def sample_endpoints():
+    """Sample endpoints for testing."""
+    from devdox_ai_locust.utils.open_ai_parser import Endpoint
+    return [
+        Endpoint(
+            path="/api/users",
+            method="GET",
+            operation_id="getUsers",
+            summary="Get all users",
+            parameters=[],
+            request_body=None,
+            responses={},
+            description="Description of the endpoint",
+            tags=["users"],
+        ),
+        Endpoint(
+            path="/api/users/{id}",
+            method="GET",
+            operation_id="getUserById",
+            summary="Get user by ID",
+            parameters=[],
+            request_body=None,
+            responses={},
+            description="Description of the endpoint",
+            tags=["users"],
+        ),
+    ]
+
+
+@pytest.fixture
+def sample_api_info():
+    """Sample API info for testing."""
+    return {
+        "title": "Test API",
+        "description": "A test API for testing",
+        "version": "1.0.0"
+    }
 
 
 class TestCLI:
@@ -70,10 +122,9 @@ class TestCLI:
         """Test config initialization with API key."""
         mock_settings = Mock()
         mock_settings.API_KEY = "test-key"
-        mock_settings.load_from_file = Mock()  # Mock the method that doesn't exist yet
         mock_settings_class.return_value = mock_settings
 
-        config, api_key = _initialize_config(None, "provided-key")
+        config, api_key = _initialize_config("provided-key")
 
         assert api_key == "provided-key"
         assert config == mock_settings
@@ -83,10 +134,9 @@ class TestCLI:
         """Test config initialization from settings."""
         mock_settings = Mock()
         mock_settings.API_KEY = "settings-key"
-        mock_settings.load_from_file = Mock()  # Mock the method that doesn't exist yet
         mock_settings_class.return_value = mock_settings
 
-        config, api_key = _initialize_config(None, None)
+        config, api_key = _initialize_config(None)
 
         assert api_key == "settings-key"
         assert config == mock_settings
@@ -97,26 +147,11 @@ class TestCLI:
         """Test config initialization without API key."""
         mock_settings = Mock()
         mock_settings.API_KEY = ""
-        mock_settings.load_from_file = Mock()  # Mock the method that doesn't exist yet
         mock_settings_class.return_value = mock_settings
 
-        _initialize_config(None, None)
+        _initialize_config(None)
 
         mock_exit.assert_called_once_with(1)
-
-    @patch("devdox_ai_locust.cli.Settings")
-    def test_initialize_config_with_config_file(self, mock_settings_class):
-        """Test config initialization with config file."""
-        mock_settings = Mock()
-        mock_settings.API_KEY = "config-file-key"
-        mock_settings.load_from_file = Mock()
-        mock_settings_class.return_value = mock_settings
-
-        config, api_key = _initialize_config("/path/to/config.yaml", None)
-
-        assert api_key == "config-file-key"
-        assert config == mock_settings
-        mock_settings.load_from_file.assert_called_once_with("/path/to/config.yaml")
 
     def test_setup_output_directory(self, temp_dir):
         """Test output directory setup."""
@@ -135,7 +170,7 @@ class TestCLI:
         mock_async_generate.return_value = None
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            _ = cli_runner.invoke(
+            result = cli_runner.invoke(
                 cli,
                 [
                     "generate",
@@ -157,7 +192,7 @@ class TestCLI:
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
 
-        _ = cli_runner.invoke(
+        result = cli_runner.invoke(
             cli,
             [
                 "run",
@@ -184,7 +219,7 @@ class TestCLI:
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
 
-        _ = cli_runner.invoke(
+        result = cli_runner.invoke(
             cli,
             ["run", str(test_file), "--host", "http://localhost:8000", "--headless"],
         )
@@ -257,7 +292,7 @@ class TestAsyncGenerate:
         mock_init_config.return_value = (Mock(), "test-api-key")
         mock_setup_output.return_value = temp_dir
         mock_process_schema.return_value = (None, sample_endpoints, sample_api_info)
-        mock_generate_tests.return_value = ["test_file.py"]
+        mock_generate_tests.return_value = [{"path": "test_file.py"}]
 
         # Create mock context
         mock_ctx = Mock()
@@ -268,7 +303,6 @@ class TestAsyncGenerate:
             mock_ctx,
             "https://api.example.com/swagger.json",
             "output",
-            None,  # config
             10,  # users
             2,  # spawn_rate
             "5m",  # run_time
@@ -309,7 +343,6 @@ class TestAsyncGenerate:
                 mock_ctx,
                 "https://api.example.com/swagger.json",
                 "output",
-                None,
                 10,
                 2,
                 "5m",
@@ -340,7 +373,7 @@ class TestAsyncGenerate:
         mock_init_config.return_value = (Mock(), "test-api-key")
         mock_setup_output.return_value = temp_dir
         mock_process_schema.return_value = (None, sample_endpoints, sample_api_info)
-        mock_generate_tests.return_value = ["test_file.py"]
+        mock_generate_tests.return_value = [{"path": "test_file.py"}]
 
         # Create mock context with verbose=True
         mock_ctx = Mock()
@@ -353,7 +386,6 @@ class TestAsyncGenerate:
                     mock_ctx,
                     "https://api.example.com/swagger.json",
                     "output",
-                    None,
                     10,
                     2,
                     "5m",
@@ -366,6 +398,81 @@ class TestAsyncGenerate:
 
                 # Should call display configuration when verbose
                 mock_display.assert_called_once()
+
+
+class TestProcessApiSchema:
+    """Test API schema processing functionality."""
+
+    @pytest.mark.asyncio
+    @patch("devdox_ai_locust.cli.get_api_schema")
+    @patch("devdox_ai_locust.cli.OpenAPIParser")
+    async def test_process_api_schema_success(self, mock_parser_class, mock_get_schema, sample_endpoints, sample_api_info):
+        """Test successful API schema processing."""
+        # Mock the schema fetching
+        mock_get_schema.return_value = '{"openapi": "3.0.0"}'
+
+        # Mock the parser
+        mock_parser = Mock()
+        mock_parser.parse_schema.return_value = {"openapi": "3.0.0"}
+        mock_parser.parse_endpoints.return_value = sample_endpoints
+        mock_parser.get_schema_info.return_value = sample_api_info
+        mock_parser_class.return_value = mock_parser
+
+        # Test the function
+        schema_data, endpoints, api_info = await _process_api_schema(
+            "https://api.example.com/swagger.json", verbose=False
+        )
+
+        # Verify results
+        assert endpoints == sample_endpoints
+        assert api_info == sample_api_info
+        mock_get_schema.assert_called_once()
+        mock_parser.parse_schema.assert_called_once()
+        mock_parser.parse_endpoints.assert_called_once()
+        mock_parser.get_schema_info.assert_called_once()
+
+
+
+
+class TestGenerateAndCreateTests:
+    """Test test generation and creation functionality."""
+
+    @pytest.mark.asyncio
+    @patch("devdox_ai_locust.cli.Together")
+    @patch("devdox_ai_locust.cli.HybridLocustGenerator")
+    async def test_generate_and_create_tests_success(
+        self, mock_generator_class, mock_together_class, temp_dir, sample_endpoints, sample_api_info
+    ):
+        """Test successful test generation and creation."""
+        # Mock Together client
+        mock_client = Mock()
+        mock_together_class.return_value = mock_client
+
+        # Mock generator
+        mock_generator = Mock()
+        mock_generator.generate_from_endpoints = AsyncMock(return_value=(
+            {"test_file.py": "test content"},
+            [{"workflow_file.py": "workflow content"}]
+        ))
+        mock_generator._create_test_files_safely = AsyncMock(return_value=[{"path": "created_file.py"}])
+        mock_generator_class.return_value = mock_generator
+
+        # Test the function
+        created_files = await _generate_and_create_tests(
+            api_key="test-api-key",
+            endpoints=sample_endpoints,
+            api_info=sample_api_info,
+            output_dir=temp_dir,
+            custom_requirement="test requirement",
+            host="http://localhost:8000",
+            auth=True
+        )
+
+        # Verify calls
+        mock_together_class.assert_called_once_with(api_key="test-api-key")
+        mock_generator_class.assert_called_once_with(ai_client=mock_client)
+        mock_generator.generate_from_endpoints.assert_called_once()
+        assert len(created_files) > 0
 
 
 class TestCLIHelperFunctions:
@@ -388,14 +495,14 @@ class TestCLIHelperFunctions:
 
     def test_show_generated_files_verbose(self):
         """Test showing generated files in verbose mode."""
-        files = ["file1.py", "file2.py", "file3.py"]
+        files = [{"path": "file1.py"}, {"path": "file2.py"}, {"path": "file3.py"}]
 
         # Should not raise an exception
         _show_generated_files(files, verbose=True)
 
     def test_show_generated_files_non_verbose(self):
         """Test showing generated files in non-verbose mode."""
-        files = [f"file{i}.py" for i in range(15)]  # More than 10 files
+        files = [{"path": f"file{i}.py"} for i in range(15)]  # More than 10 files
 
         # Should not raise an exception
         _show_generated_files(files, verbose=False)
@@ -433,8 +540,6 @@ class TestCLIHelperFunctions:
     @patch("devdox_ai_locust.cli.sys.exit")
     def test_show_results_no_files(self, mock_exit, temp_dir):
         """Test show results when no files were created."""
-        from datetime import datetime, timezone
-
         start_time = datetime.now(timezone.utc)
 
         _show_results(
@@ -453,10 +558,8 @@ class TestCLIHelperFunctions:
 
     def test_show_results_success(self, temp_dir):
         """Test show results with successful file creation."""
-        from datetime import datetime, timezone
-
         start_time = datetime.now(timezone.utc)
-        created_files = ["file1.py", "file2.py"]
+        created_files = [{"path": "file1.py"}, {"path": "file2.py"}]
 
         # Should not raise an exception
         _show_results(
