@@ -58,6 +58,7 @@ dev = [
     "pre-commit>=2.20",
     "twine>=4.0",
     "build>=0.8",
+    "ruff==0.13.1"
 ]
 docs = [
     "sphinx>=5.0",
