@@ -3,6 +3,7 @@ import sys
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
 from together import Together
@@ -10,29 +11,31 @@ from together import Together
 from .hybrid_loctus_generator import HybridLocustGenerator
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
-from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser
+from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
 
 
-def _initialize_config(config, together_api_key):
+def _initialize_config( together_api_key: Optional[str]) -> Tuple[Settings, str]:
     """Initialize configuration and validate API key"""
     config_obj = Settings()
-    if config:
-        config_obj.load_from_file(config)
+    if together_api_key:
+        api_key = together_api_key
+    else:
+        api_key = config_obj.API_KEY
 
-    api_key = together_api_key or config_obj.API_KEY
     if not api_key:
         console.print(
-            "[red]Error:[/red] Together AI API key is required. Set TOGETHER_API_KEY environment variable or use --together-api-key"
+            "[red]Error:[/red] Together AI API key is required. "
+            "Set TOGETHER_API_KEY environment variable or use --together-api-key"
         )
         sys.exit(1)
 
     return config_obj, api_key
 
 
-def _setup_output_directory(output):
+def _setup_output_directory(output: Union[str, Path]) -> Path:
     """Create and return output directory path"""
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -40,16 +43,16 @@ def _setup_output_directory(output):
 
 
 def _display_configuration(
-    swagger_url,
-    output_dir,
-    users,
-    spawn_rate,
-    run_time,
-    host,
-    auth,
-    custom_requirement,
-    dry_run,
-):
+    swagger_url: str,
+    output_dir: Path,
+    users: int,
+    spawn_rate: float,
+    run_time: str,
+    host: Optional[str],
+    auth: bool,
+    custom_requirement: Optional[str],
+    dry_run: bool,
+)-> None:
     table = Table(title="Generation Configuration")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
@@ -69,16 +72,16 @@ def _display_configuration(
 
 
 def _show_results(
-    created_files,
-    output_dir,
-    start_time,
-    verbose,
-    dry_run,
-    users,
-    spawn_rate,
-    run_time,
-    host,
-):
+    created_files: List[Dict[Any, Any]],
+    output_dir: Path,
+    start_time: datetime,
+    verbose: bool,
+    dry_run: bool,
+    users: int,
+    spawn_rate: float,
+    run_time: str,
+    host: Optional[str],
+) -> None:
     """Display generation results and run instructions"""
     end_time = datetime.now(timezone.utc)
     processing_time = (end_time - start_time).total_seconds()
@@ -96,7 +99,7 @@ def _show_results(
         _show_run_instructions(output_dir, users, spawn_rate, run_time, host)
 
 
-def _show_generated_files(created_files, verbose):
+def _show_generated_files(created_files: List[Dict[Any,Any]], verbose: bool) -> None:
     """Display list of generated files"""
     if verbose or len(created_files) <= 10:
         console.print("\n[bold]Generated files:[/bold]")
@@ -107,7 +110,7 @@ def _show_generated_files(created_files, verbose):
         console.print("Use --verbose to see all file names")
 
 
-def _show_run_instructions(output_dir, users, spawn_rate, run_time, host):
+def _show_run_instructions(output_dir: Path, users: int, spawn_rate: float, run_time: str, host: Optional[str]) -> None:
     """Display instructions for running the generated tests"""
     console.print("\n[bold]To run tests:[/bold]")
     console.print(f"  cd {output_dir}")
@@ -132,7 +135,7 @@ def _show_run_instructions(output_dir, users, spawn_rate, run_time, host):
     )
 
 
-async def _process_api_schema(swagger_url, verbose):
+async def _process_api_schema(swagger_url: str, verbose: bool) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
     """Fetch and parse API schema"""
     # Fetch API schema
     source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
@@ -178,25 +181,25 @@ async def _process_api_schema(swagger_url, verbose):
 
 
 async def _generate_and_create_tests(
-    api_key, endpoints, api_info, output_dir, custom_requirement, host, auth
-):
+    api_key: str,
+    endpoints: List[Endpoint],
+    api_info: Dict[str, Any],
+    output_dir: Path,
+    custom_requirement: Optional[str]="",
+    host: Optional[str]="0.0.0.0",
+    auth: bool=False,
+) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = Together(api_key=api_key)
 
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(ai_client=together_client)
 
-        # Build generation kwargs
-        generation_kwargs = {}
-        if custom_requirement:
-            generation_kwargs["custom_requirement"] = custom_requirement
-        if host:
-            generation_kwargs["target_host"] = host
-        if not auth:
-            generation_kwargs["include_auth"] = False
+
 
         test_files, test_directories = await generator.generate_from_endpoints(
-            endpoints=endpoints, api_info=api_info, **generation_kwargs
+            endpoints=endpoints, api_info=api_info, custom_requirement=custom_requirement,
+            target_host=host,include_auth=auth
         )
 
     # Create test files
@@ -227,7 +230,7 @@ async def _generate_and_create_tests(
 @click.version_option(version="0.1.0")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.pass_context
-def cli(ctx, verbose):
+def cli(ctx: click.Context, verbose: bool) -> None:
     """DevDox AI LoadTest - Generate Locust tests from API documentation"""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
@@ -245,7 +248,6 @@ def cli(ctx, verbose):
     default="output",
     help="Output directory for generated tests (default: output)",
 )
-@click.option("--config", "-c", type=click.Path(exists=True), help="Configuration file")
 @click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
 @click.option(
     "--spawn-rate",
@@ -271,19 +273,18 @@ def cli(ctx, verbose):
 )
 @click.pass_context
 def generate(
-    ctx,
-    swagger_url,
-    output,
-    config,
-    users,
-    spawn_rate,
-    run_time,
-    host,
-    auth,
-    dry_run,
-    custom_requirement,
-    together_api_key,
-):
+    ctx: click.Context,
+    swagger_url: str,
+    output: str,
+    users: int,
+    spawn_rate: float,
+    run_time: str,
+    host: Optional[str],
+    auth: bool,
+    dry_run: bool,
+    custom_requirement: Optional[str],
+    together_api_key: Optional[str],
+) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
 
     try:
@@ -293,7 +294,6 @@ def generate(
                 ctx,
                 swagger_url,
                 output,
-                config,
                 users,
                 spawn_rate,
                 run_time,
@@ -314,25 +314,24 @@ def generate(
 
 
 async def _async_generate(
-    ctx,
-    swagger_url,
-    output,
-    config,
-    users,
-    spawn_rate,
-    run_time,
-    host,
-    auth,
-    dry_run,
-    custom_requirement,
-    together_api_key,
-):
+    ctx: click.Context,
+    swagger_url: str,
+    output: str,
+    users: int,
+    spawn_rate: float,
+    run_time: str,
+    host: Optional[str],
+    auth: bool,
+    dry_run: bool,
+    custom_requirement: Optional[str],
+    together_api_key: Optional[str],
+) -> None:
     """Async function to handle the generation process"""
 
     start_time = datetime.now(timezone.utc)
 
     try:
-        _, api_key = _initialize_config(config, together_api_key)
+        _, api_key = _initialize_config( together_api_key)
         output_dir = _setup_output_directory(output)
 
         # Display configuration
@@ -379,7 +378,6 @@ async def _async_generate(
         raise
 
 
-@cli.command()
 @click.argument("test_file", type=click.Path(exists=True))
 @click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
 @click.option("--spawn-rate", "-r", type=float, default=2, help="Rate to spawn users")
@@ -387,7 +385,7 @@ async def _async_generate(
 @click.option("--host", "-H", type=str, required=True, help="Target host URL")
 @click.option("--headless", is_flag=True, help="Run in headless mode (no web UI)")
 @click.pass_context
-def run(ctx, test_file, users, spawn_rate, run_time, host, headless):
+def run(ctx: click.Context, test_file: str, users: int, spawn_rate: float, run_time: str, host: str, headless: bool) -> None:
     """Run generated Locust tests"""
 
     try:
@@ -426,7 +424,7 @@ def run(ctx, test_file, users, spawn_rate, run_time, host, headless):
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     """Main entry point for the CLI"""
     cli()
 

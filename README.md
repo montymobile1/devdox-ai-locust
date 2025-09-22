@@ -81,7 +81,6 @@ devdox_ai_locust generate [OPTIONS] SWAGGER_URL
 | Option | Short | Type | Description | Default |
 |--------|--------|------|-------------|---------|
 | `--output` | `-o` | Path | Output directory for generated tests | `output` |
-| `--config` | `-c` | Path | Configuration file path | None |
 | `--users` | `-u` | Integer | Number of simulated users | `10` |
 | `--spawn-rate` | `-r` | Float | User spawn rate (users/second) | `2` |
 | `--run-time` | `-t` | String | Test duration (e.g., 5m, 1h) | `5m` |

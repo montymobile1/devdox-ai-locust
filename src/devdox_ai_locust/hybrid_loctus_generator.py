@@ -85,7 +85,8 @@ class EnhancementProcessor:
         return enhanced_files, enhancements
 
     async def process_domain_flows_enhancement(
-        self, endpoints: List[Endpoint], api_info: Dict[str, Any]
+        self, endpoints: List[Endpoint], api_info: Dict[str, Any],
+            custom_requirement: Optional[str] = "",
     ) -> Tuple[Dict[str, str], List[str]]:
         """Process domain flows enhancement"""
         enhanced_files = {}
@@ -93,7 +94,7 @@ class EnhancementProcessor:
 
         if self.ai_config and self.ai_config.create_domain_flows:
             domain_flows = await self.locust_generator._generate_domain_flows(
-                endpoints, api_info
+                endpoints, api_info, custom_requirement=custom_requirement
             )
             if domain_flows:
                 enhanced_files["custom_flows.py"] = domain_flows
@@ -117,10 +118,15 @@ class EnhancementProcessor:
         base_workflow_files = self.locust_generator.get_files_by_key(
             directory_files, "base_workflow.py"
         )
+        base_workflow_content = ""
+        if base_workflow_files:
+            first_workflow = base_workflow_files[0]
+            # Get the content from the dictionary - adjust key name as needed
+            base_workflow_content = first_workflow.get("base_workflow.py", "")
 
         for workflow_item in directory_files:
             enhanced_workflow_item = await self._enhance_single_workflow(
-                workflow_item, base_files, base_workflow_files, grouped_endpoints
+                workflow_item, base_files, base_workflow_content, grouped_endpoints
             )
             if enhanced_workflow_item:
                 enhanced_directory_files.append(enhanced_workflow_item["files"])
@@ -194,7 +200,7 @@ class HybridLocustGenerator:
 
     def __init__(
         self,
-        ai_client: Optional[Together] = None,
+        ai_client: Together,
         ai_config: Optional[AIEnhancementConfig] = None,
         test_config: Optional[TestDataConfig] = None,
         prompt_dir: str = "prompt",
@@ -225,7 +231,10 @@ class HybridLocustGenerator:
         self,
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-    ) -> Tuple[Dict[str, str], List[dict[str, Any]]]:
+        custom_requirement: Optional[str] = None,
+        target_host: Optional[str] = None,
+        include_auth: bool = True,
+    ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
         """
         Generate Locust tests using hybrid approach
 
@@ -239,7 +248,8 @@ class HybridLocustGenerator:
             # Step 1: Generate reliable base structure
             logger.info("🔧 Generating base test structure with templates...")
             base_files, directory_files, grouped_enpoints = (
-                self.template_generator.generate_from_endpoints(endpoints, api_info)
+                self.template_generator.generate_from_endpoints(endpoints, api_info,
+                include_auth=include_auth,target_host=target_host)
             )
 
             base_files = self.template_generator.fix_indent(base_files)
@@ -247,7 +257,7 @@ class HybridLocustGenerator:
             if self.ai_client and self._should_enhance(endpoints, api_info):
                 logger.info("🤖 Enhancing tests with AI...")
                 enhancement_result = await self._enhance_with_ai(
-                    base_files, endpoints, api_info, directory_files, grouped_enpoints
+                    base_files, endpoints, api_info, directory_files, grouped_enpoints,custom_requirement
                 )
                 if enhancement_result.success:
                     logger.info(
@@ -347,13 +357,14 @@ class HybridLocustGenerator:
         api_info: Dict[str, Any],
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
+            custom_requirement: Optional[str] = None,
     ) -> EnhancementResult:
         """Enhance base files with AI - Refactored for reduced cognitive complexity"""
         start_time = asyncio.get_event_loop().time()
 
         try:
             enhancement_result = await self._process_all_enhancements(
-                base_files, endpoints, api_info, directory_files, grouped_endpoints
+                base_files, endpoints, api_info, directory_files, grouped_endpoints, custom_requirement
             )
 
             processing_time = asyncio.get_event_loop().time() - start_time
@@ -381,6 +392,7 @@ class HybridLocustGenerator:
         api_info: Dict[str, Any],
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
+        custom_requirement: Optional[str] = None,
     ) -> EnhancementResult:
         """Process all enhancements using the enhancement processor"""
         processor = EnhancementProcessor(self.ai_config, self)
@@ -392,9 +404,10 @@ class HybridLocustGenerator:
         # Process each enhancement type
         enhancement_tasks = [
             processor.process_main_locust_enhancement(base_files, endpoints, api_info),
-            processor.process_domain_flows_enhancement(endpoints, api_info),
+            processor.process_domain_flows_enhancement(endpoints, api_info, custom_requirement),
             processor.process_test_data_enhancement(base_files, endpoints),
             processor.process_validation_enhancement(base_files, endpoints),
+
         ]
 
         # Execute file-based enhancements concurrently
@@ -414,7 +427,6 @@ class HybridLocustGenerator:
 
         # Process workflow enhancements separately (more complex logic)
         try:
-
             (
                 workflow_files,
                 workflow_enhancements,
@@ -436,23 +448,22 @@ class HybridLocustGenerator:
         )
 
     async def _generate_domain_flows(
-        self, endpoints: List[Endpoint], api_info: Dict[str, Any]
+        self, endpoints: List[Endpoint], api_info: Dict[str, Any], custom_requirement: Optional[str] = "",
     ) -> Optional[str]:
         """Generate domain-specific user flows"""
 
         # Analyze endpoints to determine domain
         domain_analysis = self._analyze_api_domain(endpoints, api_info)
         try:
-            template = self.jinja_env.get_template("workflow.j2")
-
+            template = self.jinja_env.get_template("domain.j2")
             # Render enhanced content
             prompt = template.render(
                 domain_analysis=domain_analysis,
+                custom_requirement=custom_requirement,
                 endpoints=self._format_endpoints_for_prompt(endpoints),
             )
 
             enhanced_content = await self._call_ai_service(prompt)
-
             if enhanced_content:
                 return enhanced_content
         except Exception as e:
@@ -460,7 +471,8 @@ class HybridLocustGenerator:
 
         return ""
 
-    def get_files_by_key(self, directory_files, target_key):
+    def get_files_by_key(self,directory_files: List[Dict[str, Any]],
+                         target_key: str) -> List[Dict[str, Any]]:
         """Return directory items that contain the specified key"""
         return [items for items in directory_files if target_key in items]
 
