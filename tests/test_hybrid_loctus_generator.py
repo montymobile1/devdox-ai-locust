@@ -89,41 +89,41 @@ class TestHybridLocustGenerator:
 
         assert generator.ai_client == mock_together_client
 
-    def test_init_with_custom_config(self, ai_enhancement_config):
+    def test_init_with_custom_config(self, ai_enhancement_config,mock_together_client):
         """Test initialization with custom AI config."""
-        generator = HybridLocustGenerator(ai_config=ai_enhancement_config)
+        generator = HybridLocustGenerator(ai_config=ai_enhancement_config,ai_client=mock_together_client)
 
         assert generator.ai_config.enhance_workflows is True
         assert generator.ai_config.enhance_test_data is True
 
-    def test_init_with_custom_test_config(self):
+    def test_init_with_custom_test_config(self,mock_together_client):
         """Test initialization with custom test config."""
         test_config = TestDataConfig(string_length=25)
-        generator = HybridLocustGenerator(test_config=test_config)
+        generator = HybridLocustGenerator(test_config=test_config, ai_client=mock_together_client)
 
         assert generator.template_generator.test_config.string_length == 25
 
     @patch("devdox_ai_locust.hybrid_loctus_generator.Path")
-    def test_find_project_root(self, mock_path):
+    def test_find_project_root(self, mock_path,mock_together_client):
         """Test finding project root."""
         mock_path.return_value = Path("/project/src/devdox_ai_locust/file.py")
 
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
         root = generator._find_project_root()
 
         assert root == Path("/project/src/devdox_ai_locust")
 
-    def test_should_enhance_enough_endpoints(self, sample_endpoints):
+    def test_should_enhance_enough_endpoints(self, sample_endpoints,mock_together_client):
         """Test should enhance with enough endpoints."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Should enhance with 3+ endpoints
         result = generator._should_enhance(sample_endpoints, {})
         assert result is True
 
-    def test_should_enhance_complex_endpoints(self, sample_api_info):
+    def test_should_enhance_complex_endpoints(self, sample_api_info,mock_together_client):
         """Test should enhance with complex endpoints."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Create complex endpoint
         complex_endpoint = Mock()
@@ -135,9 +135,9 @@ class TestHybridLocustGenerator:
         result = generator._should_enhance([complex_endpoint], sample_api_info)
         assert result is True
 
-    def test_should_enhance_domain_patterns(self, sample_api_info):
+    def test_should_enhance_domain_patterns(self, sample_api_info,mock_together_client):
         """Test should enhance with domain patterns."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Modify API info to include domain keywords
         api_info = sample_api_info.copy()
@@ -153,9 +153,9 @@ class TestHybridLocustGenerator:
         result = generator._should_enhance([endpoint], api_info)
         assert result is True
 
-    def test_should_not_enhance_simple_case(self):
+    def test_should_not_enhance_simple_case(self,mock_together_client):
         """Test should not enhance with simple case."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Simple endpoint without domain patterns
         simple_endpoint = Mock()
@@ -169,9 +169,9 @@ class TestHybridLocustGenerator:
         result = generator._should_enhance([simple_endpoint], simple_api_info)
         assert result is False
 
-    def test_detect_domain_patterns_ecommerce(self, sample_endpoints):
+    def test_detect_domain_patterns_ecommerce(self, sample_endpoints,mock_together_client):
         """Test detecting e-commerce domain patterns."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         api_info = {
             "title": "Shopping API",
@@ -181,9 +181,9 @@ class TestHybridLocustGenerator:
         result = generator._detect_domain_patterns(sample_endpoints, api_info)
         assert result is True
 
-    def test_detect_domain_patterns_user_management(self, sample_endpoints):
+    def test_detect_domain_patterns_user_management(self, sample_endpoints,mock_together_client):
         """Test detecting user management patterns."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Endpoints contain /users and /auth paths
         api_info = {"title": "User API", "description": "User management"}
@@ -191,9 +191,9 @@ class TestHybridLocustGenerator:
         result = generator._detect_domain_patterns(sample_endpoints, api_info)
         assert result is True
 
-    def test_detect_domain_patterns_no_match(self):
+    def test_detect_domain_patterns_no_match(self,mock_together_client):
         """Test no domain pattern detection."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         endpoint = Mock()
         endpoint.path = "/data"
@@ -203,9 +203,9 @@ class TestHybridLocustGenerator:
         result = generator._detect_domain_patterns([endpoint], api_info)
         assert result is False
 
-    def test_format_endpoints_for_prompt(self, sample_endpoints):
+    def test_format_endpoints_for_prompt(self, sample_endpoints,mock_together_client):
         """Test formatting endpoints for AI prompt."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         formatted = generator._format_endpoints_for_prompt(sample_endpoints)
 
@@ -214,9 +214,9 @@ class TestHybridLocustGenerator:
         assert "GET /users/{id}" in formatted
         assert "POST /auth/login" in formatted
 
-    def test_analyze_api_domain(self, sample_endpoints, sample_api_info):
+    def test_analyze_api_domain(self, sample_endpoints, sample_api_info,mock_together_client):
         """Test API domain analysis."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         analysis = generator._analyze_api_domain(sample_endpoints, sample_api_info)
         assert "Test API" in analysis
@@ -224,18 +224,18 @@ class TestHybridLocustGenerator:
         assert "POST" in analysis
         assert "GET" in analysis
 
-    def test_extract_path_patterns(self):
+    def test_extract_path_patterns(self,mock_together_client):
         """Test extracting path patterns."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         paths = ["/api/v1/users", "/api/v1/posts", "/api/v2/comments"]
         patterns = generator._extract_path_patterns(paths)
 
         assert "/api/v1" in patterns or "/api/v2" in patterns
 
-    def test_extract_resources_from_paths(self):
+    def test_extract_resources_from_paths(self,mock_together_client):
         """Test extracting resources from paths."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         paths = ["/users", "/posts", "/comments", "/auth/login"]
         resources = generator._extract_resources_from_paths(paths)
@@ -581,18 +581,18 @@ class TestEnhancementProcessor:
 class TestHybridLocustGeneratorUtils:
     """Test utility methods of HybridLocustGenerator."""
 
-    def test_clean_ai_response_markdown(self):
+    def test_clean_ai_response_markdown(self,mock_together_client):
         """Test cleaning AI response with markdown."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         response = "```python\nprint('hello')\n```"
         cleaned = generator._clean_ai_response(response)
 
         assert cleaned == "print('hello')"
 
-    def test_clean_ai_response_explanatory_text(self):
+    def test_clean_ai_response_explanatory_text(self,mock_together_client):
         """Test cleaning AI response with explanatory text."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         response = """Here's the code:
 
@@ -611,9 +611,9 @@ This code creates a basic user class."""
         assert "Here's the code:" not in cleaned
         assert "This code creates" not in cleaned
 
-    def test_extract_code_from_response(self):
+    def test_extract_code_from_response(self,mock_together_client):
         """Test extracting code from AI response."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         response = """Some explanation here.
 
@@ -628,18 +628,18 @@ More explanation."""
 
         assert code == "import locust\nprint('hello')"
 
-    def test_extract_code_from_response_no_tags(self):
+    def test_extract_code_from_response_no_tags(self, mock_together_client):
         """Test extracting code when no code tags present."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         response = "import locust\nprint('hello')"
         code = generator.extract_code_from_response(response)
 
         assert code == response.strip()
 
-    def test_validate_python_code_valid(self):
+    def test_validate_python_code_valid(self, mock_together_client):
         """Test validating valid Python code."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         valid_code = """
 def test_function():
@@ -650,27 +650,27 @@ def test_function():
         is_valid = generator._validate_python_code(valid_code)
         assert is_valid is True
 
-    def test_validate_python_code_invalid(self):
+    def test_validate_python_code_invalid(self, mock_together_client):
         """Test validating invalid Python code."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         invalid_code = "def invalid_syntax(:"
 
         is_valid = generator._validate_python_code(invalid_code)
         assert is_valid is False
 
-    def test_extract_schema_patterns(self, sample_endpoints):
+    def test_extract_schema_patterns(self, sample_endpoints, mock_together_client):
         """Test extracting schema patterns."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         patterns = generator._extract_schema_patterns(sample_endpoints)
 
         # Should extract patterns from endpoints with request bodies
         assert isinstance(patterns, str)
 
-    def test_extract_validation_patterns(self, sample_endpoints):
+    def test_extract_validation_patterns(self, sample_endpoints, mock_together_client):
         """Test extracting validation patterns."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         patterns = generator._extract_validation_patterns(sample_endpoints)
 
@@ -684,10 +684,10 @@ class TestHybridLocustGeneratorFileOperations:
 
     @pytest.mark.asyncio
     async def test_create_test_files_safely_success(
-        self, temp_dir, sample_generated_files
+        self, temp_dir, sample_generated_files, mock_together_client
     ):
         """Test successful safe file creation."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         result = await generator._create_test_files_safely(
             sample_generated_files, temp_dir
@@ -700,18 +700,18 @@ class TestHybridLocustGeneratorFileOperations:
             assert file_info["path"].exists()
 
     @pytest.mark.asyncio
-    async def test_create_test_files_safely_empty_files(self, temp_dir):
+    async def test_create_test_files_safely_empty_files(self, temp_dir, mock_together_client):
         """Test safe file creation with empty files dict."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         result = await generator._create_test_files_safely({}, temp_dir)
 
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_create_test_files_safely_with_errors(self, temp_dir):
+    async def test_create_test_files_safely_with_errors(self, temp_dir, mock_together_client):
         """Test safe file creation with some errors."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Include a file that might cause issues
         problematic_files = {
@@ -731,10 +731,10 @@ class TestHybridLocustGeneratorEdgeCases:
 
     @pytest.mark.asyncio
     async def test_generate_from_endpoints_exception(
-        self, sample_endpoints, sample_api_info
+        self, sample_endpoints, sample_api_info, mock_together_client
     ):
         """Test generation with exception in template generator."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         # Mock the template generator to fail on first call but succeed on fallback
         call_count = 0
@@ -769,8 +769,6 @@ class TestHybridLocustGeneratorEdgeCases:
                 sample_endpoints, sample_api_info
             )
 
-            print("files ", files, type(files))
-            print("workflows ", workflows, type(workflows))
 
             # Should still return something (fallback)
             # The method returns Tuple[Dict[str, str], List[Dict[str, Any]]]
@@ -792,10 +790,10 @@ class TestHybridLocustGeneratorEdgeCases:
 
     @pytest.mark.asyncio
     async def test_generate_from_endpoints_complete_failure(
-        self, sample_endpoints, sample_api_info
+        self, sample_endpoints, sample_api_info, mock_together_client
     ):
         """Test generation when both initial and fallback fail."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         with patch.object(
             generator.template_generator, "generate_from_endpoints"
@@ -807,8 +805,6 @@ class TestHybridLocustGeneratorEdgeCases:
             files, workflows = await generator.generate_from_endpoints(
                 sample_endpoints, sample_api_info
             )
-            print("files ", files, type(files))
-            print("workflows ", workflows, type(workflows))
 
             # Should return empty results as last resort
             assert isinstance(files, dict)
@@ -857,9 +853,9 @@ class TestHybridLocustGeneratorEdgeCases:
             assert result.success is True
             assert len(result.enhancements_applied) > 0
 
-    def test_setup_jinja_env(self):
+    def test_setup_jinja_env(self, mock_together_client):
         """Test Jinja environment setup."""
-        generator = HybridLocustGenerator()
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
         assert hasattr(generator, "jinja_env")
         assert generator.jinja_env is not None

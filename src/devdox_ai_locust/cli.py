@@ -135,28 +135,35 @@ def _show_run_instructions(output_dir: Path, users: int, spawn_rate: float, run_
     )
 
 
-async def _process_api_schema(swagger_url: str, verbose: bool) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
+async def _process_api_schema(
+    swagger_url: str, verbose: bool
+) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
     """Fetch and parse API schema"""
-    # Fetch API schema
     source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
-    is_url = swagger_url.startswith(("http://", "https://"))
+    api_schema = None
     with console.status(
-        f"[bold green]Fetching API schema from {'URL' if is_url else 'file'}..."
+        f"[bold green]Fetching API schema from {'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'}..."
     ):
-        # Use timeout context manager instead of parameter
         try:
-            async with asyncio.timeout(30):  # 30 second timeout
+            async with asyncio.timeout(30):
                 api_schema = await get_api_schema(source_request)
+
+                if not api_schema:
+                    console.print("[red]✗[/red] Failed to fetch API schema")
+                    sys.exit(1)
+
         except asyncio.TimeoutError:
             console.print("[red]✗[/red] Timeout while fetching API schema")
             sys.exit(1)
-
+        except Exception as e:
+            console.print(f"[red]✗[/red] Error fetching API schema: {e}")
+            sys.exit(1)
     if not api_schema:
         console.print("[red]✗[/red] Failed to fetch API schema")
         sys.exit(1)
-
+    schema_length = len(api_schema) if api_schema else 0
     console.print(
-        f"[green]✓[/green] Successfully fetched API schema ({len(api_schema)} characters)"
+        f"[green]✓[/green] Successfully fetched API schema ({schema_length} characters)"
     )
 
     # Parse schema
@@ -377,7 +384,7 @@ async def _async_generate(
         )
         raise
 
-
+@cli.command()
 @click.argument("test_file", type=click.Path(exists=True))
 @click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
 @click.option("--spawn-rate", "-r", type=float, default=2, help="Rate to spawn users")
