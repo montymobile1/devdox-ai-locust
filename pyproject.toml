@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "devdox_ai_locust"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI-powered Locust load test generator from API documentation"
 readme = "README.md"
 license = {text = "Apache-2.0" }
@@ -101,7 +101,7 @@ exclude = ["tests*"]
 
 
 [tool.setuptools.package-data]
-devdox_ai_locust = ["schemas/*.json", "templates/*.j2", "py.typed"]
+devdox_ai_locust = ["schemas/*.json", "templates/*.j2","prompt/*.j2", "py.typed","*.j2"]
 
 # flake8 configuration (legacy - remove if using ruff)
 [tool.flake8]
