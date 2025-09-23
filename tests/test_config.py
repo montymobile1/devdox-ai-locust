@@ -15,7 +15,7 @@ class TestSettings:
         """Test default settings values."""
         test_settings = Settings(_env_file=".env.example")
 
-        assert test_settings.VERSION == "0.1.0"
+        assert test_settings.VERSION == "0.1.1"
         assert test_settings.API_KEY == ""
 
     def test_settings_with_env_vars(self):
@@ -108,7 +108,7 @@ class TestSettings:
     def test_global_settings_instance(self):
         """Test the global settings instance."""
         assert isinstance(settings, Settings)
-        assert settings.VERSION == "0.1.0"
+        assert settings.VERSION == "0.1.1"
 
 
 class TestSettingsMethods:
@@ -120,7 +120,7 @@ class TestSettingsMethods:
         original_version = test_settings.VERSION
 
         # VERSION should be a class-level constant
-        assert original_version == "0.1.0"
+        assert original_version == "0.1.1"
 
         # Even if we try to change it, it should remain the same
         # (depending on Pydantic implementation)
