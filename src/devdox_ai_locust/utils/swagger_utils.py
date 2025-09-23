@@ -85,10 +85,10 @@ async def _fetch_from_url(url: str) -> str:
             raise httpx.HTTPError(f"Request failed for URL {url}: {str(e)}")
 
 
-def _sanitize_filename( filename: str) -> str:
-        # Remove directory components and sanitize
-        clean_name = os.path.basename(filename)
-        clean_name = re.sub(r"[^\w\-\.]", "", clean_name)
-        if not clean_name or clean_name.startswith("."):
-            clean_name = f"generated_{uuid.uuid4().hex[:8]}.py"
-        return clean_name
+def _sanitize_filename(filename: str) -> str:
+    # Remove directory components and sanitize
+    clean_name = os.path.basename(filename)
+    clean_name = re.sub(r"[^\w\-\.]", "", clean_name)
+    if not clean_name or clean_name.startswith("."):
+        clean_name = f"generated_{uuid.uuid4().hex[:8]}.py"
+    return clean_name

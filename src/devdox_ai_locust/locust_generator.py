@@ -75,7 +75,7 @@ class LocustTestGenerator:
             updated_data = {}
 
             for key, value in base_files.items():
-                if isinstance(value, str):
+
                     try:
                         formatted_code = black.format_str(value, mode=mode)
 
@@ -88,8 +88,7 @@ class LocustTestGenerator:
                         # Other Black formatting errors, keep original and log
                         logger.warning(f"Failed to format {key}: {format_error}")
                         updated_data[key] = value
-                else:
-                    updated_data[key] = str(value)
+
 
             return updated_data
 
@@ -102,7 +101,7 @@ class LocustTestGenerator:
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
         include_auth: bool = True,
-          target_host: Optional[str] = None,
+        target_host: Optional[str] = None,
     ) -> Tuple[Dict[str, str], List[Dict[str, Any]], Dict[str, List[Endpoint]]]:
         """
         Generate complete Locust test suite from parsed endpoints
@@ -116,7 +115,7 @@ class LocustTestGenerator:
             Dictionary of filename -> file content
         """
         try:
-            grouped_enpoint = self._group_endpoints_by_tag(endpoints,include_auth)
+            grouped_enpoint = self._group_endpoints_by_tag(endpoints, include_auth)
 
             workflows_files = self.generate_workflows(grouped_enpoint, api_info)
 
@@ -130,7 +129,7 @@ class LocustTestGenerator:
                 "custom_flows.py": self._generate_custom_flows_file(),
                 "requirements.txt": self._generate_requirements_file(),
                 "README.md": self._generate_readme_file(api_info),
-                ".env.example": self._generate_env_example(api_info,target_host),
+                ".env.example": self._generate_env_example(api_info, target_host),
             }
 
             return self.generated_files, workflows_files, grouped_enpoint
@@ -540,8 +539,9 @@ class LocustTestGenerator:
         return weights.get(method.upper(), 1)
 
     def _group_endpoints_by_tag(
-        self, endpoints: List[Endpoint],
-            include_auth_endpoints: bool = True,
+        self,
+        endpoints: List[Endpoint],
+        include_auth_endpoints: bool = True,
     ) -> Dict[str, List[Endpoint]]:
         """Group endpoints by their tags"""
         grouped: Dict[str, List[Endpoint]] = {}
@@ -667,7 +667,9 @@ class LocustTestGenerator:
         content = template.render()
         return content
 
-    def _generate_env_example(self, api_info: Dict[str, Any], target_host: Optional[str] = None) -> str:
+    def _generate_env_example(
+        self, api_info: Dict[str, Any], target_host: Optional[str] = None
+    ) -> str:
         """Generate .env.example file content"""
         try:
             template = self.jinja_env.get_template("env.example.j2")
@@ -679,7 +681,7 @@ class LocustTestGenerator:
                 locust_host = api_info.get("base_url", "http://localhost:8000")
             # Prepare environment variables context
             environment_vars = {
-                "API_BASE_URL":base_url,
+                "API_BASE_URL": base_url,
                 "API_VERSION": api_info.get("version", "v1"),
                 "API_TITLE": api_info.get("title", "Your API Name"),
                 "LOCUST_USERS": "50",

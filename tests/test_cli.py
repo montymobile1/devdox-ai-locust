@@ -3,7 +3,6 @@ Tests for CLI module
 """
 
 import pytest
-import asyncio
 import tempfile
 from unittest.mock import Mock, patch, AsyncMock
 from click.testing import CliRunner
@@ -50,6 +49,7 @@ def temp_dir():
 def sample_endpoints():
     """Sample endpoints for testing."""
     from devdox_ai_locust.utils.open_ai_parser import Endpoint
+
     return [
         Endpoint(
             path="/api/users",
@@ -82,7 +82,7 @@ def sample_api_info():
     return {
         "title": "Test API",
         "description": "A test API for testing",
-        "version": "1.0.0"
+        "version": "1.0.0",
     }
 
 
@@ -170,7 +170,7 @@ class TestCLI:
         mock_async_generate.return_value = None
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            result = cli_runner.invoke(
+            _ = cli_runner.invoke(
                 cli,
                 [
                     "generate",
@@ -192,7 +192,7 @@ class TestCLI:
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
 
-        result = cli_runner.invoke(
+        _ = cli_runner.invoke(
             cli,
             [
                 "run",
@@ -219,7 +219,7 @@ class TestCLI:
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
 
-        result = cli_runner.invoke(
+        _ = cli_runner.invoke(
             cli,
             ["run", str(test_file), "--host", "http://localhost:8000", "--headless"],
         )
@@ -406,7 +406,9 @@ class TestProcessApiSchema:
     @pytest.mark.asyncio
     @patch("devdox_ai_locust.cli.get_api_schema")
     @patch("devdox_ai_locust.cli.OpenAPIParser")
-    async def test_process_api_schema_success(self, mock_parser_class, mock_get_schema, sample_endpoints, sample_api_info):
+    async def test_process_api_schema_success(
+        self, mock_parser_class, mock_get_schema, sample_endpoints, sample_api_info
+    ):
         """Test successful API schema processing."""
         # Mock the schema fetching
         mock_get_schema.return_value = '{"openapi": "3.0.0"}'
@@ -432,8 +434,6 @@ class TestProcessApiSchema:
         mock_parser.get_schema_info.assert_called_once()
 
 
-
-
 class TestGenerateAndCreateTests:
     """Test test generation and creation functionality."""
 
@@ -441,7 +441,12 @@ class TestGenerateAndCreateTests:
     @patch("devdox_ai_locust.cli.Together")
     @patch("devdox_ai_locust.cli.HybridLocustGenerator")
     async def test_generate_and_create_tests_success(
-        self, mock_generator_class, mock_together_class, temp_dir, sample_endpoints, sample_api_info
+        self,
+        mock_generator_class,
+        mock_together_class,
+        temp_dir,
+        sample_endpoints,
+        sample_api_info,
     ):
         """Test successful test generation and creation."""
         # Mock Together client
@@ -450,11 +455,15 @@ class TestGenerateAndCreateTests:
 
         # Mock generator
         mock_generator = Mock()
-        mock_generator.generate_from_endpoints = AsyncMock(return_value=(
-            {"test_file.py": "test content"},
-            [{"workflow_file.py": "workflow content"}]
-        ))
-        mock_generator._create_test_files_safely = AsyncMock(return_value=[{"path": "created_file.py"}])
+        mock_generator.generate_from_endpoints = AsyncMock(
+            return_value=(
+                {"test_file.py": "test content"},
+                [{"workflow_file.py": "workflow content"}],
+            )
+        )
+        mock_generator._create_test_files_safely = AsyncMock(
+            return_value=[{"path": "created_file.py"}]
+        )
         mock_generator_class.return_value = mock_generator
 
         # Test the function
@@ -465,7 +474,7 @@ class TestGenerateAndCreateTests:
             output_dir=temp_dir,
             custom_requirement="test requirement",
             host="http://localhost:8000",
-            auth=True
+            auth=True,
         )
 
         # Verify calls

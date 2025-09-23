@@ -15,7 +15,8 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 application_json_type = "application/json"
-localhost_url="http://localhost"
+localhost_url = "http://localhost"
+
 
 class ParameterType(Enum):
     QUERY = "query"

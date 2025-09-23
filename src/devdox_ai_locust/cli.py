@@ -17,7 +17,7 @@ from .schemas.processing_result import SwaggerProcessingRequest
 console = Console()
 
 
-def _initialize_config( together_api_key: Optional[str]) -> Tuple[Settings, str]:
+def _initialize_config(together_api_key: Optional[str]) -> Tuple[Settings, str]:
     """Initialize configuration and validate API key"""
     config_obj = Settings()
     if together_api_key:
@@ -52,7 +52,7 @@ def _display_configuration(
     auth: bool,
     custom_requirement: Optional[str],
     dry_run: bool,
-)-> None:
+) -> None:
     table = Table(title="Generation Configuration")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
@@ -99,7 +99,7 @@ def _show_results(
         _show_run_instructions(output_dir, users, spawn_rate, run_time, host)
 
 
-def _show_generated_files(created_files: List[Dict[Any,Any]], verbose: bool) -> None:
+def _show_generated_files(created_files: List[Dict[Any, Any]], verbose: bool) -> None:
     """Display list of generated files"""
     if verbose or len(created_files) <= 10:
         console.print("\n[bold]Generated files:[/bold]")
@@ -110,7 +110,9 @@ def _show_generated_files(created_files: List[Dict[Any,Any]], verbose: bool) -> 
         console.print("Use --verbose to see all file names")
 
 
-def _show_run_instructions(output_dir: Path, users: int, spawn_rate: float, run_time: str, host: Optional[str]) -> None:
+def _show_run_instructions(
+    output_dir: Path, users: int, spawn_rate: float, run_time: str, host: Optional[str]
+) -> None:
     """Display instructions for running the generated tests"""
     console.print("\n[bold]To run tests:[/bold]")
     console.print(f"  cd {output_dir}")
@@ -192,9 +194,9 @@ async def _generate_and_create_tests(
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
     output_dir: Path,
-    custom_requirement: Optional[str]="",
-    host: Optional[str]="0.0.0.0",
-    auth: bool=False,
+    custom_requirement: Optional[str] = "",
+    host: Optional[str] = "0.0.0.0",
+    auth: bool = False,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = Together(api_key=api_key)
@@ -202,11 +204,12 @@ async def _generate_and_create_tests(
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(ai_client=together_client)
 
-
-
         test_files, test_directories = await generator.generate_from_endpoints(
-            endpoints=endpoints, api_info=api_info, custom_requirement=custom_requirement,
-            target_host=host,include_auth=auth
+            endpoints=endpoints,
+            api_info=api_info,
+            custom_requirement=custom_requirement,
+            target_host=host,
+            include_auth=auth,
         )
 
     # Create test files
@@ -338,7 +341,7 @@ async def _async_generate(
     start_time = datetime.now(timezone.utc)
 
     try:
-        _, api_key = _initialize_config( together_api_key)
+        _, api_key = _initialize_config(together_api_key)
         output_dir = _setup_output_directory(output)
 
         # Display configuration
@@ -384,6 +387,7 @@ async def _async_generate(
         )
         raise
 
+
 @cli.command()
 @click.argument("test_file", type=click.Path(exists=True))
 @click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
@@ -392,7 +396,15 @@ async def _async_generate(
 @click.option("--host", "-H", type=str, required=True, help="Target host URL")
 @click.option("--headless", is_flag=True, help="Run in headless mode (no web UI)")
 @click.pass_context
-def run(ctx: click.Context, test_file: str, users: int, spawn_rate: float, run_time: str, host: str, headless: bool) -> None:
+def run(
+    ctx: click.Context,
+    test_file: str,
+    users: int,
+    spawn_rate: float,
+    run_time: str,
+    host: str,
+    headless: bool,
+) -> None:
     """Run generated Locust tests"""
 
     try:
