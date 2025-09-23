@@ -131,7 +131,7 @@ class TestSettingsMethods:
 
         # Create new instance to verify class-level value
         new_settings = Settings()
-        assert new_settings.VERSION == "0.1.0"
+        assert new_settings.VERSION == "0.1.1"
 
     def test_settings_field_types(self):
         """Test that settings fields have correct types."""
