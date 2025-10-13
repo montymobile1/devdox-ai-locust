@@ -954,3 +954,138 @@ class TestBuildMessages:
         assert "Locust load testing" in system_content
         assert "<code>" in system_content
         assert "DO NOT TRUNCATE" in system_content
+
+
+class TestMakeApiCall:
+    """Test _make_api_call method"""
+
+    @pytest.mark.asyncio
+    async def test_make_api_call_success(self, mock_together_client):
+        """Test successful API call"""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        messages = [{"role": "user", "content": "test"}]
+        result = await generator._make_api_call(messages)
+
+        assert result is not None
+        assert "import locust" in result
+
+    @pytest.mark.asyncio
+    async def test_make_api_call_empty_response(self, mock_together_client):
+        """Test API call with empty response"""
+        # Mock empty response
+        mock_response = Mock()
+        mock_response.choices = []
+
+        async def mock_create(*args, **kwargs):
+            await asyncio.sleep(0.01)
+            return mock_response
+
+        mock_together_client.chat = Mock()
+        mock_together_client.chat.completions = Mock()
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_create
+        )
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        messages = [{"role": "user", "content": "test"}]
+        result = await generator._make_api_call(messages)
+
+        assert result is None
+
+
+class TestCallAIService:
+    """Test _call_ai_service method with refactored code"""
+
+    @pytest.mark.asyncio
+    async def test_call_ai_service_success(self, mock_together_client):
+        """Test successful AI service call"""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        result = await generator._call_ai_service("Test prompt")
+
+        assert result is not None
+        assert "import locust" in result
+        assert mock_together_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_call_ai_service_with_timeout(self, mock_together_client):
+        """Test AI service call that times out"""
+
+        async def mock_timeout(*args, **kwargs):
+            await asyncio.sleep(10)
+            raise asyncio.TimeoutError("Simulated timeout")
+
+        mock_together_client.chat = Mock()
+        mock_together_client.chat.completions = Mock()
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_timeout
+        )
+
+        generator = HybridLocustGenerator(
+            ai_client=mock_together_client,
+            ai_config=AIEnhancementConfig(timeout=1),
+        )
+
+        result = await generator._call_ai_service("test prompt")
+
+        assert result == ""
+        assert mock_together_client.chat.completions.create.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_call_ai_service_auth_error_no_retry(self, mock_together_client):
+        """Test that auth errors are not retried"""
+
+        async def mock_auth_error(*args, **kwargs):
+            await asyncio.sleep(0.01)
+            raise Exception("401 Unauthorized")
+
+        mock_together_client.chat = Mock()
+        mock_together_client.chat.completions = Mock()
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_auth_error
+        )
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        result = await generator._call_ai_service("test prompt")
+
+        assert result == ""
+        # Should only try once for auth errors
+        assert mock_together_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_call_ai_service_rate_limit_retry(self, mock_together_client):
+        """Test rate limit handling with retries"""
+        call_count = {"count": 0}
+
+        # Create successful response for 3rd attempt
+        mock_message = Mock()
+        mock_message.content = "<code>success_code</code>"
+        mock_choice = Mock()
+        mock_choice.message = mock_message
+        mock_response = Mock()
+        mock_response.choices = [mock_choice]
+
+        async def mock_rate_limit(*args, **kwargs):
+            call_count["count"] += 1
+            await asyncio.sleep(0.01)
+
+            if call_count["count"] < 3:
+                raise Exception("429 Rate limit exceeded")
+            return mock_response
+
+        mock_together_client.chat = Mock()
+        mock_together_client.chat.completions = Mock()
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_rate_limit
+        )
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        result = await generator._call_ai_service("test prompt")
+
+        assert result == "success_code"
+        assert call_count["count"] == 3
+
