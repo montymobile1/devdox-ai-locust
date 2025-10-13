@@ -15,7 +15,7 @@ class TestSettings:
         """Test default settings values."""
         test_settings = Settings(_env_file=".env.example")
 
-        assert test_settings.VERSION == "0.1.2"
+        assert test_settings.VERSION == "0.1.3"
         assert test_settings.API_KEY == ""
 
     def test_settings_with_env_vars(self):

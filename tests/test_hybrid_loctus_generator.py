@@ -12,6 +12,7 @@ from devdox_ai_locust.hybrid_loctus_generator import (
     AIEnhancementConfig,
     EnhancementResult,
     EnhancementProcessor,
+    ErrorClassification,
 )
 from devdox_ai_locust.locust_generator import TestDataConfig
 
@@ -904,3 +905,52 @@ class TestHybridLocustGeneratorEdgeCases:
         for result in results:
             if not isinstance(result, Exception):
                 assert isinstance(result, str)
+
+
+class TestErrorClassification:
+    """Test ErrorClassification dataclass"""
+
+    def test_error_classification_creation(self):
+        """Test creating ErrorClassification"""
+        classification = ErrorClassification(
+            is_retryable=True, backoff_seconds=2.0, error_type="rate_limit"
+        )
+
+        assert classification.is_retryable is True
+        assert classification.backoff_seconds == 2.0
+        assert classification.error_type == "rate_limit"
+
+    def test_non_retryable_classification(self):
+        """Test non-retryable error classification"""
+        classification = ErrorClassification(
+            is_retryable=False, backoff_seconds=0, error_type="auth"
+        )
+
+        assert classification.is_retryable is False
+        assert classification.backoff_seconds == 0
+
+
+class TestBuildMessages:
+    """Test _build_messages method"""
+
+    def test_build_messages_structure(self, mock_together_client):
+        """Test message structure"""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        messages = generator._build_messages("test prompt")
+
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "test prompt"
+
+    def test_build_messages_system_prompt(self, mock_together_client):
+        """Test system prompt content"""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        messages = generator._build_messages("test")
+
+        system_content = messages[0]["content"]
+        assert "Locust load testing" in system_content
+        assert "<code>" in system_content
+        assert "DO NOT TRUNCATE" in system_content
