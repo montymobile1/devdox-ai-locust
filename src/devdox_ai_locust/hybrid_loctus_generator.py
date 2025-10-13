@@ -573,11 +573,8 @@ class HybridLocustGenerator:
             logger.warning(f"Validation enhancement failed: {e}")
 
         return ""
-
-    async def _call_ai_service(self, prompt: str) -> Optional[str]:
-        """Call AI service with retry logic and validation"""
-
-        messages = [
+    def _build_messages(self, prompt: str) -> str:
+        return [
             {
                 "role": "system",
                 "content": "You are an expert Python developer specializing in Locust load testing. Generate clean, production-ready code with proper error handling. "
@@ -587,35 +584,46 @@ class HybridLocustGenerator:
             {"role": "user", "content": prompt},
         ]
 
+    async def _make_api_call(self, messages: list[dict]) -> Optional[str]:
+        """Make API call - ONE job"""
+        async with self._api_semaphore:
+            api_call = self.ai_client.chat.completions.create(
+                model=self.ai_config.model,
+                messages=messages,
+                max_tokens=self.ai_config.max_tokens,
+                temperature=self.ai_config.temperature,
+                top_p=0.9,
+                top_k=40,
+                repetition_penalty=1.1,
+            )
+
+            # Wait for the API call with timeout
+            response = await asyncio.wait_for(
+                api_call,
+                timeout=self.ai_config.timeout,
+            )
+            if response.choices and response.choices[0].message:
+                content = response.choices[0].message.content.strip()
+                # Clean up the response
+                content = self._clean_ai_response(
+                    self.extract_code_from_response(content)
+                )
+                return content
+
+        return None
+
+    async def _call_ai_service(self, prompt: str) -> Optional[str]:
+        """Call AI service with retry logic and validation"""
+        messages = self._build_messages(prompt)
+
         for attempt in range(3):  # Retry logic
             try:
 
                 async with self._api_semaphore:
-                    api_call = self.ai_client.chat.completions.create(
-                        model=self.ai_config.model,
-                        messages=messages,
-                        max_tokens=self.ai_config.max_tokens,
-                        temperature=self.ai_config.temperature,
-                        top_p=0.9,
-                        top_k=40,
-                        repetition_penalty=1.1,
-                    )
 
-                    # Wait for the API call with timeout
-                    response = await asyncio.wait_for(
-                        api_call,
-                        timeout=self.ai_config.timeout,
-                    )
-                    if response.choices and response.choices[0].message:
-                        content = response.choices[0].message.content.strip()
-
-                        # Clean up the response
-                        content = self._clean_ai_response(
-                            self.extract_code_from_response(content)
-                        )
-
-                        if content:
-                            return content
+                    content = await self._make_api_call(messages)
+                    if content:
+                        return content
 
             except asyncio.TimeoutError:
                 logger.warning(f"AI service timeout on attempt {attempt + 1}")
@@ -634,7 +642,7 @@ class HybridLocustGenerator:
 
                 # Special handling for rate limits
                 if "429" in error_str or "rate limit" in error_str:
-                    logger.warning(f"Rate limit hit, backing off longer")
+                    logger.warning("Rate limit hit, backing off longer")
                     if attempt < 2:
                         await asyncio.sleep(10)  # Longer wait for rate limits
                     continue
