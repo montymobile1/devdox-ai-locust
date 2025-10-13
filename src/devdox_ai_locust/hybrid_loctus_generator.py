@@ -28,6 +28,13 @@ test_data_file_path = "test_data.py"
 
 
 @dataclass
+class ErrorClassification:
+    """Classification of an error for retry logic"""
+    is_retryable: bool
+    backoff_seconds: float
+    error_type: str
+
+@dataclass
 class AIEnhancementConfig:
     """Configuration for AI enhancement"""
 
@@ -213,6 +220,10 @@ class HybridLocustGenerator:
         self.prompt_dir = self._find_project_root() / prompt_dir
         self._api_semaphore = asyncio.Semaphore(5)
         self._setup_jinja_env()
+        self.MAX_RETRIES = 3
+        self.RATE_LIMIT_BACKOFF = 10
+        self.NON_RETRYABLE_CODES = ["401", "403", "unauthorized", "forbidden"]
+        self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -229,6 +240,46 @@ class HybridLocustGenerator:
             keep_trailing_newline=True,
             autoescape=False,
         )
+
+    def _classify_error(self, error: Exception, attempt: int) -> ErrorClassification:
+        """
+        Classify an error to determine retry behavior.
+
+        Args:
+            error: The exception that occurred
+            attempt: Current attempt number (0-indexed)
+
+        Returns:
+            ErrorClassification with retry decision and backoff time
+        """
+        error_str = str(error).lower()
+
+        # Non-retryable errors (auth/permission)
+        if any(code in error_str for code in self.NON_RETRYABLE_CODES):
+            logger.error(f"Authentication error, not retrying: {error}")
+            return ErrorClassification(
+                is_retryable=False, backoff_seconds=0, error_type="auth"
+            )
+
+        # Rate limit errors (retryable with longer backoff)
+        if any(indicator in error_str for indicator in self.RATE_LIMIT_INDICATORS):
+            logger.warning(f"Rate limit hit on attempt {attempt + 1}")
+            return ErrorClassification(
+                is_retryable=True,
+                backoff_seconds=self.RATE_LIMIT_BACKOFF,
+                error_type="rate_limit",
+            )
+
+        # Other retryable errors (exponential backoff)
+        logger.warning(
+            f"Retryable error on attempt {attempt + 1}: {type(error).__name__}"
+        )
+        return ErrorClassification(
+            is_retryable=True,
+            backoff_seconds=2**attempt,  # Exponential: 1s, 2s, 4s
+            error_type="retryable",
+        )
+
 
     async def generate_from_endpoints(
         self,
@@ -573,7 +624,7 @@ class HybridLocustGenerator:
             logger.warning(f"Validation enhancement failed: {e}")
 
         return ""
-    def _build_messages(self, prompt: str) -> str:
+    def _build_messages(self, prompt: str) -> list[dict]:
         return [
             {
                 "role": "system",
@@ -616,7 +667,7 @@ class HybridLocustGenerator:
         """Call AI service with retry logic and validation"""
         messages = self._build_messages(prompt)
 
-        for attempt in range(3):  # Retry logic
+        for attempt in range(self.MAX_RETRIES):  # Retry logic
             try:
 
                 async with self._api_semaphore:
@@ -629,28 +680,22 @@ class HybridLocustGenerator:
                 logger.warning(f"AI service timeout on attempt {attempt + 1}")
 
             except Exception as e:
-                # Check if retryable
-                error_str = str(e).lower()
 
-                # Don't retry auth/permission errors
-                if any(
-                    code in error_str
-                    for code in ["401", "403", "unauthorized", "forbidden"]
-                ):
-                    logger.error(f"Authentication error, not retrying: {e}")
+                classification = self._classify_error(e, attempt)  # Helper 3
+
+                if not classification.is_retryable:
+
                     return ""
 
-                # Special handling for rate limits
-                if "429" in error_str or "rate limit" in error_str:
-                    logger.warning("Rate limit hit, backing off longer")
-                    if attempt < 2:
-                        await asyncio.sleep(10)  # Longer wait for rate limits
+                if attempt < self.MAX_RETRIES - 1:
+
+                    await asyncio.sleep(classification.backoff_seconds)
+
                     continue
 
-                # Retry other errors
-                logger.warning(f"Retryable error on attempt {attempt + 1}: {e}")
 
-            if attempt < 2:  # Wait before retry
+            if attempt < self.MAX_RETRIES - 1:
+
                 await asyncio.sleep(2**attempt)
 
         return ""
