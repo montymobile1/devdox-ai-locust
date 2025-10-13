@@ -375,21 +375,29 @@ class TestHybridLocustGeneratorAsync:
         assert "import locust" in result
 
     @pytest.mark.asyncio
-    async def test_call_ai_service_timeout(self, mock_together_client):
-        """Test AI service call with timeout."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-        generator.ai_config.timeout = 0.1  # Very short timeout
+    async def test_ai_call_with_timeout(mock_together_client):
+        """Test AI service call that times out"""
 
-        # Mock a slow response
-        async def slow_response(*args, **kwargs):
-            await asyncio.sleep(1)
-            return mock_together_client.chat.completions.create(*args, **kwargs)
+        async def mock_timeout(*args, **kwargs):
+            """Simulate a timeout by sleeping longer than expected"""
+            await asyncio.sleep(10)  # Long enough to trigger timeout
+            raise asyncio.TimeoutError("Simulated timeout")
 
-        with patch("asyncio.to_thread", side_effect=slow_response):
-            result = await generator._call_ai_service("Test prompt")
+        mock_together_client.chat = Mock()
+        mock_together_client.chat.completions = Mock()
+        mock_together_client.chat.completions.create = AsyncMock(side_effect=mock_timeout)
 
-            # Should return empty string on timeout
-            assert result == ""
+        generator = HybridLocustGenerator(
+            ai_client=mock_together_client,
+            ai_config=AIEnhancementConfig(timeout=1),  # Short timeout
+        )
+
+        # Call should timeout and return empty string after retries
+        result = await generator._call_ai_service("test prompt")
+
+        assert result == ""
+        # Should have tried 3 times
+        assert mock_together_client.chat.completions.create.call_count == 3
 
     @pytest.mark.asyncio
     async def test_call_ai_service_with_retry(self, mock_together_client):

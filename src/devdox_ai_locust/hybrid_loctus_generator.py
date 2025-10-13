@@ -19,7 +19,7 @@ import shutil
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
-from together import Together
+from together import  AsyncTogether
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +202,7 @@ class HybridLocustGenerator:
 
     def __init__(
         self,
-        ai_client: Together,
+        ai_client: AsyncTogether,
         ai_config: Optional[AIEnhancementConfig] = None,
         test_config: Optional[TestDataConfig] = None,
         prompt_dir: str = "prompt",
@@ -211,6 +211,7 @@ class HybridLocustGenerator:
         self.ai_config = ai_config or AIEnhancementConfig()
         self.template_generator = LocustTestGenerator(test_config)
         self.prompt_dir = self._find_project_root() / prompt_dir
+        self._api_semaphore = asyncio.Semaphore(5)
         self._setup_jinja_env()
 
     def _find_project_root(self) -> Path:
@@ -588,9 +589,9 @@ class HybridLocustGenerator:
 
         for attempt in range(3):  # Retry logic
             try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.ai_client.chat.completions.create,
+
+                async with self._api_semaphore:
+                    api_call = self.ai_client.chat.completions.create(
                         model=self.ai_config.model,
                         messages=messages,
                         max_tokens=self.ai_config.max_tokens,
@@ -598,26 +599,48 @@ class HybridLocustGenerator:
                         top_p=0.9,
                         top_k=40,
                         repetition_penalty=1.1,
-                    ),
-                    timeout=self.ai_config.timeout,
-                )
-
-                if response.choices and response.choices[0].message:
-                    content = response.choices[0].message.content.strip()
-
-                    # Clean up the response
-                    content = self._clean_ai_response(
-                        self.extract_code_from_response(content)
                     )
 
-                    if content:
-                        return content
+                    # Wait for the API call with timeout
+                    response = await asyncio.wait_for(
+                        api_call,
+                        timeout=self.ai_config.timeout,
+                    )
+                    if response.choices and response.choices[0].message:
+                        content = response.choices[0].message.content.strip()
+
+                        # Clean up the response
+                        content = self._clean_ai_response(
+                            self.extract_code_from_response(content)
+                        )
+
+                        if content:
+                            return content
 
             except asyncio.TimeoutError:
                 logger.warning(f"AI service timeout on attempt {attempt + 1}")
 
             except Exception as e:
-                logger.warning(f"AI service error on attempt {attempt + 1}: {e}")
+                # Check if retryable
+                error_str = str(e).lower()
+
+                # Don't retry auth/permission errors
+                if any(
+                    code in error_str
+                    for code in ["401", "403", "unauthorized", "forbidden"]
+                ):
+                    logger.error(f"Authentication error, not retrying: {e}")
+                    return ""
+
+                # Special handling for rate limits
+                if "429" in error_str or "rate limit" in error_str:
+                    logger.warning(f"Rate limit hit, backing off longer")
+                    if attempt < 2:
+                        await asyncio.sleep(10)  # Longer wait for rate limits
+                    continue
+
+                # Retry other errors
+                logger.warning(f"Retryable error on attempt {attempt + 1}: {e}")
 
             if attempt < 2:  # Wait before retry
                 await asyncio.sleep(2**attempt)
@@ -626,14 +649,20 @@ class HybridLocustGenerator:
 
     def extract_code_from_response(self, response_text: str) -> str:
         # Extract content between <code> tags
+        pattern = r"<code>(.*?)</code>"
+        matches = re.findall(pattern, response_text, re.DOTALL)
+        if matches:
+            # Take the longest match (in case of multiple <code> blocks)
+            content = max(matches, key=len).strip()
 
-        code_match = re.search(r"<code>(.*?)</code>", response_text, re.DOTALL)
-        if code_match:
-            content = code_match.group(1).strip()
-            # Additional validation - ensure we got actual content
-            if content and len(content) > 0:
+            if content and len(content) > 10:  # Minimum viable code
+                logger.debug(f"Extracted {len(content)} chars from <code> tags")
                 return content
+            else:
+                logger.warning("Code tags found but content too short")
 
+            # Fallback: maybe AI didn't use tags
+        logger.warning("No <code> tags found, using full response")
         return response_text.strip()
 
     def _clean_ai_response(self, content: str) -> str:

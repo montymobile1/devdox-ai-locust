@@ -57,12 +57,9 @@ echo "API_KEY=your_together_ai_api_key_here" > .env
 # Generate from OpenAPI URL
 devdox_ai_locust generate --openapi-url https://api.example.com/openapi.json --output ./tests
 
-# Generate from local file
-dal generate --openapi-file ./api-spec.yaml --output ./load-tests
-
 # Generate with custom configuration
 devdox_ai_locust generate \
-   https://petstore.swagger.io/v2/swagger.json \
+   https://petstore.swagger.io/v3/swagger.json \
   --output ./petstore-tests \
   --together-api-key your_api_key \
   
