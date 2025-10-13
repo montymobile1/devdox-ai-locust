@@ -19,7 +19,7 @@ import shutil
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
-from together import  AsyncTogether
+from together import AsyncTogether
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,11 @@ test_data_file_path = "test_data.py"
 @dataclass
 class ErrorClassification:
     """Classification of an error for retry logic"""
+
     is_retryable: bool
     backoff_seconds: float
     error_type: str
+
 
 @dataclass
 class AIEnhancementConfig:
@@ -623,6 +625,7 @@ class HybridLocustGenerator:
             logger.warning(f"Validation enhancement failed: {e}")
 
         return ""
+
     def _build_messages(self, prompt: str) -> list[dict]:
         return [
             {
@@ -668,9 +671,7 @@ class HybridLocustGenerator:
 
         for attempt in range(self.MAX_RETRIES):  # Retry logic
             try:
-
                 async with self._api_semaphore:
-
                     content = await self._make_api_call(messages)
                     if content:
                         return content
@@ -679,21 +680,17 @@ class HybridLocustGenerator:
                 logger.warning(f"AI service timeout on attempt {attempt + 1}")
 
             except Exception as e:
-
                 classification = self._classify_error(e, attempt)  # Helper 3
 
                 if not classification.is_retryable:
-
                     return ""
 
                 if attempt < self.MAX_RETRIES - 1:
-
                     await asyncio.sleep(classification.backoff_seconds)
 
                     continue
 
             if attempt < self.MAX_RETRIES - 1:
-
                 await asyncio.sleep(2**attempt)
 
         return ""
@@ -715,7 +712,6 @@ class HybridLocustGenerator:
                 f"Code in tags too short ({len(content)} chars), using full response"
             )
             return response_text.strip()
-
 
         logger.debug(f"Extracted {len(content)} chars from <code> tags")
         return str(content)

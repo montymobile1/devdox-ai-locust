@@ -385,7 +385,9 @@ class TestHybridLocustGeneratorAsync:
 
         mock_together_client.chat = Mock()
         mock_together_client.chat.completions = Mock()
-        mock_together_client.chat.completions.create = AsyncMock(side_effect=mock_timeout)
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_timeout
+        )
 
         generator = HybridLocustGenerator(
             ai_client=mock_together_client,
