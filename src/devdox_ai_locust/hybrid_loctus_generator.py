@@ -280,7 +280,6 @@ class HybridLocustGenerator:
             error_type="retryable",
         )
 
-
     async def generate_from_endpoints(
         self,
         endpoints: List[Endpoint],
@@ -693,7 +692,6 @@ class HybridLocustGenerator:
 
                     continue
 
-
             if attempt < self.MAX_RETRIES - 1:
 
                 await asyncio.sleep(2**attempt)
@@ -704,19 +702,23 @@ class HybridLocustGenerator:
         # Extract content between <code> tags
         pattern = r"<code>(.*?)</code>"
         matches = re.findall(pattern, response_text, re.DOTALL)
-        if matches:
-            # Take the longest match (in case of multiple <code> blocks)
-            content = max(matches, key=len).strip()
 
-            if content and len(content) > 10:  # Minimum viable code
-                logger.debug(f"Extracted {len(content)} chars from <code> tags")
-                return content
-            else:
-                logger.warning("Code tags found but content too short")
+        if not matches:
+            logger.warning("No <code> tags found, using full response")
+            return response_text.strip()
 
-            # Fallback: maybe AI didn't use tags
-        logger.warning("No <code> tags found, using full response")
-        return response_text.strip()
+        content = max(matches, key=len).strip()
+
+        # Content too short - use full response
+        if not content or len(content) <= 10:
+            logger.warning(
+                f"Code in tags too short ({len(content)} chars), using full response"
+            )
+            return response_text.strip()
+
+
+        logger.debug(f"Extracted {len(content)} chars from <code> tags")
+        return str(content)
 
     def _clean_ai_response(self, content: str) -> str:
         """Clean and validate AI response"""
