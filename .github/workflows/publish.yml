@@ -79,4 +79,7 @@ jobs:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
       run: |
+        echo "🚀 Uploading to Production PyPI..."
+        echo "Files to upload:"
+        ls -lh dist/
         twine upload dist/*
