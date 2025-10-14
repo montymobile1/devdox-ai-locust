@@ -9,7 +9,7 @@
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
 
-## 🆕 What's New in v1.0.3
+## 🆕 What's New in 0.1.3.post1
 
 ### Performance & Reliability Improvements
 

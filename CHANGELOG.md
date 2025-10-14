@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 
-## [1.0.3] - 2025-10-14
+## [0.1.3.post1] - 2025-10-14
 
 ### Added
 - Asynchronous API calls using `AsyncTogether` for improved performance
