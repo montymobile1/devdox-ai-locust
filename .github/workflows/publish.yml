@@ -71,7 +71,7 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
         TWINE_REPOSITORY: testpypi
       run: |
-         twine upload --verbose dist/*
+        twine upload --verbose dist/*
 
     - name: Publish to PyPI (Production)
       if: github.event.inputs.environment == 'pypi' || github.event_name == 'release'
