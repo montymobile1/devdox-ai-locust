@@ -332,7 +332,7 @@ def sample_api_info():
 @pytest.fixture
 def mock_together_client():
     """Mock Together AI client."""
-    mock_client = Mock()
+    mock_client = AsyncMock()
     mock_response = Mock()
     mock_choice = Mock()
     mock_message = Mock()
@@ -354,8 +354,16 @@ class TestUser(HttpUser):
     mock_choice.message = mock_message
     mock_response.choices = [mock_choice]
 
-    # Mock the chat completions create method
-    mock_client.chat.completions.create.return_value = mock_response
+    async def mock_create(*args, **kwargs):
+        """Async mock that returns the mock response"""
+        # Simulate some async work
+        await asyncio.sleep(0.01)
+        return mock_response
+
+    # Set up the mock chain
+    mock_client.chat = Mock()
+    mock_client.chat.completions = Mock()
+    mock_client.chat.completions.create = AsyncMock(side_effect=mock_create)
 
     return mock_client
 

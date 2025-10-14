@@ -8,6 +8,21 @@
 
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
+
+## 🆕 What's New in v1.0.3
+
+### Performance & Reliability Improvements
+
+- **🚀 Asynchronous API Calls**: Migrated from `Together` to `AsyncTogether` for non-blocking API interactions, significantly improving generation speed and responsiveness
+- **⚡ Enhanced Timeout Handling**: Implemented robust timeout logic with configurable retry mechanisms for better error resilience
+- **🔧 Improved Code Extraction**: Enhanced `<code>` block parsing with detailed validation, multiple fallback scenarios, and better error messages
+- **🛡️ Better Error Management**: Comprehensive error handling throughout the AI generation pipeline with graceful degradation
+
+### Bug Fixes & Stability
+
+- Fixed edge cases in code block extraction where malformed responses could cause generation failures
+- Improved retry logic to handle transient API errors without interrupting the generation process
+
 ## ✨ Features
 
 - 🤖 **AI-Enhanced Generation**: Uses Together AI to create intelligent, realistic load test scenarios
@@ -18,6 +33,7 @@ DevDox AI Locust automatically generates comprehensive Locust load testing scrip
 - 🛠️ **Template-Based**: Highly customizable Jinja2 templates for different testing needs
 - 🔄 **Hybrid Approach**: Combines rule-based generation with AI enhancement
 - 📈 **Comprehensive Coverage**: Handles various HTTP methods, content types, and response scenarios
+- ⚡ **Asynchronous Processing**: Fast, non-blocking test generation with async/await
 
 ## 🚀 Quick Start
 
@@ -57,12 +73,9 @@ echo "API_KEY=your_together_ai_api_key_here" > .env
 # Generate from OpenAPI URL
 devdox_ai_locust generate --openapi-url https://api.example.com/openapi.json --output ./tests
 
-# Generate from local file
-dal generate --openapi-file ./api-spec.yaml --output ./load-tests
-
 # Generate with custom configuration
 devdox_ai_locust generate \
-   https://petstore.swagger.io/v2/swagger.json \
+   https://petstore.swagger.io/v3/swagger.json \
   --output ./petstore-tests \
   --together-api-key your_api_key \
   

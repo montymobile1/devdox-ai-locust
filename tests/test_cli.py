@@ -438,7 +438,7 @@ class TestGenerateAndCreateTests:
     """Test test generation and creation functionality."""
 
     @pytest.mark.asyncio
-    @patch("devdox_ai_locust.cli.Together")
+    @patch("devdox_ai_locust.cli.AsyncTogether")
     @patch("devdox_ai_locust.cli.HybridLocustGenerator")
     async def test_generate_and_create_tests_success(
         self,
@@ -450,7 +450,7 @@ class TestGenerateAndCreateTests:
     ):
         """Test successful test generation and creation."""
         # Mock Together client
-        mock_client = Mock()
+        mock_client = AsyncMock()
         mock_together_class.return_value = mock_client
 
         # Mock generator

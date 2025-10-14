@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
-from together import Together
+from together import  AsyncTogether
 
 from .hybrid_loctus_generator import HybridLocustGenerator
 from .config import Settings
@@ -199,7 +199,7 @@ async def _generate_and_create_tests(
     auth: bool = False,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
-    together_client = Together(api_key=api_key)
+    together_client = AsyncTogether(api_key=api_key)
 
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(ai_client=together_client)

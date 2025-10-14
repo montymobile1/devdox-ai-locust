@@ -75,20 +75,18 @@ class LocustTestGenerator:
             updated_data = {}
 
             for key, value in base_files.items():
+                try:
+                    formatted_code = black.format_str(value, mode=mode)
 
-                    try:
-                        formatted_code = black.format_str(value, mode=mode)
-
-                        updated_data[key] = formatted_code
-                    except black.InvalidInput:
-                        # Not valid Python code, keep original
-                        logger.debug(f"Skipping formatting for {key}: not valid Python")
-                        updated_data[key] = value
-                    except Exception as format_error:
-                        # Other Black formatting errors, keep original and log
-                        logger.warning(f"Failed to format {key}: {format_error}")
-                        updated_data[key] = value
-
+                    updated_data[key] = formatted_code
+                except black.InvalidInput:
+                    # Not valid Python code, keep original
+                    logger.debug(f"Skipping formatting for {key}: not valid Python")
+                    updated_data[key] = value
+                except Exception as format_error:
+                    # Other Black formatting errors, keep original and log
+                    logger.warning(f"Failed to format {key}: {format_error}")
+                    updated_data[key] = value
 
             return updated_data
 

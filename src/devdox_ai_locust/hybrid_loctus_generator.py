@@ -19,12 +19,21 @@ import shutil
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
-from together import Together
+from together import AsyncTogether
 
 logger = logging.getLogger(__name__)
 
 
 test_data_file_path = "test_data.py"
+
+
+@dataclass
+class ErrorClassification:
+    """Classification of an error for retry logic"""
+
+    is_retryable: bool
+    backoff_seconds: float
+    error_type: str
 
 
 @dataclass
@@ -202,7 +211,7 @@ class HybridLocustGenerator:
 
     def __init__(
         self,
-        ai_client: Together,
+        ai_client: AsyncTogether,
         ai_config: Optional[AIEnhancementConfig] = None,
         test_config: Optional[TestDataConfig] = None,
         prompt_dir: str = "prompt",
@@ -211,7 +220,12 @@ class HybridLocustGenerator:
         self.ai_config = ai_config or AIEnhancementConfig()
         self.template_generator = LocustTestGenerator(test_config)
         self.prompt_dir = self._find_project_root() / prompt_dir
+        self._api_semaphore = asyncio.Semaphore(5)
         self._setup_jinja_env()
+        self.MAX_RETRIES = 3
+        self.RATE_LIMIT_BACKOFF = 10
+        self.NON_RETRYABLE_CODES = ["401", "403", "unauthorized", "forbidden"]
+        self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -227,6 +241,45 @@ class HybridLocustGenerator:
             lstrip_blocks=True,
             keep_trailing_newline=True,
             autoescape=False,
+        )
+
+    def _classify_error(self, error: Exception, attempt: int) -> ErrorClassification:
+        """
+        Classify an error to determine retry behavior.
+
+        Args:
+            error: The exception that occurred
+            attempt: Current attempt number (0-indexed)
+
+        Returns:
+            ErrorClassification with retry decision and backoff time
+        """
+        error_str = str(error).lower()
+
+        # Non-retryable errors (auth/permission)
+        if any(code in error_str for code in self.NON_RETRYABLE_CODES):
+            logger.error(f"Authentication error, not retrying: {error}")
+            return ErrorClassification(
+                is_retryable=False, backoff_seconds=0, error_type="auth"
+            )
+
+        # Rate limit errors (retryable with longer backoff)
+        if any(indicator in error_str for indicator in self.RATE_LIMIT_INDICATORS):
+            logger.warning(f"Rate limit hit on attempt {attempt + 1}")
+            return ErrorClassification(
+                is_retryable=True,
+                backoff_seconds=self.RATE_LIMIT_BACKOFF,
+                error_type="rate_limit",
+            )
+
+        # Other retryable errors (exponential backoff)
+        logger.warning(
+            f"Retryable error on attempt {attempt + 1}: {type(error).__name__}"
+        )
+        return ErrorClassification(
+            is_retryable=True,
+            backoff_seconds=2**attempt,  # Exponential: 1s, 2s, 4s
+            error_type="retryable",
         )
 
     async def generate_from_endpoints(
@@ -573,10 +626,8 @@ class HybridLocustGenerator:
 
         return ""
 
-    async def _call_ai_service(self, prompt: str) -> Optional[str]:
-        """Call AI service with retry logic and validation"""
-
-        messages = [
+    def _build_messages(self, prompt: str) -> list[dict]:
+        return [
             {
                 "role": "system",
                 "content": "You are an expert Python developer specializing in Locust load testing. Generate clean, production-ready code with proper error handling. "
@@ -586,30 +637,42 @@ class HybridLocustGenerator:
             {"role": "user", "content": prompt},
         ]
 
-        for attempt in range(3):  # Retry logic
-            try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.ai_client.chat.completions.create,
-                        model=self.ai_config.model,
-                        messages=messages,
-                        max_tokens=self.ai_config.max_tokens,
-                        temperature=self.ai_config.temperature,
-                        top_p=0.9,
-                        top_k=40,
-                        repetition_penalty=1.1,
-                    ),
-                    timeout=self.ai_config.timeout,
+    async def _make_api_call(self, messages: list[dict]) -> Optional[str]:
+        """Make API call - ONE job"""
+        async with self._api_semaphore:
+            api_call = self.ai_client.chat.completions.create(
+                model=self.ai_config.model,
+                messages=messages,
+                max_tokens=self.ai_config.max_tokens,
+                temperature=self.ai_config.temperature,
+                top_p=0.9,
+                top_k=40,
+                repetition_penalty=1.1,
+            )
+
+            # Wait for the API call with timeout
+            response = await asyncio.wait_for(
+                api_call,
+                timeout=self.ai_config.timeout,
+            )
+            if response.choices and response.choices[0].message:
+                content = response.choices[0].message.content.strip()
+                # Clean up the response
+                content = self._clean_ai_response(
+                    self.extract_code_from_response(content)
                 )
+                return content
 
-                if response.choices and response.choices[0].message:
-                    content = response.choices[0].message.content.strip()
+        return None
 
-                    # Clean up the response
-                    content = self._clean_ai_response(
-                        self.extract_code_from_response(content)
-                    )
+    async def _call_ai_service(self, prompt: str) -> Optional[str]:
+        """Call AI service with retry logic and validation"""
+        messages = self._build_messages(prompt)
 
+        for attempt in range(self.MAX_RETRIES):  # Retry logic
+            try:
+                async with self._api_semaphore:
+                    content = await self._make_api_call(messages)
                     if content:
                         return content
 
@@ -617,24 +680,41 @@ class HybridLocustGenerator:
                 logger.warning(f"AI service timeout on attempt {attempt + 1}")
 
             except Exception as e:
-                logger.warning(f"AI service error on attempt {attempt + 1}: {e}")
+                classification = self._classify_error(e, attempt)  # Helper 3
 
-            if attempt < 2:  # Wait before retry
+                if not classification.is_retryable:
+                    return ""
+
+                if attempt < self.MAX_RETRIES - 1:
+                    await asyncio.sleep(classification.backoff_seconds)
+
+                    continue
+
+            if attempt < self.MAX_RETRIES - 1:
                 await asyncio.sleep(2**attempt)
 
         return ""
 
     def extract_code_from_response(self, response_text: str) -> str:
         # Extract content between <code> tags
+        pattern = r"<code>(.*?)</code>"
+        matches = re.findall(pattern, response_text, re.DOTALL)
 
-        code_match = re.search(r"<code>(.*?)</code>", response_text, re.DOTALL)
-        if code_match:
-            content = code_match.group(1).strip()
-            # Additional validation - ensure we got actual content
-            if content and len(content) > 0:
-                return content
+        if not matches:
+            logger.warning("No <code> tags found, using full response")
+            return response_text.strip()
 
-        return response_text.strip()
+        content = max(matches, key=len).strip()
+
+        # Content too short - use full response
+        if not content or len(content) <= 10:
+            logger.warning(
+                f"Code in tags too short ({len(content)} chars), using full response"
+            )
+            return response_text.strip()
+
+        logger.debug(f"Extracted {len(content)} chars from <code> tags")
+        return str(content)
 
     def _clean_ai_response(self, content: str) -> str:
         """Clean and validate AI response"""
