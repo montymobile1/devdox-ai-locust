@@ -9,19 +9,27 @@
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
 
-## 🆕 What's New in 0.1.3.post1
+## 🆕 What's New in 0.1.4
 
-### Performance & Reliability Improvements
+### MongoDB Integration
 
-- **🚀 Asynchronous API Calls**: Migrated from `Together` to `AsyncTogether` for non-blocking API interactions, significantly improving generation speed and responsiveness
-- **⚡ Enhanced Timeout Handling**: Implemented robust timeout logic with configurable retry mechanisms for better error resilience
-- **🔧 Improved Code Extraction**: Enhanced `<code>` block parsing with detailed validation, multiple fallback scenarios, and better error messages
-- **🛡️ Better Error Management**: Comprehensive error handling throughout the AI generation pipeline with graceful degradation
+- Added a new data provider class: MongoDataProvider
+- Connects Locust test data generation directly to MongoDB
+- Enables realistic test data retrieval for entities like users, products, orders, affiliates, etc.
+- Supports **real data** from the database and **synthetic fallback generation** when MongoDB is disabled or unavailable
 
-### Bug Fixes & Stability
+#### 2. **New MongoDataProvider Methods**
+| Method                                                   | Description |
+|----------------------------------------------------------|--------------|
+| `get_document(collection_name)`                      | Retrieves a single realistic document from MongoDB or fallback generator |
+| `get_multiple_documents(collection_name, count=10, query=None)` | Retrieves multiple documents or generates them in batches |
+| `clear_cache()`                                          | Clears in-memory cached data for all collections |
+| `get_stats()`                                            | Returns usage and cache statistics for debugging and optimization |
 
-- Fixed edge cases in code block extraction where malformed responses could cause generation failures
-- Improved retry logic to handle transient API errors without interrupting the generation process
+#### 3. **Smart Fallbacks**
+If MongoDB is disabled (`enable_mongodb = false` in `db_config.py`),  
+the system automatically switches to **synthetic data generation** using the LLM-based `TestDataGenerator`.
+
 
 ## ✨ Features
 
