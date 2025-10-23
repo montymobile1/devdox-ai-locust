@@ -175,7 +175,6 @@ class LocustTestGenerator:
                 self.generated_files["db_config.py"] = self._generate_db_file(db_type, "db_config.py.j2")
                 self.generated_files["data_provider.py"] = self._generate_db_file(db_type, "data_provider.py.j2")
 
-
             return self.generated_files, workflows_files, grouped_enpoint
         except Exception as e:
             logger.error(f"Failed to generate test suite: {e}")
@@ -685,8 +684,9 @@ class LocustTestGenerator:
 
     '''
 
-    def _generate_test_data_file(self, db_type) -> str:
+    def _generate_test_data_file(self, db_type:str="") -> str:
         """Generate test_data.py file content"""
+        data_provider_content=None
         if db_type==DatabaseType.MONGO.value:
             data_provider_content="mongo_data_provider"
         template = self.jinja_env.get_template("test_data.py.j2")
@@ -754,7 +754,6 @@ class LocustTestGenerator:
                 "api_info": api_info,
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
-
 
             content = template.render(**context)
             logger.info("✅ .env.example generated successfully using template")

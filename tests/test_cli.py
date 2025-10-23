@@ -307,6 +307,7 @@ class TestAsyncGenerate:
             2,  # spawn_rate
             "5m",  # run_time
             None,  # host
+            "",
             True,  # auth
             False,  # dry_run
             None,  # custom_requirement
@@ -348,6 +349,7 @@ class TestAsyncGenerate:
                 "5m",
                 None,
                 True,
+                "",
                 False,
                 None,
                 "test-api-key",
@@ -391,6 +393,7 @@ class TestAsyncGenerate:
                     "5m",
                     None,
                     True,
+                    "",
                     False,
                     None,
                     "test-api-key",

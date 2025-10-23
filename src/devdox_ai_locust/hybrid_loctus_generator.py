@@ -589,7 +589,7 @@ class HybridLocustGenerator:
         return ""
 
     async def enhance_test_data_file(
-        self, base_content: str, endpoints: List[Endpoint], db_type: str,data_provider:str,  db_config:str,data_provider_path:str
+        self, base_content: str, endpoints: List[Endpoint], db_type: str="",data_provider:str="",  db_config:str="",data_provider_path:str=""
     ) -> Optional[str]:
         """Enhance test data generation with domain knowledge"""
 
