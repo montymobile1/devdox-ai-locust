@@ -35,15 +35,15 @@ class MongoDBConfig:
     use_mongodb_for_test_data: str = "false"
     mongodb_uri: str = "mongodb://localhost:27017/"
     mongodb_database: str = "locust_test_data"
-    MONGODB_MAX_POOL_SIZE:int = "100"
-    MONGODB_MIN_POOL_SIZE:int = "10"
+    MONGODB_MAX_POOL_SIZE:int = 100
+    MONGODB_MIN_POOL_SIZE:int = 10
 
     # MongoDB Timeout Settings
-    MONGODB_CONNECT_TIMEOUT_MS:int = "5000"
-    MONGODB_SERVER_SELECTION_TIMEOUT_MS:int = "5000"
-    MONGODB_SOCKET_TIMEOUT_MS:int = "10000"
-    MONGODB_MAX_IDLE_TIME_MS:int = "60000"
-    MONGODB_WAIT_QUEUE_TIMEOUT_MS:int = "10000"
+    MONGODB_CONNECT_TIMEOUT_MS:int = 5000
+    MONGODB_SERVER_SELECTION_TIMEOUT_MS:int = 5000
+    MONGODB_SOCKET_TIMEOUT_MS:int = 10000
+    MONGODB_MAX_IDLE_TIME_MS:int = 60000
+    MONGODB_WAIT_QUEUE_TIMEOUT_MS:int = 10000
 
     # MongoDB Collection Names to be added
 

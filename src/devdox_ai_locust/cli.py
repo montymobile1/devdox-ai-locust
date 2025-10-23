@@ -363,7 +363,6 @@ async def _async_generate(
                 run_time,
                 host,
                 auth,
-                db_type,
                 custom_requirement,
                 dry_run,
             )
