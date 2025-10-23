@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings."""
 
-    VERSION: str = "0.1.3.post1"
+    VERSION: str = "0.1.4"
 
     API_KEY: str = ""  # Fallback for backward compatibility
 

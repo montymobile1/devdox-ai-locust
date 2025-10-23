@@ -32,6 +32,70 @@ CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification
        - ADD cleanup methods for created resources
        - ADD data correlation between sequential tasks
 
+    {% if db_type=="mongo" %}
+         7. DATABASE DATA HANDLING AND CRUD OPERATIONS:
+
+           - Check if db_type == "mongo" in the configuration
+           - If MongoDB is enabled (mongo_config.enable_mongodb):
+             ADD proper MongoDB import handling with graceful fallback:
+             ```python
+             try:
+                 from data_provider import mongo_data_provider
+                 MONGODB_ENABLED = True
+             except ImportError:
+                 MONGODB_ENABLED = False
+                 mongo_data_provider = None
+             ```
+             - If MongoDB is enabled (MONGODB_ENABLED and getattr(config, 'enable_mongodb', False)):
+             * Use mongo_data_provider.get_document() for single document retrieval
+             * Use mongo_data_provider.get_multiple_documents() for multiple document retrieval
+             * Integrate MongoDB data into workflow tasks where appropriate
+             * Store MongoDB document IDs for use in subsequent API calls
+             * ADD MongoDB-specific test data patterns
+             * ADD MongoDB document validation in API requests
+             * ADD MongoDB collection-based test scenarios
+
+
+         8. DUAL DATA SOURCE CAPABILITY:
+            - ADD configuration option to choose between generated data vs real database data
+
+            - ADD method to switch between data sources: use_generated_data() vs use_database_data()
+
+            - ADD CRUD operation support for real database testing:
+
+                 * CREATE: Insert test records into database before API testing
+
+                 * READ: Retrieve existing data from database for API operations
+
+                 * UPDATE: Modify database records and test API consistency
+
+                 * DELETE: Remove test data and verify API responses
+
+            - ADD data validation between database state and API responses
+
+            - ADD rollback capabilities for database operations
+
+
+        9. MONGODB INTEGRATION PATTERNS:
+           - Import mongo_data_provider at the top of the workflow file
+           - ADD MongoDB data retrieval in on_start() method if needed
+           - Use MongoDB documents as test data for API endpoints
+           - ADD correlation between MongoDB documents and API responses
+           - ADD MongoDB document cleanup in on_stop() method
+           - ADD database transaction support for complex test scenarios
+           - ADD data consistency validation between database and API
+
+        10. CRUD-BASED WORKFLOW ENHANCEMENTS:
+
+            - ADD database setup/teardown methods for each test scenario
+            - ADD real data validation against API endpoints
+            - ADD database state verification after API operations
+            - ADD conflict resolution for concurrent database operations
+            - ADD data integrity checks throughout the workflow
+
+    {% endif %}
+
+
 
         CURRENT WORKFLOW FILE:
         {{base_content}}
@@ -58,6 +122,7 @@ CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification
    - Pass generated data between related API calls
 
    - Maintain state between sequential tasks for realistic workflows
+   {% if db_type=="mongo" %} - If MongoDB is enabled, correlate MongoDB document data with API operations {% endif %}
 
 3. Fix indentation issues
 
@@ -67,6 +132,7 @@ CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification
        - New functions to add to test_data.py
        - New example patterns to add to example.py
        - New data generators for specific ID requirements
+       {% if db_type=="mongo" %} - MongoDB-specific data retrieval patterns if db_type == "mongo" {% endif %}
 
 
 
@@ -81,34 +147,78 @@ CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification
 9. Add data cleanup on stop for resources created during testing
 
 10. Improve data parameterization using available test data generators
+{% if db_type=="mongo" %} 11.  **MONGODB SPECIFIC ENHANCEMENTS** ( mongo_config.enable_mongodb):
+
+    - ADD MongoDB document retrieval for realistic test data
+
+    - ADD MongoDB document IDs to API request parameters
+
+    - ADD validation that API responses match MongoDB document structure
+
+    - ADD MongoDB-based test scenarios that reflect real data usage patterns
+
+    - ADD CRUD operations for comprehensive database testing:
+
+      * **CREATE**: Insert new documents via database, test API retrieval
+
+      * **READ**: Query existing documents, validate API consistency
+
+      * **UPDATE**: Modify documents via database, test API reflects changes
+
+      * **DELETE**: Remove documents via database, test API handles missing data
+
+
+
+    **C. Hybrid Mode**:
+
+    - ADD capability to use both generated and real data in same workflow
+
+    - ADD data source switching based on test scenario requirements
+
+    - ADD validation between generated and real data patterns{% endif %}
 
 
 
 LOGICAL TASK SEQUENCE EXAMPLE:
 
 For reseller workflow, the logical order should be:
+{% if db_type=="mongo" %}
+    - **MongoDB Data Setup** (if enabled):
 
-1. add_reseller (create) → store reseller_id
+       - Retrieve MongoDB documents for test data
 
-2. get_reseller (list/search)
+       - Store document IDs for API operations
 
-3. get_reseller_by_id (using stored reseller_id)
+{% endif %}
 
-4. available_reseller_properties (using reseller_id)
+- add_reseller (create) → store reseller_id
 
-5. customize_corporate_price (using reseller_id)
+- get_reseller (list/search)
 
-6. customize_corporate_price_csv (using reseller_id)
+- get_reseller_by_id (using stored reseller_id)
 
-7. customize_price (using reseller_id)
+- available_reseller_properties (using reseller_id)
 
-8. customize_price_csv (using reseller_id)
+- customize_corporate_price (using reseller_id)
 
-9. topup_reseller_balance (using reseller_id)
+- customize_corporate_price_csv (using reseller_id)
 
-10. edit_reseller (using reseller_id)
+- customize_price (using reseller_id)
 
-11. delete_reseller (cleanup using reseller_id)
+- customize_price_csv (using reseller_id)
+
+- topup_reseller_balance (using reseller_id)
+
+- edit_reseller (using reseller_id)
+
+- delete_reseller (cleanup using reseller_id)
+
+{% if db_type=="mongo" %}
+    - **MongoDB Cleanup** (if enabled):
+
+        - Clean up any test documents created during workflow
+{% endif %}
+
 
 VALIDATION RULES:
     - Every @task method must correspond to an actual OpenAPI endpoint
@@ -117,6 +227,9 @@ VALIDATION RULES:
     - Use only test_data.py functions that exist or suggest new ones to ADD
     - Ensure realistic user workflows with proper data dependencies
     - ADD error handling and resource cleanup
+    {% if db_type=="mongo" %}
+        - If MongoDB is enabled, ensure proper integration with mongo_data_provider methods
+    {% endif %}
 
     SUGGESTIONS FOR ADDITIONS (if needed):
     If the workflow needs new test data generators or example patterns,
@@ -129,6 +242,231 @@ VALIDATION RULES:
         # New function for ID-dependent APIs
         pass
     ```
+    {% if db_type=="mongo" %}
+
+
+    # MongoDB-specific additions (if db_type == "mongo")
+
+   def get_mongodb_test_data(collection_name, filter_criteria=None):
+
+        # Function to integrate MongoDB data
+
+        if mongo_config.enable_mongodb:
+
+              if filter_criteria:
+
+                return mongo_data_provider.get_document(collection_name, filter_criteria)
+
+            else:
+
+                return mongo_data_provider.get_multiple_documents(collection_name, {})
+
+        return default_test_data()
+
+
+
+    # CRUD operation helpers
+
+    def create_test_document(collection_name, document_data):
+
+        # Create test document in database
+
+        if mongo_config.enable_mongodb:
+
+            return mongo_data_provider.insert_document(collection_name, document_data)
+
+        return None
+
+
+
+    def cleanup_test_documents(collection_name, test_ids):
+
+        # Clean up test documents
+
+        if mongo_config.enable_mongodb:
+
+            return mongo_data_provider.delete_documents(collection_name, {"_id": {"$in": test_ids}})
+
+        return None
+
+
+
+    # Data source selection
+
+    def get_test_data(use_database=False, collection_name=None):
+
+        # Choose between generated and database data
+
+        if use_database and mongo_config.enable_mongodb and collection_name:
+
+            return get_mongodb_test_data(collection_name)
+
+        else:
+
+            return generate_synthetic_data()
+
+ # Database example patterns (if db_type == "mongo")
+
+    def example_mongodb_crud_workflow():
+
+        # Example showing MongoDB CRUD integration
+
+        if mongo_config.enable_mongodb:
+
+            # CREATE: Insert test document
+
+            test_doc = create_test_document("pets", {"name": "test_pet", "status": "available"})
+
+
+
+            # READ: Retrieve and validate
+
+            retrieved_doc = mongo_data_provider.get_document("pets", {"_id": test_doc["_id"]})
+
+
+
+            # UPDATE: Modify document
+
+            mongo_data_provider.update_document("pets", {"_id": test_doc["_id"]}, {"status": "sold"})
+
+
+
+            # DELETE: Remove document
+
+            mongo_data_provider.delete_document("pets", {"_id": test_doc["_id"]})
+
+
+
+    def example_hybrid_workflow():
+
+        # Example showing both generated and database data
+
+        # Use generated data for edge cases
+
+        generated_data = generate_synthetic_data()
+
+
+
+        # Use database data for realistic scenarios
+
+        if mongo_config.enable_mongodb:
+
+            real_data = get_mongodb_test_data("pets")
+
+
+
+        # Combine both for comprehensive testing
+
+        return {"generated": generated_data, "real": real_data}
+
+
+
+    def example_api_database_consistency():
+
+        # Example showing API-database consistency validation
+
+        # 1. Create via API
+
+        api_response = create_pet_via_api(pet_data)
+
+
+
+        # 2. Verify in database
+
+        if mongo_config.enable_mongodb:
+
+            db_document = mongo_data_provider.get_document("pets", {"api_id": api_response["id"]})
+
+            assert db_document is not None, "Pet not found in database after API creation"
+
+
+
+        # 3. Update via database
+
+        if mongo_config.enable_mongodb:
+
+            mongo_data_provider.update_document("pets", {"api_id": api_response["id"]}, {"status": "updated"})
+
+
+
+        # 4. Verify via API
+
+        updated_pet = get_pet_via_api(api_response["id"])
+
+        assert updated_pet["status"] == "updated", "API doesn't reflect database changes"
+
+    ```
+
+
+
+    base_workflow.py additions:
+
+    ```python
+
+    # ADD to BaseTaskMethods class
+
+    class BaseTaskMethods:
+
+        def __init__(self):
+
+            self.use_database_data = mongo_config.enable_mongodb if 'mongo_config' in globals() else False
+
+            self.test_document_ids = []  # Track created test documents
+
+
+
+        def setup_data_source(self, prefer_database=True):
+
+            # Configure data source preference
+
+            self.use_database_data = prefer_database and mongo_config.enable_mongodb
+
+
+
+        def get_test_data(self, data_type, collection_name=None):
+
+            # Universal data retrieval method
+
+            if self.use_database_data and collection_name:
+
+                return get_mongodb_test_data(collection_name)
+
+            else:
+
+                return data_generator.generate_data(data_type)
+
+
+
+        def create_test_document(self, collection_name, document_data):
+
+            # Create test document and track for cleanup
+
+            if self.use_database_data:
+
+                doc_id = create_test_document(collection_name, document_data)
+
+                if doc_id:
+
+                    self.test_document_ids.append(doc_id)
+
+                return doc_id
+
+            return None
+
+
+
+        def cleanup_test_data(self):
+
+            # Clean up any test documents created
+
+            if self.use_database_data and self.test_document_ids:
+
+                cleanup_test_documents("test_collection", self.test_document_ids)
+
+                self.test_document_ids.clear()
+
+    ```
+    {% endif %}
 
     example.py additions:
     ```python

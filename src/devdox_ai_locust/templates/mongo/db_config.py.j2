@@ -1,0 +1,271 @@
+"""
+MongoDB Configuration for Load Testing
+
+This module provides MongoDB connection management with:
+- Connection pooling optimized for concurrent load testing
+- Singleton pattern to prevent connection exhaustion
+- Proper error handling and retry logic
+- Environment-based configuration
+"""
+
+import os
+import logging
+from typing import Optional, Dict, Any, List
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from dotenv import load_dotenv
+import time
+
+load_dotenv()
+logger = logging.getLogger(__name__)
+
+
+class MongoDBConfig:
+    """MongoDB configuration with connection pooling for load testing"""
+
+    _instance = None
+    _client = None
+    _database = None
+
+    def __new__(cls):
+        """Singleton pattern to ensure single connection pool"""
+        if cls._instance is None:
+            cls._instance = super(MongoDBConfig, cls).__new__(cls)
+            cls._instance._initialize()
+        return cls._instance
+
+    def _initialize(self):
+        """Initialize MongoDB connection with proper pooling"""
+        # MongoDB Configuration
+        self.mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
+        self.database_name = os.getenv("MONGODB_DATABASE", "locust_test_data")
+        
+        # Connection Pool Settings - CRITICAL FOR LOAD TESTING
+        # These values are optimized for concurrent Locust users
+        self.max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE", "100"))
+        self.min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE", "10"))
+        
+        # Timeout Settings
+        self.connect_timeout_ms = int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "5000"))
+        self.server_selection_timeout_ms = int(
+            os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")
+        )
+        self.socket_timeout_ms = int(os.getenv("MONGODB_SOCKET_TIMEOUT_MS", "10000"))
+        
+        # Wait Queue Settings - Prevents connection exhaustion
+        self.max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "60000"))
+        self.wait_queue_timeout_ms = int(
+            os.getenv("MONGODB_WAIT_QUEUE_TIMEOUT_MS", "10000")
+        )
+        
+        # Feature Flags
+        self.enable_mongodb = os.getenv("ENABLE_MONGODB", "false").lower() == "true"
+        self.use_mongodb_for_test_data = (
+            os.getenv("USE_MONGODB_FOR_TEST_DATA", "false").lower() == "true"
+        )
+        
+        # Collections
+        self.collections = {
+            "pets": os.getenv("MONGODB_COLLECTION_PETS", "pets"),
+            "users": os.getenv("MONGODB_COLLECTION_USERS", "users"),
+            "orders": os.getenv("MONGODB_COLLECTION_ORDERS", "orders"),
+            "test_sessions": os.getenv("MONGODB_COLLECTION_SESSIONS", "test_sessions"),
+        }
+
+    def get_client(self) -> Optional[MongoClient]:
+        """
+        Get MongoDB client with connection pooling.
+        
+        CRITICAL: Returns same client instance for all Locust workers
+        to share connection pool efficiently.
+        """
+        if not self.enable_mongodb:
+            logger.warning("MongoDB is disabled. Enable with ENABLE_MONGODB=true")
+            return None
+
+        if self._client is None:
+            try:
+                logger.info("Initializing MongoDB connection pool...")
+                logger.info(f"Pool size: {self.min_pool_size} to {self.max_pool_size}")
+                
+                self._client = MongoClient(
+                    self.mongo_uri,
+                    # Connection Pool Configuration
+                    maxPoolSize=self.max_pool_size,
+                    minPoolSize=self.min_pool_size,
+                    maxIdleTimeMS=self.max_idle_time_ms,
+                    waitQueueTimeoutMS=self.wait_queue_timeout_ms,
+                    
+                    # Timeout Configuration
+                    connectTimeoutMS=self.connect_timeout_ms,
+                    serverSelectionTimeoutMS=self.server_selection_timeout_ms,
+                    socketTimeoutMS=self.socket_timeout_ms,
+                    
+                    # Resilience Settings
+                    retryWrites=True,
+                    retryReads=True,
+                    
+                    # Application Name for monitoring
+                    appname="locust-load-test",
+                )
+                
+                # Verify connection
+                self._client.admin.command("ping")
+                logger.info(f"✅ MongoDB connected successfully to {self.database_name}")
+                
+            except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+                logger.error(f"❌ Failed to connect to MongoDB: {e}")
+                logger.error("Please verify MongoDB is running and connection string is correct")
+                self._client = None
+                raise
+            except Exception as e:
+                logger.error(f"❌ Unexpected MongoDB connection error: {e}")
+                self._client = None
+                raise
+
+        return self._client
+
+    def get_database(self):
+        """Get database instance"""
+        if self._database is None:
+            client = self.get_client()
+            if client:
+                self._database = client[self.database_name]
+        return self._database
+
+    def get_collection(self, collection_name: str):
+        """Get collection instance"""
+        db = self.get_database()
+        if db:
+            # Use the mapped collection name if it exists
+            actual_name = self.collections.get(collection_name, collection_name)
+            return db[actual_name]
+        return None
+
+    def close(self):
+        """Close MongoDB connection"""
+        if self._client:
+            logger.info("Closing MongoDB connection...")
+            self._client.close()
+            self._client = None
+            self._database = None
+            logger.info("✅ MongoDB connection closed")
+
+    def validate_config(self) -> List[str]:
+        """
+        Validate MongoDB configuration and return warnings/errors
+        
+        Returns:
+            List of configuration issues
+        """
+        issues = []
+
+        # Pool size validation
+        if self.max_pool_size < self.min_pool_size:
+            issues.append(
+                f"⚠️  max_pool_size ({self.max_pool_size}) is less than "
+                f"min_pool_size ({self.min_pool_size})"
+            )
+
+        # Check if pool size is adequate for Locust users
+        # Rule of thumb: max_pool_size should be >= number of Locust users
+        locust_users = int(os.getenv("LOCUST_USERS", "50"))
+        if self.max_pool_size < locust_users:
+            issues.append(
+                f"⚠️  CRITICAL: max_pool_size ({self.max_pool_size}) is less than "
+                f"LOCUST_USERS ({locust_users}). This WILL cause connection "
+                f"exhaustion and test failures. Recommended: {locust_users * 2}"
+            )
+
+        # Timeout validation
+        if self.connect_timeout_ms < 1000:
+            issues.append(
+                f"⚠️  connect_timeout_ms ({self.connect_timeout_ms}) is very low. "
+                "May cause connection failures under load."
+            )
+
+        if self.wait_queue_timeout_ms < 5000:
+            issues.append(
+                f"⚠️  wait_queue_timeout_ms ({self.wait_queue_timeout_ms}) is low. "
+                "Users may get connection timeouts under heavy load."
+            )
+
+        return issues
+
+    def get_connection_stats(self) -> Dict[str, Any]:
+        """Get current connection pool statistics"""
+        client = self.get_client()
+        if not client:
+            return {"status": "disabled"}
+
+        try:
+            # Get server status for connection pool info
+            server_status = client.admin.command("serverStatus")
+            connections = server_status.get("connections", {})
+            
+            return {
+                "status": "connected",
+                "current_connections": connections.get("current", 0),
+                "available_connections": connections.get("available", 0),
+                "total_created": connections.get("totalCreated", 0),
+                "active": connections.get("active", 0),
+                "configured_max": self.max_pool_size,
+                "configured_min": self.min_pool_size,
+            }
+        except Exception as e:
+            logger.error(f"Failed to get connection stats: {e}")
+            return {"status": "error", "error": str(e)}
+
+
+# Global singleton instance
+mongo_config = MongoDBConfig()
+
+
+def test_connection():
+    """Test MongoDB connection and display configuration"""
+    print("\n" + "=" * 60)
+    print("MongoDB Connection Test")
+    print("=" * 60)
+    
+    # Display configuration
+    print(f"\nConnection URI: {mongo_config.mongo_uri}")
+    print(f"Database: {mongo_config.database_name}")
+    print(f"Pool Size: {mongo_config.min_pool_size} - {mongo_config.max_pool_size}")
+    print(f"Connect Timeout: {mongo_config.connect_timeout_ms}ms")
+    print(f"Socket Timeout: {mongo_config.socket_timeout_ms}ms")
+    
+    # Check for configuration issues
+    issues = mongo_config.validate_config()
+    if issues:
+        print("\n⚠️  Configuration Issues:")
+        for issue in issues:
+            print(f"  {issue}")
+    else:
+        print("\n✅ Configuration looks good!")
+    
+    # Try to connect
+    print("\nAttempting to connect...")
+    try:
+        client = mongo_config.get_client()
+        if client:
+            stats = mongo_config.get_connection_stats()
+            print("\n✅ Connection successful!")
+            print(f"\nConnection Stats:")
+            for key, value in stats.items():
+                print(f"  {key}: {value}")
+            
+            # List collections
+            db = mongo_config.get_database()
+            collections = db.list_collection_names()
+            print(f"\nAvailable collections: {', '.join(collections) if collections else 'None'}")
+        else:
+            print("\n❌ Connection failed - MongoDB is disabled")
+            
+    except Exception as e:
+        print(f"\n❌ Connection failed: {e}")
+    
+    print("\n" + "=" * 60)
+
+
+if __name__ == "__main__":
+    test_connection()

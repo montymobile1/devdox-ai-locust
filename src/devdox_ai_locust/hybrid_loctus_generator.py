@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 test_data_file_path = "test_data.py"
+data_provider_path = "data_provider.py"
 
 
 @dataclass
@@ -118,6 +119,7 @@ class EnhancementProcessor:
         base_files: Dict[str, str],
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
+        db_type:str="",
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """Process workflow enhancements"""
         enhanced_directory_files: List[Dict[str, Any]] = []
@@ -134,10 +136,9 @@ class EnhancementProcessor:
             first_workflow = base_workflow_files[0]
             # Get the content from the dictionary - adjust key name as needed
             base_workflow_content = first_workflow.get("base_workflow.py", "")
-
         for workflow_item in directory_files:
             enhanced_workflow_item = await self._enhance_single_workflow(
-                workflow_item, base_files, base_workflow_content, grouped_endpoints
+                workflow_item, base_files, base_workflow_content, grouped_endpoints, db_type
             )
             if enhanced_workflow_item:
                 enhanced_directory_files.append(enhanced_workflow_item["files"])
@@ -151,6 +152,7 @@ class EnhancementProcessor:
         base_files: Dict[str, str],
         base_workflow_files: str,
         grouped_endpoints: Dict[str, List[Endpoint]],
+        db_type:str="",
     ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
@@ -164,6 +166,7 @@ class EnhancementProcessor:
                 base_workflow=base_workflow_files,
                 grouped_enpoints=workflow_endpoints_dict,
                 auth_endpoints=auth_endpoints,
+                db_type=db_type,
             )
             if enhanced_workflow:
                 return {
@@ -174,14 +177,14 @@ class EnhancementProcessor:
         return None
 
     async def process_test_data_enhancement(
-        self, base_files: Dict[str, str], endpoints: List[Endpoint]
+        self, base_files: Dict[str, str], endpoints: List[Endpoint], db_type:str=""
     ) -> Tuple[Dict[str, str], List[str]]:
         """Process test data enhancement"""
         enhanced_files = {}
         enhancements = []
         if self.ai_config and self.ai_config.enhance_test_data:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
-                base_files.get(test_data_file_path, ""), endpoints
+                base_files.get(test_data_file_path, ""), endpoints, db_type, base_files.get(data_provider_path,""),  base_files.get("db_config.py", ""),data_provider_path
             )
             if enhanced_test_data:
                 enhanced_files[test_data_file_path] = enhanced_test_data
@@ -289,6 +292,7 @@ class HybridLocustGenerator:
         custom_requirement: Optional[str] = None,
         target_host: Optional[str] = None,
         include_auth: bool = True,
+        db_type:str=""
     ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
         """
         Generate Locust tests using hybrid approach
@@ -308,8 +312,10 @@ class HybridLocustGenerator:
                     api_info,
                     include_auth=include_auth,
                     target_host=target_host,
+                    db_type=db_type
                 )
             )
+
 
             base_files = self.template_generator.fix_indent(base_files)
             # Step 2: Enhance with AI if available
@@ -322,6 +328,7 @@ class HybridLocustGenerator:
                     directory_files,
                     grouped_enpoints,
                     custom_requirement,
+                    db_type
                 )
                 if enhancement_result.success:
                     logger.info(
@@ -422,6 +429,7 @@ class HybridLocustGenerator:
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         custom_requirement: Optional[str] = None,
+        db_type:str=""
     ) -> EnhancementResult:
         """Enhance base files with AI - Refactored for reduced cognitive complexity"""
         start_time = asyncio.get_event_loop().time()
@@ -434,6 +442,7 @@ class HybridLocustGenerator:
                 directory_files,
                 grouped_endpoints,
                 custom_requirement,
+                db_type
             )
 
             processing_time = asyncio.get_event_loop().time() - start_time
@@ -462,6 +471,7 @@ class HybridLocustGenerator:
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         custom_requirement: Optional[str] = None,
+        db_type:str=""
     ) -> EnhancementResult:
         """Process all enhancements using the enhancement processor"""
         processor = EnhancementProcessor(self.ai_config, self)
@@ -476,7 +486,7 @@ class HybridLocustGenerator:
             processor.process_domain_flows_enhancement(
                 endpoints, api_info, custom_requirement
             ),
-            processor.process_test_data_enhancement(base_files, endpoints),
+            processor.process_test_data_enhancement(base_files, endpoints, db_type),
             processor.process_validation_enhancement(base_files, endpoints),
         ]
 
@@ -501,7 +511,7 @@ class HybridLocustGenerator:
                 workflow_files,
                 workflow_enhancements,
             ) = await processor.process_workflow_enhancements(
-                base_files, directory_files, grouped_endpoints
+                base_files, directory_files, grouped_endpoints, db_type
             )
             enhanced_directory_files.extend(workflow_files)
             enhancements_applied.extend(workflow_enhancements)
@@ -557,6 +567,7 @@ class HybridLocustGenerator:
         base_workflow: str,
         grouped_enpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
+        db_type:str=""
     ) -> Optional[str]:
         try:
             template = self.jinja_env.get_template("workflow.j2")
@@ -568,6 +579,7 @@ class HybridLocustGenerator:
                 base_workflow=base_workflow,
                 auth_endpoints=auth_endpoints,
                 base_content=base_content,
+                db_type=db_type
             )
             enhanced_content = await self._call_ai_service(prompt)
             return enhanced_content
@@ -577,7 +589,7 @@ class HybridLocustGenerator:
         return ""
 
     async def enhance_test_data_file(
-        self, base_content: str, endpoints: List[Endpoint]
+        self, base_content: str, endpoints: List[Endpoint], db_type: str="",data_provider:str="",  db_config:str="",data_provider_path:str=""
     ) -> Optional[str]:
         """Enhance test data generation with domain knowledge"""
 
@@ -592,11 +604,14 @@ class HybridLocustGenerator:
                 "base_content": base_content,
                 "schemas_info": schemas_info,
                 "endpoints": endpoints,
+                "db_type": db_type,
+                "data_provider_content": data_provider,
+                "db_config": db_config,
+                "data_provider_path": data_provider_path,
             }
 
             # Render enhanced content
             prompt = template.render(**context)
-
             enhanced_content = await self._call_ai_service(prompt)
             if enhanced_content and self._validate_python_code(enhanced_content):
                 return enhanced_content

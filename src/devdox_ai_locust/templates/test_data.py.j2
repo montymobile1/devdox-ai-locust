@@ -10,7 +10,11 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 from faker import Faker
-import json
+{% if data_provider_content %}
+from data_provider import mongo_data_provider
+{% endif %}
+
+
 
 fake = Faker()
 

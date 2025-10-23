@@ -1,0 +1,303 @@
+"""
+MongoDB Data Provider for Locust Load Testing
+
+Provides efficient data retrieval from MongoDB with:
+- Random sampling for realistic load distribution
+- Caching to reduce database queries
+- Fallback to generated data if MongoDB unavailable
+- Smart data rotation to prevent hotspots
+"""
+
+import logging
+import random
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+from collections import deque
+import threading
+import uuid
+from db_config import mongo_config
+
+logger = logging.getLogger(__name__)
+
+
+class MongoDataProvider:
+    """
+    Provides test data from MongoDB with intelligent caching and fallback.
+
+    This class is designed for high-concurrency load testing:
+    - Thread-safe caching mechanism
+    - Rotating cache to prevent data hotspots
+    - Automatic fallback to generated data
+    - Periodic cache refresh
+    """
+
+    def __init__(self, cache_size: int = 1000, cache_ttl_seconds: int = 300):
+        """
+        Initialize MongoDB data provider
+
+        Args:
+            cache_size: Maximum items to cache per collection
+            cache_ttl_seconds: Cache time-to-live in seconds
+        """
+        self.cache_size = cache_size
+        self.cache_ttl_seconds = cache_ttl_seconds
+
+        # Thread-safe caches with rotation
+        self._cache = {}
+        self._cache_timestamps = {}
+        self._cache_lock = threading.Lock()
+
+        # Usage tracking for intelligent preloading
+        self._access_counts = {}
+
+        # Statistics
+        self.stats = {
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "db_queries": 0,
+            "fallback_generations": 0,
+        }
+
+    def _get_cache_key(self, collection: str, query: Dict) -> str:
+        """Generate cache key from collection and query"""
+        query_str = str(sorted(query.items()))
+        return f"{collection}:{query_str}"
+
+    def _is_cache_valid(self, cache_key: str) -> bool:
+        """Check if cache is still valid"""
+        if cache_key not in self._cache_timestamps:
+            return False
+
+        age = (datetime.now() - self._cache_timestamps[cache_key]).total_seconds()
+        return age < self.cache_ttl_seconds
+
+    def _update_cache(self, cache_key: str, data: List[Dict]):
+        """Update cache with new data"""
+        with self._cache_lock:
+            # Limit cache size using deque for efficient rotation
+            if len(data) > self.cache_size:
+                self._cache[cache_key] = deque(
+                    random.sample(data, self.cache_size),
+                    maxlen=self.cache_size,
+                )
+            else:
+                self._cache[cache_key] = deque(data, maxlen=self.cache_size)
+
+            self._cache_timestamps[cache_key] = datetime.now()
+
+    def get_random_document(
+        self,
+        collection_name: str,
+        query: Dict = None,
+        projection: Dict = None,
+    ) -> Optional[Dict]:
+        """
+        Get a random document from MongoDB collection with caching.
+
+        Args:
+            collection_name: Name of the collection (e.g., 'pets', 'users')
+            query: MongoDB query filter
+            projection: Fields to include/exclude
+
+        Returns:
+            Random document from collection, or None if not found
+        """
+        if not mongo_config.enable_mongodb:
+            logger.debug("MongoDB disabled, using generated data")
+            return self._generate_fallback_data(collection_name)
+
+        query = query or {}
+        cache_key = self._get_cache_key(collection_name, query)
+
+        # Try cache first
+        if cache_key in self._cache and self._is_cache_valid(cache_key):
+            self.stats["cache_hits"] += 1
+            with self._cache_lock:
+                cached_data = list(self._cache[cache_key])
+                if cached_data:
+                    # Rotate the deque for better distribution
+                    item = cached_data[0]
+                    self._cache[cache_key].rotate(-1)
+                    return item
+
+        # Cache miss - query database
+        self.stats["cache_misses"] += 1
+        try:
+            collection = mongo_config.get_collection(collection_name)
+            if not collection:
+                logger.warning(f"Collection {collection_name} not available")
+                return self._generate_fallback_data(collection_name)
+
+            self.stats["db_queries"] += 1
+
+            # Fetch multiple documents for caching
+            documents = list(collection.find(query, projection).limit(self.cache_size))
+
+            if documents:
+                # Update cache
+                self._update_cache(cache_key, documents)
+
+                # Return random document
+                return random.choice(documents)
+            else:
+                logger.warning(f"No documents found in {collection_name} with query {query}")
+                return self._generate_fallback_data(collection_name)
+
+        except Exception as e:
+            logger.error(f"Error fetching from MongoDB {collection_name}: {e}")
+            self.stats["fallback_generations"] += 1
+            return self._generate_fallback_data(collection_name)
+
+    def get_document(
+        self,
+        collection_name: str,
+        query: Dict = None,
+        projection: Dict = None,
+        sort: List[tuple] = None,
+    ) -> Optional[Dict]:
+        """
+        Get a single specific document from MongoDB (not random).
+        Returns the first matching document based on query and sort order.
+        """
+        if not mongo_config.enable_mongodb:
+            logger.debug("MongoDB disabled, using generated data")
+            return self._generate_fallback_data(collection_name)
+
+        query = query or {}
+
+        try:
+            collection = mongo_config.get_collection(collection_name)
+            if not collection:
+                logger.warning(f"Collection {collection_name} not available")
+                return self._generate_fallback_data(collection_name)
+
+            self.stats["db_queries"] += 1
+
+            # Build the query
+            cursor = collection.find(query, projection)
+
+            # Apply sort if specified
+            if sort:
+                cursor = cursor.sort(sort)
+
+            # Get first document
+            document = cursor.limit(1).next() if cursor else None
+
+            if document:
+                return document
+            else:
+                logger.warning(f"No document found in {collection_name} with query {query}")
+                return self._generate_fallback_data(collection_name)
+
+        except StopIteration:
+            logger.warning(f"No document found in {collection_name} with query {query}")
+            return self._generate_fallback_data(collection_name)
+        except Exception as e:
+            logger.error(f"Error fetching from MongoDB {collection_name}: {e}")
+            self.stats["fallback_generations"] += 1
+            return self._generate_fallback_data(collection_name)
+
+    def get_multiple_documents(
+        self,
+        collection_name: str,
+        count: int = 10,
+        query: Dict = None,
+        projection: Dict = None,
+        random: bool = True,
+    ) -> List[Dict]:
+        """
+        Get multiple random documents from collection.
+        """
+        collection = mongo_config.get_collection(collection_name)
+        if random:
+            # ✅ SINGLE EFFICIENT QUERY using MongoDB's $sample
+            pipeline = []
+            if query:
+                pipeline.append({"$match": query})
+            pipeline.append({"$sample": {"size": count}})
+            if projection:
+                pipeline.append({"$project": projection})
+
+            documents = list(collection.aggregate(pipeline))
+            return documents
+        else:
+            try:
+                collection = mongo_config.get_collection(collection_name)
+                if not collection:
+                    logger.warning(f"Collection {collection_name} not available")
+                    return [self._generate_fallback_data(collection_name) for _ in range(count)]
+
+                query = query or {}
+                self.stats["db_queries"] += 1
+
+                documents = list(collection.find(query, projection).limit(count))
+
+                if documents:
+                    return documents
+                else:
+                    logger.warning(f"No documents found in {collection_name} with query {query}")
+                    return [self._generate_fallback_data(collection_name) for _ in range(count)]
+
+            except Exception as e:
+                logger.error(f"Error fetching from MongoDB {collection_name}: {e}")
+                return [self._generate_fallback_data(collection_name) for _ in range(count)]
+
+    def _generate_fallback_data(self, collection_name: str) -> Dict:
+        """
+        Generate fallback data when MongoDB is unavailable.
+        """
+        self.stats["fallback_generations"] += 1
+
+        # Generic fallback
+        return {
+            "_id":  str(uuid.uuid4()),
+            "data": f"fallback_{collection_name}",
+        }
+
+    def clear_cache(self):
+        """Clear all cached data"""
+        with self._cache_lock:
+            self._cache.clear()
+            self._cache_timestamps.clear()
+        logger.info("Cache cleared")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get usage statistics"""
+        total_requests = self.stats["cache_hits"] + self.stats["cache_misses"]
+
+        return {
+            **self.stats,
+            "cache_hit_rate": (
+                self.stats["cache_hits"] / total_requests * 100 if total_requests > 0 else 0
+            ),
+            "cache_size": sum(len(cache) for cache in self._cache.values()),
+            "cached_collections": len(self._cache),
+        }
+
+    def preload_cache(self, collection_name: str, query: Dict = None):
+        """
+        Preload cache for a collection to improve initial performance.
+        """
+        logger.info(f"Preloading cache for {collection_name}...")
+        try:
+            collection = mongo_config.get_collection(collection_name)
+            if not collection:
+                logger.warning(f"Collection {collection_name} not available for preload")
+                return
+
+            query = query or {}
+            documents = list(collection.find(query).limit(self.cache_size))
+
+            if documents:
+                cache_key = self._get_cache_key(collection_name, query)
+                self._update_cache(cache_key, documents)
+                logger.info(f"✅ Preloaded {len(documents)} documents for {collection_name}")
+            else:
+                logger.warning(f"No documents found to preload for {collection_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to preload cache for {collection_name}: {e}")
+
+
+# Global instance
+mongo_data_provider = MongoDataProvider()

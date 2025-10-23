@@ -197,19 +197,20 @@ async def _generate_and_create_tests(
     custom_requirement: Optional[str] = "",
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
+    db_type: str = "",
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
 
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(ai_client=together_client)
-
         test_files, test_directories = await generator.generate_from_endpoints(
             endpoints=endpoints,
             api_info=api_info,
             custom_requirement=custom_requirement,
             target_host=host,
             include_auth=auth,
+            db_type=db_type
         )
 
     # Create test files
@@ -271,6 +272,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 )
 @click.option("--host", "-H", type=str, help="Target host URL")
 @click.option("--auth/--no-auth", default=True, help="Include authentication in tests")
+@click.option(
+    "--db-type",
+    type=click.Choice(["", "mongo", "postgresql"], case_sensitive=False),
+    default="",
+    help="Database type for testing (empty for no database, mongo, or postgresql)",
+)
 @click.option("--dry-run", is_flag=True, help="Generate tests without running them")
 @click.option(
     "--custom-requirement", type=str, help="Custom requirements for test generation"
@@ -291,6 +298,7 @@ def generate(
     run_time: str,
     host: Optional[str],
     auth: bool,
+    db_type:str,
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
@@ -309,9 +317,10 @@ def generate(
                 run_time,
                 host,
                 auth,
+                db_type,
                 dry_run,
                 custom_requirement,
-                together_api_key,
+                together_api_key
             )
         )
     except Exception as e:
@@ -332,6 +341,7 @@ async def _async_generate(
     run_time: str,
     host: Optional[str],
     auth: bool,
+    db_type:str,
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
@@ -343,7 +353,6 @@ async def _async_generate(
     try:
         _, api_key = _initialize_config(together_api_key)
         output_dir = _setup_output_directory(output)
-
         # Display configuration
         if ctx.obj["verbose"]:
             _display_configuration(
@@ -363,7 +372,7 @@ async def _async_generate(
         )
 
         created_files = await _generate_and_create_tests(
-            api_key, endpoints, api_info, output_dir, custom_requirement, host, auth
+            api_key, endpoints, api_info, output_dir, custom_requirement, host, auth, db_type
         )
 
         # Show results
