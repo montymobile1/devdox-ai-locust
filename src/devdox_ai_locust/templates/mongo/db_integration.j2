@@ -1,0 +1,352 @@
+# MongoDB Integration Guide for Locust Load Testing
+
+## 🎯 Overview
+
+This guide explains how to integrate MongoDB with your Locust load tests to use realistic, production-like data instead of randomly generated data.
+
+## 📋 Table of Contents
+
+1. [Why Use MongoDB?](#why-use-mongodb)
+2. [Architecture](#architecture)
+3. [Quick Start](#quick-start)
+4. [Configuration](#configuration)
+5. [Seeding Data](#seeding-data)
+6. [Using MongoDB Data in Tests](#using-mongodb-data-in-tests)
+7. [Performance Tuning](#performance-tuning)
+8. [Troubleshooting](#troubleshooting)
+
+---
+
+## Why Use MongoDB?
+
+### Benefits
+
+✅ **Realistic Load Testing**: Use actual production-like data patterns  
+✅ **Data Consistency**: Same data across test runs for reproducibility  
+✅ **Complex Scenarios**: Test with real data relationships and edge cases  
+✅ **Performance Baseline**: Measure with production-scale data volumes  
+✅ **Debugging**: Easier to trace specific test scenarios  
+
+### When NOT to Use MongoDB
+
+❌ High-concurrency tests (1000+ users) - may bottleneck on DB  
+❌ Simple smoke tests - generated data is faster  
+❌ No MongoDB infrastructure available  
+
+---
+
+## Architecture
+
+```
+┌─────────────────┐
+│  Locust Users   │
+│   (50-500)      │
+└────────┬────────┘
+         │
+         ├──────────────┐
+         │              │
+    ┌────▼────┐    ┌───▼──────┐
+    │  Cache  │    │ MongoDB  │
+    │ (Fast)  │◄───┤ (Source) │
+    └─────────┘    └──────────┘
+         │
+    ┌────▼─────────────┐
+    │  Test Execution  │
+    └──────────────────┘
+```
+
+### Components
+
+1. **db_config.py**: MongoDB connection pool management
+2. **mongo_data_provider.py**: Smart caching and data retrieval
+3. **seed_mongodb.py**: Data seeding utility
+4. **test_data.py**: Enhanced with MongoDB fallback
+
+---
+
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Start MongoDB
+
+```bash
+# Using Docker (recommended)
+docker run -d -p 27017:27017 --name mongodb mongo:latest
+
+# Or using local installation
+mongod --dbpath /data/db
+```
+
+### 3. Configure Environment
+
+Create a `.env` file from the example:
+
+```bash
+cp .env.example .env
+```
+
+Enable MongoDB in `.env`:
+
+```bash
+# Enable MongoDB
+ENABLE_MONGODB=true
+USE_MONGODB_FOR_TEST_DATA=true
+
+# Connection string
+MONGODB_URI=mongodb://localhost:27017/
+MONGODB_DATABASE=locust_test_data
+
+# Pool size should be >= LOCUST_USERS
+MONGODB_MAX_POOL_SIZE=100
+LOCUST_USERS=50
+```
+
+### 4. Test Connection
+
+```bash
+python db_config.py
+```
+
+Expected output:
+```
+============================================================
+MongoDB Connection Test
+============================================================
+
+Connection URI: mongodb://localhost:27017/
+Database: locust_test_data
+Pool Size: 10 - 100
+...
+✅ Connection successful!
+```
+
+### 5. Seed Test Data
+
+```bash
+# Seed all collections with 5000 documents each
+python seed_mongodb.py --all 5000
+
+# Or seed specific collections
+python seed_mongodb.py --pets 1000 --users 500 --orders 2000
+```
+
+### 6. Run Load Tests
+
+```bash
+locust -f locustfile.py
+```
+
+---
+
+## Configuration
+
+### Critical Settings
+
+#### Connection Pool Size
+
+```bash
+# RULE: max_pool_size >= LOCUST_USERS
+MONGODB_MAX_POOL_SIZE=100  # For 50-100 concurrent users
+MONGODB_MIN_POOL_SIZE=10
+```
+
+**⚠️ WARNING**: If `max_pool_size < LOCUST_USERS`, you WILL experience:
+- Connection exhaustion
+- Test failures
+- Timeout errors
+- Cascading failures
+
+**Formula**: `MONGODB_MAX_POOL_SIZE = LOCUST_USERS × 2` (for safety margin)
+
+#### Timeout Settings
+
+```bash
+# Connection timeouts
+MONGODB_CONNECT_TIMEOUT_MS=5000      # Initial connection
+MONGODB_SOCKET_TIMEOUT_MS=10000      # Read/write operations
+MONGODB_WAIT_QUEUE_TIMEOUT_MS=10000  # Waiting for connection from pool
+```
+
+**Best Practices**:
+- `CONNECT_TIMEOUT` < `SOCKET_TIMEOUT` < `WAIT_QUEUE_TIMEOUT`
+- Increase timeouts for slow networks
+- Decrease for fast local testing
+
+---
+
+## Seeding Data
+
+### Basic Seeding
+
+```bash
+# Seed 10,000 documents per collection
+python seed_mongodb.py --all 10000
+
+# Seed specific amounts
+python seed_mongodb.py --pets 5000 --users 1000 --orders 10000
+
+# Custom batch size for faster insertion
+python seed_mongodb.py --all 5000 --batch-size 500
+```
+
+### Verify Seeded Data
+
+```bash
+# Check document counts
+python seed_mongodb.py --verify
+
+# View sample documents
+python seed_mongodb.py --sample
+```
+
+### Clear Data
+
+```bash
+# Clear all collections
+python seed_mongodb.py --clear
+
+# Clear specific collection
+python seed_mongodb.py --clear-pets
+```
+
+---
+
+## Using MongoDB Data in Tests
+
+### Automatic Integration
+
+The `TestDataGenerator` automatically uses MongoDB when available:
+
+```python
+# In your workflow tasks
+data_generator = TestDataGenerator()
+
+# This will try MongoDB first, then fallback to generation
+pet_data = data_generator.get_from_mongodb_or_generate(
+    "pets",
+    lambda: data_generator.generate_product_data()
+)
+```
+
+### Manual MongoDB Queries
+
+```python
+from mongo_data_provider import mongo_data_provider
+
+# Get random document
+pet = mongo_data_provider.get_random_document("pets")
+
+# Get with query filter
+available_pet = mongo_data_provider.get_random_document(
+    "pets",
+    query={"status": "available"}
+)
+
+# Get multiple documents
+pets = mongo_data_provider.get_multiple_documents("pets", count=10)
+```
+
+---
+
+## Performance Tuning
+
+### 1. Connection Pool Optimization
+
+```bash
+# For 50 users
+MONGODB_MAX_POOL_SIZE=100
+
+# For 200 users
+MONGODB_MAX_POOL_SIZE=400
+
+# For 500 users
+MONGODB_MAX_POOL_SIZE=1000
+```
+
+### 2. Preload Cache Before Tests
+
+```python
+from locust import events
+from mongo_data_provider import mongo_data_provider
+
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    logger.info("Preloading MongoDB cache...")
+    mongo_data_provider.preload_cache("pets")
+    mongo_data_provider.preload_cache("users")
+    mongo_data_provider.preload_cache("orders")
+    logger.info("✅ Cache preloaded")
+```
+
+---
+
+## Troubleshooting
+
+### Connection Errors
+
+**Error**: `ServerSelectionTimeoutError`
+
+**Solution**:
+```bash
+# Check if MongoDB is running
+docker ps | grep mongo
+
+# Start MongoDB
+docker start mongodb
+
+# Verify connection
+python db_config.py
+```
+
+### Connection Pool Exhaustion
+
+**Error**: `WaitQueueTimeoutError`
+
+**Solution**:
+```bash
+# In .env, increase pool size
+MONGODB_MAX_POOL_SIZE=200  # Double your LOCUST_USERS
+```
+
+### Slow Performance
+
+**Solutions**:
+
+1. Check cache hit rate (should be >90%)
+2. Create indexes on frequently queried fields
+3. Increase cache size
+4. Preload cache before tests
+
+---
+
+## Best Practices
+
+### ✅ DO
+
+- Set `MONGODB_MAX_POOL_SIZE` >= `LOCUST_USERS`
+- Preload cache before tests
+- Monitor cache hit rates
+- Create indexes on frequently queried fields
+- Use connection pooling (singleton pattern)
+
+### ❌ DON'T
+
+- Set pool size smaller than user count
+- Create new connections per request
+- Query MongoDB directly in tight loops
+- Ignore timeout errors
+- Skip data seeding
+
+---
+
+## Support
+
+For issues or questions:
+1. Check logs: `python db_config.py`
+2. Verify configuration: review warnings from `validate_config()`
+3. Monitor stats: `mongo_data_provider.get_stats()`

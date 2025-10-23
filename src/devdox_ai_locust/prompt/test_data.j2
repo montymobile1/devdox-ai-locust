@@ -1,62 +1,186 @@
-Enhance this test data generator with domain-specific realistic data while preserving ALL existing methods and their signatures:
+Evolve this Test Data Generator into a fully production-ready, intelligent data generation framework.
+{% if data_provider_content %}Incorporate MongoDB integration for live data enrichment, delivering a complete, robust, and realistic test data engine with domain awareness, caching, and smart relationships.{% endif %}
 
-Current File:
+**CURRENT STATE ANALYSIS**:
+```python
 {{base_content}}
+```
 
-API Schemas Found:
-{{ schemas_info }}
+
+{% if data_provider_content %}
+    Database config file content with path to DB{{ data_provider_path }}:
+    {{ db_config }}
+
+
+    **MONGODB DATA PROVIDER** (Available for Integration):
+    ```python
+    {{data_provider_content}}
+    ```
+{% endif %}
+
 
 API Endpoints Context:
-[
-{% for ep in endpoints -%}
-    "Path: {{ ep.path }}, Method: {{ ep.method }}, Tags: {{ ep.tags }}"{% if not loop.last %},{% endif %}
-{% endfor -%}
-]
+    - **Schemas**: {schemas_info}
+    - **Endpoints**: [{% for ep in endpoints -%}
+    "Path: {{ ep.path }}, Method: {{ ep.method }}, Tags: {{ ep.tags }}"{% if not loop.last %},{% endif %}{% endfor -%}]
 
-REQUIREMENTS - Enhance by adding NEW functionality while keeping ALL existing methods intact:
 
-1. **Domain-Specific Data Generators**:
+
+**CRITICAL REQUIREMENT**: Every method must have COMPLETE, FUNCTIONAL implementation. NO stubs, NO pass statements, NO placeholder comments.
+
+**IMPLEMENTATION SPECIFICATIONS**:
+{% set counter = namespace(value=1) %}
+
+{% if data_provider_content %}
+    {{ counter.value }}.  **MongoDB Integration** (COMPLETE Implementation Required)
+```python
+def get_from_mongodb_or_generate(self, collection_name: str, entity_type: str, fallback_generator: callable = None, **kwargs) -> Dict[str, Any]:
+    \"\"\"COMPLETE implementation with full error handling, logging, and statistics\"\"\"
+    # IMPLEMENT: Full MongoDB integration with:
+    # - Statistics tracking (mongo_queries, cache_hits, fallback_generations)
+    # - Comprehensive error handling with specific exception types
+    # - Logging with appropriate levels (DEBUG, WARNING, ERROR)
+    # - Performance metrics collection
+    # - Graceful degradation when MongoDB unavailable
+    # - Return type validation and data sanitization
+```
+
+    {% set counter.value = counter.value + 1 %}
+{% endif %}
+
+{{ counter.value }}. **Domain-Specific Data Generators**(COMPLETE Implementation Required)
    - Add methods like `generate_affiliate_data()`, `generate_user_credentials()`, `generate_product_data()`
    - Create realistic data based on API endpoint patterns (affiliate, user, product, etc.)
    - Add specific payload generators for common API patterns
+    {% if data_provider_content %}- Use MongoDB data as templates when available{% endif %}
+   - Add `generate_realistic_data(entity_type: str)` for entity-specific data
+{% set counter.value = counter.value + 1 %}
 
-2. **Realistic ID Generation**:
+
+
+{{ counter.value }} **Realistic Data Generation**:
+   - Add `generate_realistic_data(entity_type: str, **kwargs)` for entity-specific data
+   - Create realistic data based on API endpoint patterns (user, product, order, etc.)
+   {% if data_provider_content %}- Integrate MongoDB data patterns into generated data {% endif %}
+   - Add business logic validation for generated data
+{% set counter.value = counter.value + 1 %}
+
+
+{{ counter.value }}. **Realistic ID Generation**:
    - Add `generate_realistic_id(entity_type: str)` for entity-specific IDs
    - Create correlated IDs (user_id -> session_id -> transaction_id)
    - Add methods like `generate_affiliate_id()`, `generate_partner_id()`, etc.
+{% set counter.value = counter.value + 1 %}
 
-3. **Payload Templates**:
+{{ counter.value }}. **Payload Templates**:
    - Add `get_payload_template(endpoint_path: str, method: str)`
    - Create endpoint-specific payload generators
    - Add `generate_login_payload()`, `generate_registration_payload()`, etc.
+{% set counter.value = counter.value + 1 %}
 
-4. **Data Relationships & Correlation**:
+{{ counter.value }}. **Data Relationships & Correlation**:
    - Add session management: `create_user_session()`, `get_session_data()`
    - Create data dependency chains (parent-child relationships)
    - Add `link_related_entities(parent_id, child_type)` for realistic relationships
+{% set counter.value = counter.value + 1 %}
 
-5. **Smart Caching & Performance**:
-   - Add `cache_generated_data(key, data)` and `get_cached_data(key)`
-   - Create reusable entity pools for better performance
-   - Add `get_or_create_entity(entity_type, **kwargs)`
 
-6. **Specialized Pattern Generators**:
+{{ counter.value }}. COMPLETE Implementation Required)
+    ```python
+    def cache_generated_data(self, key: str, data: Any, ttl_seconds: int = 300) -> None:
+    \"\"\"COMPLETE thread-safe caching implementation\"\"\"
+    # IMPLEMENT: Full caching system with:
+    # - Thread-safe operations using threading.Lock()
+    # - TTL (time-to-live) management with automatic expiration
+    # - Cache size limits with LRU eviction
+    # - Memory usage tracking and optimization
+    # - Cache hit/miss statistics
+    # - Data serialization/deserialization if needed
+
+    def get_cached_data(self, key: str) -> Optional[Any]:
+        \"\"\"COMPLETE cache retrieval with validation\"\"\"
+        # IMPLEMENT: Full cache retrieval with:
+        # - TTL validation and automatic cleanup
+        # - Thread-safe access
+        # - Statistics updating (cache_hits counter)
+        # - Data integrity validation
+        # - Proper None handling for cache misses
+
+    def get_or_create_entity(self, entity_type: str, **kwargs) -> Dict[str, Any]:
+        \"\"\"COMPLETE entity management with intelligent caching\"\"\"
+        # IMPLEMENT: Full entity lifecycle management:
+        # - Cache key generation from entity_type and kwargs
+        # - Cache lookup with TTL validation
+        # - MongoDB integration for real data
+        # - Fallback to realistic generation
+        # - Automatic caching of generated/retrieved data
+        # - Relationship tracking and linking
+    ```
+{% set counter.value = counter.value + 1 %}
+
+{{ counter.value }}. **Specialized Pattern Generators**:
    - Add `generate_api_key_data()`, `generate_webhook_payload()`
    - Create `generate_pagination_data()`, `generate_filter_data()`
    - Add `generate_error_scenarios()` for negative testing
+{% set counter.value = counter.value + 1 %}
 
-7. **Validation & Constraints**:
+{{ counter.value }}. **Validation & Constraints**:
    - Add `validate_generated_data(data, schema)`
    - Create constraint-aware generation
    - Add business rule validation
+{% set counter.value = counter.value + 1 %}
 
-CRITICAL CONSTRAINTS:
-- MUST preserve ALL existing method signatures exactly as they are
-- MUST keep all existing functionality working
-- MUST maintain backward compatibility
-- ADD new methods, don't modify existing ones
-- Keep the global `test_data_generator` instance
+{% if data_provider_content %}
+    {{ counter.value }}. **MongoDB Integration Specifics**:
+    - **MANDATORY**: `mongo_data_provider.get_multiple_documents(collection_name, count, query)` when retrieving multiple realistic  to return list records from MongoDB.
+    - Use `mongo_data_provider.get_document(collection_name,query,projection)` when retrieving a single realistic record from MongoDB or fallback generation.
+    - Add `mongo_data_provider.preload_cache()` integration
+    - Use `mongo_config.enable_mongodb` for availability checking
+    - Implement proper connection error handling
+    - Add MongoDB query optimization
+    - Include data freshness validation
+    {% set counter.value = counter.value + 1 %}
+{% endif %}
 
-Focus on making the data generation smarter and more realistic while ensuring all existing code that imports and uses this generator continues to work without changes.
+{% if data_provider_content %}
 
-Output: Complete enhanced Python file with ALL existing content preserved + new intelligent features
+**🚨 FINAL VALIDATION REQUIREMENTS**:
+
+The generated code MUST contain these exact function calls:
+1. `mongo_data_provider.get_multiple_documents()` - Used at least 5 times
+2. `mongo_data_provider.get_random_document()` - Used for single items only
+3. Both methods must have proper error handling and fallback generation
+
+
+**VERIFICATION CHECKLIST**:
+- [ ] `get_multiple_documents()` appears in at least 5 different methods
+- [ ] `get_document()` is used for single entity retrieval
+- [ ] No method uses only `get_document()` when batch data is needed
+- [ ] All MongoDB calls have try/catch error handling
+- [ ] All MongoDB calls have fallback generation
+**FAILURE CRITERIA**: If `get_multiple_documents()` appears less than 5 times in the generated code, the implementation is incomplete and must be regenerated.
+{% endif %}
+
+**OUTPUT REQUIREMENTS**:
+
+1. **ZERO Placeholder Methods**: Every method must be FULLY implemented
+2. **Production Quality**: Include proper error handling, logging, and documentation
+3. **Thread Safety**: All caching and state management must be thread-safe
+4. **Performance Optimized**: Efficient algorithms and memory usage
+5. **Comprehensive Testing**: Generate data that covers edge cases and business scenarios
+6. **Backward Compatibility**: All existing functionality must continue working
+7. **Rich Data**: Generate realistic, coherent data with proper relationships
+8. **Extensive Logging**: Use logging module with appropriate levels
+9. **Statistics Tracking**: Detailed metrics for monitoring and optimization
+10. **MongoDB Integration**: Seamless integration with provided data provider
+
+🚨 **CRITICAL SUCCESS CRITERIA**:
+- NO methods should contain `pass` or placeholder comments
+- ALL caching methods must be fully functional
+- ALL data generation must produce realistic, coherent data
+- ALL MongoDB integration must handle errors gracefully
+- ALL relationships must be properly tracked and maintained
+
+Return the COMPLETE, PRODUCTION-READY Python file with every method fully implemented and tested-quality code.
+
+**Format**: Return ONLY the complete Python code wrapped in ```python``` tags with NO explanations outside the code block.

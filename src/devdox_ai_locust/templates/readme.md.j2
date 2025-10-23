@@ -29,6 +29,8 @@ Professional-grade performance testing suite for **{{ api_info.title }} {{ api_i
 - **Network access** to the target API
 - **Minimum 2GB RAM** for load testing
 
+{{ db_using }}
+
 ### Installation
 ```bash
 # 1. Clone or download the test suite
@@ -43,4 +45,4 @@ cp .env.example .env
 # Edit .env with your API configuration
 
 # 4. Run your first test
-locust -f locust.py
+locust -f locustfile.py

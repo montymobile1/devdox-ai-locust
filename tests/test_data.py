@@ -1,505 +1,461 @@
 """
-Test data fixtures and utilities
+Test Data Generator for Locust Performance Tests
 
-This module contains common test data, mock factories, and utility functions
-that can be shared across multiple test files.
+Provides realistic test data generation for API endpoints.
 """
 
-from typing import Dict, List, Any
-from unittest.mock import Mock
+import random
+import string
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Union
+from faker import Faker
+import json
 
-from devdox_ai_locust.utils.open_ai_parser import (
-    Endpoint,
-    Parameter,
-    RequestBody,
-    Response,
-    ParameterType,
-)
-
-
-class MockDataFactory:
-    """Factory for creating mock test data."""
-
-    @staticmethod
-    def create_mock_endpoint(
-        path: str = "/test",
-        method: str = "GET",
-        operation_id: str = None,
-        summary: str = None,
-        parameters: List[Parameter] = None,
-        request_body: RequestBody = None,
-        responses: List[Response] = None,
-        tags: List[str] = None,
-    ) -> Endpoint:
-        """Create a mock endpoint with default values."""
-        return Endpoint(
-            path=path,
-            method=method,
-            operation_id=operation_id or f"{method.lower()}{path.replace('/', '_')}",
-            summary=summary or f"{method} {path}",
-            description=f"Test endpoint for {method} {path}",
-            parameters=parameters or [],
-            request_body=request_body,
-            responses=responses or [MockDataFactory.create_mock_response()],
-            tags=tags or ["test"],
-        )
-
-    @staticmethod
-    def create_mock_parameter(
-        name: str = "test_param",
-        location: ParameterType = ParameterType.QUERY,
-        required: bool = False,
-        param_type: str = "string",
-        description: str = None,
-    ) -> Parameter:
-        """Create a mock parameter."""
-        return Parameter(
-            name=name,
-            location=location,
-            required=required,
-            type=param_type,
-            description=description or f"Test {name} parameter",
-        )
-
-    @staticmethod
-    def create_mock_request_body(
-        content_type: str = "application/json",
-        schema: Dict[str, Any] = None,
-        required: bool = True,
-    ) -> RequestBody:
-        """Create a mock request body."""
-        return RequestBody(
-            content_type=content_type,
-            schema=schema
-            or {"type": "object", "properties": {"test": {"type": "string"}}},
-            required=required,
-            description="Test request body",
-        )
-
-    @staticmethod
-    def create_mock_response(
-        status_code: str = "200",
-        description: str = "Success",
-        content_type: str = "application/json",
-        schema: Dict[str, Any] = None,
-    ) -> Response:
-        """Create a mock response."""
-        return Response(
-            status_code=status_code,
-            description=description,
-            content_type=content_type,
-            schema=schema or {"type": "object"},
-        )
-
-    @staticmethod
-    def create_crud_endpoints(resource: str = "users") -> List[Endpoint]:
-        """Create a set of CRUD endpoints for a resource."""
-        return [
-            MockDataFactory.create_mock_endpoint(
-                path=f"/{resource}",
-                method="GET",
-                operation_id=f"get{resource.capitalize()}",
-                summary=f"Get all {resource}",
-                parameters=[
-                    MockDataFactory.create_mock_parameter(
-                        "limit", ParameterType.QUERY, False, "integer"
-                    ),
-                    MockDataFactory.create_mock_parameter(
-                        "offset", ParameterType.QUERY, False, "integer"
-                    ),
-                ],
-                tags=[resource],
-            ),
-            MockDataFactory.create_mock_endpoint(
-                path=f"/{resource}",
-                method="POST",
-                operation_id=f"create{resource.capitalize()[:-1]}",
-                summary=f"Create a new {resource[:-1]}",
-                request_body=MockDataFactory.create_mock_request_body(),
-                responses=[
-                    MockDataFactory.create_mock_response("201", "Created"),
-                    MockDataFactory.create_mock_response("400", "Bad Request"),
-                ],
-                tags=[resource],
-            ),
-            MockDataFactory.create_mock_endpoint(
-                path=f"/{resource}/{{id}}",
-                method="GET",
-                operation_id=f"get{resource.capitalize()[:-1]}ById",
-                summary=f"Get {resource[:-1]} by ID",
-                parameters=[
-                    MockDataFactory.create_mock_parameter(
-                        "id", ParameterType.PATH, True, "integer"
-                    )
-                ],
-                responses=[
-                    MockDataFactory.create_mock_response("200", "Success"),
-                    MockDataFactory.create_mock_response("404", "Not Found"),
-                ],
-                tags=[resource],
-            ),
-            MockDataFactory.create_mock_endpoint(
-                path=f"/{resource}/{{id}}",
-                method="PUT",
-                operation_id=f"update{resource.capitalize()[:-1]}",
-                summary=f"Update {resource[:-1]}",
-                parameters=[
-                    MockDataFactory.create_mock_parameter(
-                        "id", ParameterType.PATH, True, "integer"
-                    )
-                ],
-                request_body=MockDataFactory.create_mock_request_body(),
-                tags=[resource],
-            ),
-            MockDataFactory.create_mock_endpoint(
-                path=f"/{resource}/{{id}}",
-                method="DELETE",
-                operation_id=f"delete{resource.capitalize()[:-1]}",
-                summary=f"Delete {resource[:-1]}",
-                parameters=[
-                    MockDataFactory.create_mock_parameter(
-                        "id", ParameterType.PATH, True, "integer"
-                    )
-                ],
-                responses=[
-                    MockDataFactory.create_mock_response("204", "No Content"),
-                    MockDataFactory.create_mock_response("404", "Not Found"),
-                ],
-                tags=[resource],
-            ),
-        ]
-
-    @staticmethod
-    def create_auth_endpoints() -> List[Endpoint]:
-        """Create authentication-related endpoints."""
-        return [
-            MockDataFactory.create_mock_endpoint(
-                path="/auth/login",
-                method="POST",
-                operation_id="login",
-                summary="User login",
-                request_body=RequestBody(
-                    content_type="application/json",
-                    schema={
-                        "type": "object",
-                        "properties": {
-                            "email": {"type": "string", "format": "email"},
-                            "password": {"type": "string"},
-                        },
-                        "required": ["email", "password"],
-                    },
-                    required=True,
-                ),
-                responses=[
-                    Response(
-                        status_code="200",
-                        description="Login successful",
-                        content_type="application/json",
-                        schema={
-                            "type": "object",
-                            "properties": {
-                                "token": {"type": "string"},
-                                "user": {"type": "object"},
-                            },
-                        },
-                    ),
-                    MockDataFactory.create_mock_response("401", "Unauthorized"),
-                ],
-                tags=["auth"],
-            ),
-            MockDataFactory.create_mock_endpoint(
-                path="/auth/logout",
-                method="POST",
-                operation_id="logout",
-                summary="User logout",
-                responses=[
-                    MockDataFactory.create_mock_response("200", "Logout successful")
-                ],
-                tags=["auth"],
-            ),
-            MockDataFactory.create_mock_endpoint(
-                path="/auth/refresh",
-                method="POST",
-                operation_id="refreshToken",
-                summary="Refresh access token",
-                request_body=RequestBody(
-                    content_type="application/json",
-                    schema={
-                        "type": "object",
-                        "properties": {"refresh_token": {"type": "string"}},
-                        "required": ["refresh_token"],
-                    },
-                ),
-                tags=["auth"],
-            ),
-        ]
+fake = Faker()
 
 
-class TestAPISchemas:
-    """Common API schemas for testing."""
-
-    @staticmethod
-    def get_petstore_schema() -> Dict[str, Any]:
-        """Get a simplified Petstore OpenAPI schema."""
-        return {
-            "openapi": "3.0.0",
-            "info": {
-                "title": "Swagger Petstore",
-                "description": "This is a sample server Petstore server.",
-                "version": "1.0.0",
-            },
-            "servers": [{"url": "https://petstore.swagger.io/v2"}],
-            "paths": {
-                "/pet": {
-                    "post": {
-                        "tags": ["pet"],
-                        "summary": "Add a new pet to the store",
-                        "operationId": "addPet",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/Pet"}
-                                }
-                            },
-                        },
-                        "responses": {
-                            "200": {
-                                "description": "successful operation",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {"$ref": "#/components/schemas/Pet"}
-                                    }
-                                },
-                            }
-                        },
-                    }
-                },
-                "/pet/{petId}": {
-                    "get": {
-                        "tags": ["pet"],
-                        "summary": "Find pet by ID",
-                        "operationId": "getPetById",
-                        "parameters": [
-                            {
-                                "name": "petId",
-                                "in": "path",
-                                "required": True,
-                                "schema": {"type": "integer", "format": "int64"},
-                            }
-                        ],
-                        "responses": {
-                            "200": {
-                                "description": "successful operation",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {"$ref": "#/components/schemas/Pet"}
-                                    }
-                                },
-                            },
-                            "404": {"description": "Pet not found"},
-                        },
-                    }
-                },
-            },
-            "components": {
-                "schemas": {
-                    "Pet": {
-                        "type": "object",
-                        "required": ["name", "photoUrls"],
-                        "properties": {
-                            "id": {"type": "integer", "format": "int64"},
-                            "name": {"type": "string", "example": "doggie"},
-                            "photoUrls": {"type": "array", "items": {"type": "string"}},
-                            "status": {
-                                "type": "string",
-                                "enum": ["available", "pending", "sold"],
-                            },
-                        },
-                    }
-                }
-            },
-        }
-
-    @staticmethod
-    def get_ecommerce_schema() -> Dict[str, Any]:
-        """Get an e-commerce API schema."""
-        return {
-            "openapi": "3.0.0",
-            "info": {
-                "title": "E-commerce API",
-                "description": "API for managing products and orders",
-                "version": "1.0.0",
-            },
-            "servers": [{"url": "https://api.ecommerce.com/v1"}],
-            "paths": {
-                "/products": {
-                    "get": {
-                        "tags": ["products"],
-                        "summary": "Get all products",
-                        "parameters": [
-                            {
-                                "name": "category",
-                                "in": "query",
-                                "schema": {"type": "string"},
-                            },
-                            {
-                                "name": "limit",
-                                "in": "query",
-                                "schema": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "maximum": 100,
-                                },
-                            },
-                        ],
-                        "responses": {
-                            "200": {
-                                "description": "successful operation",
-                                "content": {
-                                    "application/json": {
-                                        "schema": {
-                                            "type": "array",
-                                            "items": {
-                                                "$ref": "#/components/schemas/Product"
-                                            },
-                                        }
-                                    }
-                                },
-                            }
-                        },
-                    }
-                },
-                "/cart": {
-                    "post": {
-                        "tags": ["cart"],
-                        "summary": "Add item to cart",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/CartItem"}
-                                }
-                            },
-                        },
-                        "responses": {"200": {"description": "Item added to cart"}},
-                    }
-                },
-                "/orders": {
-                    "post": {
-                        "tags": ["orders"],
-                        "summary": "Create order",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/Order"}
-                                }
-                            },
-                        },
-                        "responses": {"201": {"description": "Order created"}},
-                    }
-                },
-            },
-            "components": {
-                "schemas": {
-                    "Product": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "integer"},
-                            "name": {"type": "string"},
-                            "price": {"type": "number", "format": "float"},
-                            "category": {"type": "string"},
-                        },
-                    },
-                    "CartItem": {
-                        "type": "object",
-                        "properties": {
-                            "productId": {"type": "integer"},
-                            "quantity": {"type": "integer", "minimum": 1},
-                        },
-                    },
-                    "Order": {
-                        "type": "object",
-                        "properties": {
-                            "items": {
-                                "type": "array",
-                                "items": {"$ref": "#/components/schemas/CartItem"},
-                            },
-                            "totalAmount": {"type": "number", "format": "float"},
-                        },
-                    },
-                }
-            },
-        }
-
-
-class MockTogetherClient:
-    """Mock Together AI client for testing."""
-
-    def __init__(self, response_content: str = None):
-        self.response_content = response_content or self._default_response_content()
-        self.chat = Mock()
-        self.chat.completions = Mock()
-        self.chat.completions.create = Mock()
-
-        # Configure mock response
-        mock_response = Mock()
-        mock_choice = Mock()
-        mock_message = Mock()
-        mock_message.content = self.response_content
-        mock_choice.message = mock_message
-        mock_response.choices = [mock_choice]
-
-        self.chat.completions.create.return_value = mock_response
-
-    def _default_response_content(self) -> str:
-        """Default response content for mock AI calls."""
-        return """<code>
-import locust
-from locust import HttpUser, task, between
-
-class APIUser(HttpUser):
-    wait_time = between(1, 3)
-    
-    @task
-    def test_endpoint(self):
-        response = self.client.get("/test")
-        assert response.status_code == 200
-</code>"""
-
-
-# Common test constants
-TEST_API_INFO = {
-    "title": "Test API",
-    "version": "1.0.0",
-    "description": "A test API for load testing",
-    "base_url": "https://api.example.com/v1",
-    "security_schemes": {},
-}
-
-TEST_GENERATED_FILES = {
-    "locustfile.py": """
-import locust
-from locust import HttpUser, task, between
-
-class APIUser(HttpUser):
-    wait_time = between(1, 3)
-    
-    @task
-    def test_users(self):
-        self.client.get("/users")
-""",
-    "test_data.py": """
 class TestDataGenerator:
-    def generate_user_data(self):
-        return {"username": "testuser", "email": "test@example.com"}
-""",
-    "config.py": """
-API_BASE_URL = "https://api.example.com"
-""",
-    "requirements.txt": """
-locust>=2.0.0
-requests>=2.28.0
-""",
-}
+    """Generates realistic test data for API testing"""
+
+    def __init__(self, seed: Optional[int] = None):
+        if seed:
+            random.seed(seed)
+            Faker.seed(seed)
+
+        self.generated_ids = set()
+        self.user_sessions = {}
+        self.cached_data = {}
+
+    def generate_json_data(
+        self, schema: Dict[str, Any], required_only: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Generate realistic JSON data based on JSON Schema
+
+        Args:
+            schema: JSON Schema dictionary
+            required_only: If True, only generate required fields
+
+        Returns:
+            Dictionary with generated test data
+        """
+        if not isinstance(schema, dict):
+            return {}
+
+        schema_type = schema.get("type", "object")
+
+        if schema_type == "object":
+            return self._generate_object_data(schema, required_only)
+        elif schema_type == "array":
+            return self._generate_array_data(schema)
+        elif schema_type == "string":
+            return self._generate_string_value(schema)
+        elif schema_type == "integer":
+            return self._generate_integer_value(schema)
+        elif schema_type == "number":
+            return self._generate_number_value(schema)
+        elif schema_type == "boolean":
+            return self._generate_boolean_value(schema)
+        else:
+            return None
+
+    def _generate_object_data(
+        self, schema: Dict[str, Any], required_only: bool = False
+    ) -> Dict[str, Any]:
+        """Generate object data from schema properties"""
+        result = {}
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+
+        for prop_name, prop_schema in properties.items():
+            if required_only and prop_name not in required:
+                continue
+
+            if "$ref" in prop_schema:
+                result[prop_name] = self._handle_reference(prop_schema["$ref"])
+
+        return result
+
+    def _generate_array_data(self, schema: Dict[str, Any]) -> List[Any]:
+        """Generate array data from schema"""
+        items_schema = schema.get("items", {})
+        min_items = schema.get("minItems", 1)
+        max_items = schema.get("maxItems", 3)
+
+        array_length = random.randint(min_items, max_items)
+        result = []
+
+        for _ in range(array_length):
+            if "$ref" in items_schema:
+                result.append(self._handle_reference(items_schema["$ref"]))
+            else:
+                result.append(self.generate_json_data(items_schema))
+
+        return result
+
+    def _generate_integer_value(self, schema: Dict[str, Any]) -> int:
+        """Generate integer value based on schema constraints"""
+        minimum = schema.get("minimum", 0)
+        maximum = schema.get("maximum", 1000)
+        multiple_of = schema.get("multipleOf")
+
+        value = random.randint(minimum, maximum)
+
+        if multiple_of:
+            value = (value // multiple_of) * multiple_of
+
+        return value
+
+    def _generate_number_value(self, schema: Dict[str, Any]) -> float:
+        """Generate number/float value based on schema constraints"""
+        minimum = schema.get("minimum", 0.0)
+        maximum = schema.get("maximum", 1000.0)
+        multiple_of = schema.get("multipleOf")
+
+        value = random.uniform(minimum, maximum)
+
+        if multiple_of:
+            value = round((value / multiple_of)) * multiple_of
+        else:
+            value = round(value, 2)
+
+        return value
+
+    def _generate_boolean_value(self, schema: Dict[str, Any]) -> bool:
+        """Generate boolean value"""
+        return random.choice([True, False])
+
+    def _handle_reference(self, ref: str) -> Any:
+        """Handle $ref references in schema"""
+        ref_name = ref.split("/")[-1]
+        ref_lower = ref_name.lower()
+
+        if "hosting" in ref_lower or "provider" in ref_lower:
+            return random.choice(["github", "gitlab", "bitbucket"])
+        elif "role" in ref_lower:
+            return random.choice(["admin", "user", "viewer"])
+        elif "status" in ref_lower:
+            return random.choice(["active", "inactive", "pending"])
+        elif "type" in ref_lower:
+            return random.choice(["primary", "secondary", "tertiary"])
+        else:
+            return f"{ref_name.lower()}_value_{random.randint(1, 100)}"
+
+    def _generate_by_name_pattern(self, prop_name: str) -> str:
+        """Generate value based on property name patterns as fallback"""
+        prop_name_lower = prop_name.lower()
+
+        if "email" in prop_name_lower:
+            return fake.email()
+        elif any(keyword in prop_name_lower for keyword in ["name", "label"]):
+            return fake.catch_phrase()
+        elif any(keyword in prop_name_lower for keyword in ["token", "key"]):
+            return "".join(random.choices(string.ascii_letters + string.digits, k=32))
+        elif "id" in prop_name_lower:
+            return str(uuid.uuid4())
+        elif "url" in prop_name_lower:
+            return fake.url()
+        else:
+            return self.random_string(10)
+
+    def _generate_string_value(
+        self, schema: Dict[str, Any], prop_name: str = ""
+    ) -> str:
+        """Generate string value based on schema constraints and property name"""
+        min_length = schema.get("minLength", 1)
+        max_length = schema.get("maxLength", 50)
+        enum_values = schema.get("enum")
+        prop_name_lower = prop_name.lower()
+
+        if enum_values:
+            return random.choice(enum_values)
+
+        if any(keyword in prop_name_lower for keyword in ["email", "mail"]):
+            return fake.email()
+
+        if any(keyword in prop_name_lower for keyword in ["name", "label", "title"]):
+            if "first" in prop_name_lower:
+                return fake.first_name()
+            elif "last" in prop_name_lower:
+                return fake.last_name()
+            elif "company" in prop_name_lower:
+                return fake.company()
+            else:
+                return fake.catch_phrase()[:max_length]
+
+        if any(
+            keyword in prop_name_lower
+            for keyword in ["token", "key", "secret", "password"]
+        ):
+            token_length = min(max_length, 32)
+            return "".join(
+                random.choices(string.ascii_letters + string.digits, k=token_length)
+            )
+
+        if any(keyword in prop_name_lower for keyword in ["url", "uri", "endpoint"]):
+            return fake.url()
+
+        if "phone" in prop_name_lower:
+            return fake.phone_number()
+
+        if "address" in prop_name_lower:
+            return fake.address().replace("\\n", ", ")
+
+        if any(
+            keyword in prop_name_lower
+            for keyword in ["description", "comment", "note", "text"]
+        ):
+            return fake.text(max_nb_chars=max_length)
+
+        if any(keyword in prop_name_lower for keyword in ["id", "uuid"]):
+            return str(uuid.uuid4())
+
+        actual_length = min(max_length, max(min_length, random.randint(5, 20)))
+        return "".join(
+            random.choices(string.ascii_letters + string.digits, k=actual_length)
+        )
+
+    def generate_string(
+        self, length: int = 10, pattern: str = None, default: str = None
+    ) -> str:
+        if default:
+            return default
+
+        if pattern:
+            if "email" in pattern.lower():
+                return fake.email()
+            elif "name" in pattern.lower():
+                return fake.name()
+            elif "phone" in pattern.lower():
+                return fake.phone_number()
+            elif "address" in pattern.lower():
+                return fake.address()
+            elif "url" in pattern.lower():
+                return fake.url()
+            elif "uuid" in pattern.lower():
+                return str(uuid.uuid4())
+
+        return "".join(random.choices(string.ascii_letters + string.digits, k=length))
+
+    def generate_integer(
+        self, min_val: int = 1, max_val: int = 1000, default: int = None
+    ) -> int:
+        if default is not None:
+            return default
+        return random.randint(min_val, max_val)
+
+    def generate_float(
+        self, min_val: float = 0.0, max_val: float = 1000.0, default: float = None
+    ) -> float:
+        if default is not None:
+            return default
+        return round(random.uniform(min_val, max_val), 2)
+
+    def generate_boolean(self, default: bool = None) -> bool:
+        if default is not None:
+            return default
+        return random.choice([True, False])
+
+    def generate_id(self, prefix: str = "", id_type: str = "uuid") -> str:
+        if id_type == "uuid":
+            new_id = str(uuid.uuid4())
+        elif id_type == "incremental":
+            new_id = f"{len(self.generated_ids) + 1}"
+        else:
+            new_id = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+
+        if prefix:
+            new_id = f"{prefix}_{new_id}"
+
+        self.generated_ids.add(new_id)
+        return new_id
+
+    def generate_email(self) -> str:
+        return fake.email()
+
+    def random_string(self, length: int = 10) -> str:
+        return "".join(random.choices(string.ascii_letters, k=length))
+
+    def random_int(self, min_val: int = 0, max_val: int = 1000) -> int:
+        return random.randint(min_val, max_val)
+
+    def random_float(self, min_val: float = 0.0, max_val: float = 1000.0) -> float:
+        return random.uniform(min_val, max_val)
+
+    def random_bool(self) -> bool:
+        return random.choice([True, False])
+
+    def random_uuid(self) -> str:
+        return str(uuid.uuid4())
+
+    def random_date(self, start_days_ago: int = 365, end_days_ahead: int = 365) -> str:
+        start_date = datetime.now() - timedelta(days=start_days_ago)
+        end_date = datetime.now() + timedelta(days=end_days_ahead)
+        return fake.date_between(start_date=start_date, end_date=end_date).isoformat()
+
+    # New Methods
+    def generate_affiliate_data(self) -> Dict[str, Any]:
+        return {
+            "id": self.generate_id(prefix="affiliate"),
+            "name": fake.company(),
+            "email": fake.email(),
+        }
+
+    def generate_user_credentials(self) -> Dict[str, Any]:
+        return {
+            "username": fake.user_name(),
+            "password": self.generate_string(length=12),
+            "email": fake.email(),
+        }
+
+    def generate_product_data(self) -> Dict[str, Any]:
+        return {
+            "id": self.generate_id(prefix="product"),
+            "name": fake.product_name(),
+            "price": self.generate_float(min_val=1.0, max_val=100.0),
+        }
+
+    def generate_realistic_id(self, entity_type: str) -> str:
+        if entity_type == "user":
+            return self.generate_id(prefix="user")
+        elif entity_type == "product":
+            return self.generate_id(prefix="product")
+        elif entity_type == "order":
+            return self.generate_id(prefix="order")
+        else:
+            return self.generate_id()
+
+    def generate_affiliate_id(self) -> str:
+        return self.generate_id(prefix="affiliate")
+
+    def generate_partner_id(self) -> str:
+        return self.generate_id(prefix="partner")
+
+    def get_payload_template(self, endpoint_path: str, method: str) -> Dict[str, Any]:
+        if endpoint_path == "/pet" and method == "POST":
+            return {
+                "id": self.generate_id(prefix="pet"),
+                "name": fake.pet_name(),
+                "category": fake.category(),
+                "photoUrls": [fake.url()],
+                "tags": [fake.tag()],
+            }
+        elif endpoint_path == "/store/order" and method == "POST":
+            return {
+                "id": self.generate_id(prefix="order"),
+                "petId": self.generate_id(prefix="pet"),
+                "quantity": self.generate_integer(min_val=1, max_val=10),
+                "shipDate": self.random_date(),
+                "status": fake.status(),
+            }
+        elif endpoint_path == "/user" and method == "POST":
+            return {
+                "id": self.generate_id(prefix="user"),
+                "username": fake.user_name(),
+                "firstName": fake.first_name(),
+                "lastName": fake.last_name(),
+                "email": fake.email(),
+            }
+        else:
+            return {}
+
+    def generate_login_payload(self) -> Dict[str, Any]:
+        return {
+            "username": fake.user_name(),
+            "password": self.generate_string(length=12),
+        }
+
+    def generate_registration_payload(self) -> Dict[str, Any]:
+        return {
+            "username": fake.user_name(),
+            "email": fake.email(),
+            "password": self.generate_string(length=12),
+        }
+
+    def create_user_session(self, user_id: str) -> str:
+        session_id = self.generate_id(prefix="session")
+        self.user_sessions[session_id] = user_id
+        return session_id
+
+    def get_session_data(self, session_id: str) -> Dict[str, Any]:
+        user_id = self.user_sessions.get(session_id)
+        if user_id:
+            return {"user_id": user_id}
+        else:
+            return {}
+
+    def link_related_entities(self, parent_id: str, child_type: str) -> str:
+        child_id = self.generate_id(prefix=child_type)
+        # Link child to parent
+        return child_id
+
+    def cache_generated_data(self, key: str, data: Any) -> None:
+        self.cached_data[key] = data
+
+    def get_cached_data(self, key: str) -> Any:
+        return self.cached_data.get(key)
+
+    def get_or_create_entity(self, entity_type: str, **kwargs) -> Any:
+        cached_entity = self.get_cached_data(entity_type)
+        if cached_entity:
+            return cached_entity
+        else:
+            if entity_type == "user":
+                entity = self.generate_user_credentials()
+            elif entity_type == "product":
+                entity = self.generate_product_data()
+            else:
+                entity = {}
+            self.cache_generated_data(entity_type, entity)
+            return entity
+
+    def generate_api_key_data(self) -> Dict[str, Any]:
+        return {
+            "api_key": self.generate_string(length=32),
+            "api_secret": self.generate_string(length=32),
+        }
+
+    def generate_webhook_payload(self) -> Dict[str, Any]:
+        return {
+            "event": fake.event(),
+            "data": fake.data(),
+        }
+
+    def generate_pagination_data(self) -> Dict[str, Any]:
+        return {
+            "page": self.generate_integer(min_val=1, max_val=10),
+            "size": self.generate_integer(min_val=1, max_val=100),
+        }
+
+    def generate_filter_data(self) -> Dict[str, Any]:
+        return {
+            "field": fake.field(),
+            "value": fake.value(),
+        }
+
+    def generate_error_scenarios(self) -> List[Dict[str, Any]]:
+        scenarios = []
+        scenarios.append({"error": "invalid_request", "message": "Invalid request"})
+        scenarios.append({"error": "unauthorized", "message": "Unauthorized"})
+        scenarios.append({"error": "not_found", "message": "Not found"})
+        return scenarios
+
+    def validate_generated_data(self, data: Any, schema: Dict[str, Any]) -> bool:
+        # Basic validation
+        if not isinstance(data, dict):
+            return False
+        for field, field_schema in schema.items():
+            if field not in data:
+                return False
+            if field_schema["type"] == "string" and not isinstance(data[field], str):
+                return False
+            if field_schema["type"] == "integer" and not isinstance(data[field], int):
+                return False
+            if field_schema["type"] == "boolean" and not isinstance(data[field], bool):
+                return False
+        return True
+
+
+# Global instance for easy access
+test_data_generator = TestDataGenerator()

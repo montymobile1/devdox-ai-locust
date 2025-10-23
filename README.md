@@ -75,11 +75,18 @@ devdox_ai_locust generate --openapi-url https://api.example.com/openapi.json --o
 
 # Generate with custom configuration
 devdox_ai_locust generate \
-   https://petstore.swagger.io/v3/swagger.json \
+   https://petstore3.swagger.io/api/v3/openapi.json \
   --output ./petstore-tests \
   --together-api-key your_api_key \
   
+ # Generate with db integration 
+devdox_ai_locust generate \
+  https://petstore3.swagger.io/api/v3/openapi.json \
+  --output ./petstore-tests \
+  --db-type mongo \
 ```
+
+
 
 
 

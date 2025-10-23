@@ -101,7 +101,7 @@ exclude = ["tests*"]
 
 
 [tool.setuptools.package-data]
-devdox_ai_locust = ["schemas/*.json", "templates/*.j2","prompt/*.j2", "py.typed","*.j2"]
+devdox_ai_locust = ["schemas/*.json", "templates/*.j2","templates/mongo/*","prompt/*.j2", "py.typed","*.j2"]
 
 # flake8 configuration (legacy - remove if using ruff)
 [tool.flake8]
