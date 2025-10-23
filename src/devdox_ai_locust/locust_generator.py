@@ -21,8 +21,10 @@ from devdox_ai_locust.utils.open_ai_parser import Endpoint, Parameter
 
 logger = logging.getLogger(__name__)
 
+
 class DatabaseType(Enum):
     """Supported database types for testing"""
+
     MONGO = "mongo"
     POSTGRES = "postgres"
 
@@ -30,20 +32,21 @@ class DatabaseType(Enum):
 @dataclass
 class MongoDBConfig:
     """MongoDB-specific configuration"""
+
     use_realistic_data: str = "true"
     enable_mongodb: str = "false"
     use_mongodb_for_test_data: str = "false"
     mongodb_uri: str = "mongodb://localhost:27017/"
     mongodb_database: str = "locust_test_data"
-    MONGODB_MAX_POOL_SIZE:int = 100
-    MONGODB_MIN_POOL_SIZE:int = 10
+    MONGODB_MAX_POOL_SIZE: int = 100
+    MONGODB_MIN_POOL_SIZE: int = 10
 
     # MongoDB Timeout Settings
-    MONGODB_CONNECT_TIMEOUT_MS:int = 5000
-    MONGODB_SERVER_SELECTION_TIMEOUT_MS:int = 5000
-    MONGODB_SOCKET_TIMEOUT_MS:int = 10000
-    MONGODB_MAX_IDLE_TIME_MS:int = 60000
-    MONGODB_WAIT_QUEUE_TIMEOUT_MS:int = 10000
+    MONGODB_CONNECT_TIMEOUT_MS: int = 5000
+    MONGODB_SERVER_SELECTION_TIMEOUT_MS: int = 5000
+    MONGODB_SOCKET_TIMEOUT_MS: int = 10000
+    MONGODB_MAX_IDLE_TIME_MS: int = 60000
+    MONGODB_WAIT_QUEUE_TIMEOUT_MS: int = 10000
 
     # MongoDB Collection Names to be added
 
@@ -51,6 +54,7 @@ class MongoDBConfig:
 @dataclass
 class PostgreSQLConfig:
     """PostgreSQL-specific configuration"""
+
     host: str = "localhost"
     port: str = "5432"
     database: str = "test_db"
@@ -139,7 +143,7 @@ class LocustTestGenerator:
         api_info: Dict[str, Any],
         include_auth: bool = True,
         target_host: Optional[str] = None,
-        db_type:str=""
+        db_type: str = "",
     ) -> Tuple[Dict[str, str], List[Dict[str, Any]], Dict[str, List[Endpoint]]]:
         """
         Generate complete Locust test suite from parsed endpoints
@@ -153,7 +157,6 @@ class LocustTestGenerator:
             Dictionary of filename -> file content
         """
         try:
-
             grouped_enpoint = self._group_endpoints_by_tag(endpoints, include_auth)
 
             workflows_files = self.generate_workflows(grouped_enpoint, api_info)
@@ -167,13 +170,18 @@ class LocustTestGenerator:
                 "utils.py": self._generate_utils_file(),
                 "custom_flows.py": self._generate_custom_flows_file(),
                 "requirements.txt": self._generate_requirements_file(),
-                "README.md": self._generate_readme_file(api_info,db_type),
-                ".env.example": self._generate_env_example(api_info, target_host, db_type),
+                "README.md": self._generate_readme_file(api_info, db_type),
+                ".env.example": self._generate_env_example(
+                    api_info, target_host, db_type
+                ),
             }
-            if db_type!="":
-
-                self.generated_files["db_config.py"] = self._generate_db_file(db_type, "db_config.py.j2")
-                self.generated_files["data_provider.py"] = self._generate_db_file(db_type, "data_provider.py.j2")
+            if db_type != "":
+                self.generated_files["db_config.py"] = self._generate_db_file(
+                    db_type, "db_config.py.j2"
+                )
+                self.generated_files["data_provider.py"] = self._generate_db_file(
+                    db_type, "data_provider.py.j2"
+                )
 
             return self.generated_files, workflows_files, grouped_enpoint
         except Exception as e:
@@ -684,11 +692,11 @@ class LocustTestGenerator:
 
     '''
 
-    def _generate_test_data_file(self, db_type:str="") -> str:
+    def _generate_test_data_file(self, db_type: str = "") -> str:
         """Generate test_data.py file content"""
-        data_provider_content=None
-        if db_type==DatabaseType.MONGO.value:
-            data_provider_content="mongo_data_provider"
+        data_provider_content = None
+        if db_type == DatabaseType.MONGO.value:
+            data_provider_content = "mongo_data_provider"
         template = self.jinja_env.get_template("test_data.py.j2")
         return template.render(data_provider_content=data_provider_content)
 
@@ -713,13 +721,16 @@ class LocustTestGenerator:
         content = template.render()
         return content
 
-    def _generate_db_file(self, db_type: str, file_name:str) -> str:
+    def _generate_db_file(self, db_type: str, file_name: str) -> str:
         """Generate db file content"""
-        template = self.jinja_env.get_template(db_type+"/"+file_name)
+        template = self.jinja_env.get_template(db_type + "/" + file_name)
         return template.render()
 
     def _generate_env_example(
-        self, api_info: Dict[str, Any], target_host: Optional[str] = None, db_type:str=""
+        self,
+        api_info: Dict[str, Any],
+        target_host: Optional[str] = None,
+        db_type: str = "",
     ) -> str:
         """Generate .env.example file content"""
         try:
@@ -744,8 +755,7 @@ class LocustTestGenerator:
                 "MAX_RETRIES": "3",
             }
 
-            if db_type==DatabaseType.MONGO.value:
-
+            if db_type == DatabaseType.MONGO.value:
                 mongodb_config = MongoDBConfig()
                 environment_vars.update(asdict(mongodb_config))
 
@@ -763,13 +773,15 @@ class LocustTestGenerator:
             logger.error(f"❌ Failed to generate .env.example from template: {e}")
             return ""
 
-    def _generate_readme_file(self, api_info: Dict[str, Any], db_type:str="") -> str:
+    def _generate_readme_file(self, api_info: Dict[str, Any], db_type: str = "") -> str:
         try:
             # Get the template
             template = self.jinja_env.get_template("readme.md.j2")
             db_using = ""
-            if db_type==DatabaseType.MONGO:
-                template_db = self.jinja_env.get_template(DatabaseType.MONGO+"/db_integration.j2")
+            if db_type == DatabaseType.MONGO.value:
+                template_db = self.jinja_env.get_template(
+                    DatabaseType.MONGO.value + "/db_integration.j2"
+                )
 
                 db_using = template_db.render()
 
@@ -777,7 +789,7 @@ class LocustTestGenerator:
             context = {
                 "api_info": api_info,
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "db_using":db_using,
+                "db_using": db_using,
             }
 
             # Render the template

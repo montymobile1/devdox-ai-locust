@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
-from together import  AsyncTogether
+from together import AsyncTogether
 
 from .hybrid_loctus_generator import HybridLocustGenerator
 from .config import Settings
@@ -210,7 +210,7 @@ async def _generate_and_create_tests(
             custom_requirement=custom_requirement,
             target_host=host,
             include_auth=auth,
-            db_type=db_type
+            db_type=db_type,
         )
 
     # Create test files
@@ -298,7 +298,7 @@ def generate(
     run_time: str,
     host: Optional[str],
     auth: bool,
-    db_type:str,
+    db_type: str,
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
@@ -320,7 +320,7 @@ def generate(
                 db_type,
                 dry_run,
                 custom_requirement,
-                together_api_key
+                together_api_key,
             )
         )
     except Exception as e:
@@ -341,7 +341,7 @@ async def _async_generate(
     run_time: str,
     host: Optional[str],
     auth: bool,
-    db_type:str,
+    db_type: str,
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
@@ -372,7 +372,14 @@ async def _async_generate(
         )
 
         created_files = await _generate_and_create_tests(
-            api_key, endpoints, api_info, output_dir, custom_requirement, host, auth, db_type
+            api_key,
+            endpoints,
+            api_info,
+            output_dir,
+            custom_requirement,
+            host,
+            auth,
+            db_type,
         )
 
         # Show results
