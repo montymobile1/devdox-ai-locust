@@ -2,6 +2,9 @@ name: "Swagger Test Generator"
 description: "Generate Locust tests from a Swagger/OpenAPI URL"
 on: [push]
 
+permissions:
+  contents: write
+
 jobs:
   swagger-gen:
     runs-on: ubuntu-latest
