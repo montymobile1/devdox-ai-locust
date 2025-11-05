@@ -9,7 +9,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Generate Locust tests
-        uses: https://github.com/montymobile1/devdox-ai-locust@DV-48-add-git-hub-actions
+        uses: montymobile1/devdox-ai-locust@DV-48-add-git-hub-actions
         with:
           swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json "
           output: "generated_tests"
