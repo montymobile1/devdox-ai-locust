@@ -20,6 +20,9 @@ inputs:
     description: "Test run time"
     required: false
     default: "5m"
+  together_api_key:
+    description: "Together API key for LLM integration"
+    required: true
 runs:
   using: "docker"
   image: "Dockerfile"

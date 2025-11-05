@@ -15,6 +15,7 @@ jobs:
       - name: Create output directory
         run: |
             mkdir -p generated_tests
+            mkdir -p generated_tests/workflows
             chmod 755 generated_tests
 
       - name: Generate Locust tests
