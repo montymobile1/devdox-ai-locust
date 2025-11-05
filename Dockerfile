@@ -25,11 +25,9 @@ COPY src ./app
 # Install dependencies from pyproject.toml
 RUN pip install --no-cache-dir devdox_ai_locust
 
+WORKDIR /github/workspace
 
-# Create logs directory and non-root user
-RUN  adduser -D user && \
-    chown -R user:user /app
-USER user
+RUN mkdir -p /github/workspace/generated_tests/workflows && chmod -R 777 /github/workspace/generated_tests
 
 
 ENTRYPOINT ["python", "-m", "devdox_ai_locust.cli","generate"]

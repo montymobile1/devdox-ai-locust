@@ -12,24 +12,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create output directory
-        run: |
-            mkdir -p generated_tests
-            mkdir -p generated_tests/workflows
-            chmod 755 generated_tests
-            chmod 755 generated_tests/workflows
-          
-            # Debug information
-            echo "=== Directory permissions ==="
-            ls -la generated_tests/
-            ls -la generated_tests/workflows/
-          
+#      - name: Create output directory
+#        run: |
+#            mkdir -p generated_tests
+#            mkdir -p generated_tests/workflows
+#            chmod 755 generated_tests
+#            chmod 755 generated_tests/workflows
+#
+#            # Debug information
+#            echo "=== Directory permissions ==="
+#            ls -la generated_tests/
+#            ls -la generated_tests/workflows/
+#
 
       - name: Generate Locust tests
         uses: montymobile1/devdox-ai-locust@DV-48-add-git-hub-actions
         with:
           swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json "
-          output: "./generated_tests"
+          output: "/github/workspace/generated_tests"
           users: "15"
           spawn_rate: "3"
           run_time: "10m"
