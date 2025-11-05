@@ -16,3 +16,4 @@ jobs:
           users: "15"
           spawn_rate: "3"
           run_time: "10m"
+          together_api_key: ${{ secrets.TOGETHER_API_KEY }}

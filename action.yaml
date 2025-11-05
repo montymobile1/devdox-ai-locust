@@ -33,6 +33,8 @@ runs:
     - ${{ inputs.spawn_rate }}
     - --run-time
     - ${{ inputs.run_time }}
+    - --together-api-key
+    - ${{ inputs.together_api_key }}
 branding:
   icon: "activity"
   color: "blue"
