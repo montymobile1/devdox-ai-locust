@@ -1,38 +1,18 @@
 name: "Swagger Test Generator"
 description: "Generate Locust tests from a Swagger/OpenAPI URL"
-inputs:
-  swagger_url:
-    description: "Swagger/OpenAPI URL or file path"
-    required: true
-  output:
-    description: "Output directory"
-    required: false
-    default: "output"
-  users:
-    description: "Number of users"
-    required: false
-    default: "10"
-  spawn_rate:
-    description: "Spawn rate"
-    required: false
-    default: "2"
-  run_time:
-    description: "Test run time"
-    required: false
-    default: "5m"
-runs:
-  using: "docker"
-  image: "Dockerfile"
-  args:
-    - ${{ inputs.swagger_url }}
-    - --output
-    - ${{ inputs.output }}
-    - --users
-    - ${{ inputs.users }}
-    - --spawn-rate
-    - ${{ inputs.spawn_rate }}
-    - --run-time
-    - ${{ inputs.run_time }}
-branding:
-  icon: "activity"
-  color: "blue"
+on: [push]
+
+jobs:
+  swagger-gen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Locust tests
+        uses: https://github.com/montymobile1/devdox-ai-locust@DV-48-add-git-hub-actions
+        with:
+          swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json "
+          output: "generated_tests"
+          users: "15"
+          spawn_rate: "3"
+          run_time: "10m"
