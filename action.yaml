@@ -1,4 +1,4 @@
-name: "DevDox Locust Test Generator"
+name: "DevDox AI Locust"
 description: "Generate Locust tests from a Swagger/OpenAPI URL"
 inputs:
   swagger_url:
