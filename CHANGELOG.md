@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2025-11-06
+## 🆕 What's New in 0.1.5
+### 💥 GitHub Actions Integration
+
+You can now use **DevDox AI Locust ** directly in your GitHub workflows!  
+The new reusable **Docker-based GitHub Action** lets you automatically generate and upload Locust test scripts for your APIs.
+
+**Example Workflow:**
+
+```yaml
+name: "Swagger Test Generator"
+on: [push]
+
+jobs:
+  generate-locust-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Locust tests
+        uses: montymobile1/devdox-ai-locust@0.1.5
+        with:
+          swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json"
+          output: "generated_tests"
+          users: "15"
+          spawn_rate: "3"
+          run_time: "10m"
+          together_api_key: ${{ secrets.TOGETHER_API_KEY }}
+
+      - name: Upload generated tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: locust-tests
+          path: generated_tests
+```
+
 ## [0.1.4] - 2025-10-23
 ## 🆕 What's New in 0.1.4
 

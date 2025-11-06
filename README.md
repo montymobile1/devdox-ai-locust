@@ -9,27 +9,41 @@
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
 
-## 🆕 What's New in 0.1.4
 
-### MongoDB Integration
+## 🆕 What's New in 0.1.5
+### 💥 GitHub Actions Integration
 
-- Added a new data provider class: MongoDataProvider
-- Connects Locust test data generation directly to MongoDB
-- Enables realistic test data retrieval for entities like users, products, orders, affiliates, etc.
-- Supports **real data** from the database and **synthetic fallback generation** when MongoDB is disabled or unavailable
+You can now use **DevDox AI Locust ** directly in your GitHub workflows!  
+The new reusable **Docker-based GitHub Action** lets you automatically generate and upload Locust test scripts for your APIs.
 
-#### 2. **New MongoDataProvider Methods**
-| Method                                                   | Description |
-|----------------------------------------------------------|--------------|
-| `get_document(collection_name)`                      | Retrieves a single realistic document from MongoDB or fallback generator |
-| `get_multiple_documents(collection_name, count=10, query=None)` | Retrieves multiple documents or generates them in batches |
-| `clear_cache()`                                          | Clears in-memory cached data for all collections |
-| `get_stats()`                                            | Returns usage and cache statistics for debugging and optimization |
+**Example Workflow:**
 
-#### 3. **Smart Fallbacks**
-If MongoDB is disabled (`enable_mongodb = false` in `db_config.py`),  
-the system automatically switches to **synthetic data generation** using the LLM-based `TestDataGenerator`.
+```yaml
+name: "Swagger Test Generator"
+on: [push]
 
+jobs:
+  generate-locust-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Locust tests
+        uses: montymobile1/devdox-ai-locust@0.1.5
+        with:
+          swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json"
+          output: "generated_tests"
+          users: "15"
+          spawn_rate: "3"
+          run_time: "10m"
+          together_api_key: ${{ secrets.TOGETHER_API_KEY }}
+
+      - name: Upload generated tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: locust-tests
+          path: generated_tests
+```
 
 ## ✨ Features
 
