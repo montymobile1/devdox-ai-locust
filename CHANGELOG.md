@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+
+## [0.1.6] - 2025-11-06
+## 🆕 What's New in 0.1.6
+
+ Add sonarqube badge to README.md
+
+
 ## [0.1.5] - 2025-11-06
 ## 🆕 What's New in 0.1.5
 ### 💥 GitHub Actions Integration

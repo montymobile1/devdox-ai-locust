@@ -3,47 +3,18 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=montymobile1_devdox-ai-locust&metric=alert_status)](https://sonarcloud.io/dashboard?id=montymobile1_devdox-ai-locust)
 
 > **AI-powered Locust load test generator from API documentation**
 
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
 
+## [0.1.6] - 2025-11-06
+## 🆕 What's New in 0.1.6
 
-## 🆕 What's New in 0.1.5
-### 💥 GitHub Actions Integration
+ Add sonarqube badge to README.md
 
-You can now use **DevDox AI Locust ** directly in your GitHub workflows!  
-The new reusable **Docker-based GitHub Action** lets you automatically generate and upload Locust test scripts for your APIs.
-
-**Example Workflow:**
-
-```yaml
-name: "Swagger Test Generator"
-on: [push]
-
-jobs:
-  generate-locust-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Generate Locust tests
-        uses: montymobile1/devdox-ai-locust@0.1.5
-        with:
-          swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json"
-          output: "generated_tests"
-          users: "15"
-          spawn_rate: "3"
-          run_time: "10m"
-          together_api_key: ${{ secrets.TOGETHER_API_KEY }}
-
-      - name: Upload generated tests
-        uses: actions/upload-artifact@v4
-        with:
-          name: locust-tests
-          path: generated_tests
-```
 
 ## ✨ Features
 
