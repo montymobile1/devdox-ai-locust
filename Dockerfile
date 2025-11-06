@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir devdox_ai_locust
 
 WORKDIR /github/workspace
 
-RUN mkdir -p /github/workspace/generated_tests/workflows && chmod -R 777 /github/workspace/generated_tests
-
+RUN mkdir -p /github/workspace/generated_tests/workflows && \
+    chmod -R 777 /github/workspace
 
 ENTRYPOINT ["python", "-m", "devdox_ai_locust.cli","generate"]
