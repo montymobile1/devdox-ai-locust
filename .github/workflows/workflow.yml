@@ -26,7 +26,7 @@ jobs:
 #
 
       - name: Generate Locust tests
-        uses: montymobile1/devdox-ai-locust@0.1.6
+        uses: montymobile1/devdox-ai-locust@0.1.5
         with:
           swagger_url: "https://petstore3.swagger.io/api/v3/openapi.json"
           output: "/github/workspace/generated_tests"
