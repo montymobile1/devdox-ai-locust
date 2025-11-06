@@ -34,3 +34,9 @@ jobs:
           spawn_rate: "3"
           run_time: "10m"
           together_api_key: ${{ secrets.TOGETHER_API_KEY }}
+
+      - name: Upload generated tests as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-locust-tests
+          path: generated_tests/
