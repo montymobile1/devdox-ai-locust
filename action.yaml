@@ -1,0 +1,43 @@
+name: "DevDox Locust Test Generator"
+description: "Generate Locust tests from a Swagger/OpenAPI URL"
+inputs:
+  swagger_url:
+    description: "Swagger/OpenAPI URL or file path"
+    required: true
+  output:
+    description: "Output directory"
+    required: false
+    default: "output"
+  users:
+    description: "Number of users"
+    required: false
+    default: "10"
+  spawn_rate:
+    description: "Spawn rate"
+    required: false
+    default: "2"
+  run_time:
+    description: "Test run time"
+    required: false
+    default: "5m"
+  together_api_key:
+    description: "Together API key for LLM integration"
+    required: true
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - ${{ inputs.swagger_url }}
+    - --output
+    - ${{ inputs.output }}
+    - --users
+    - ${{ inputs.users }}
+    - --spawn-rate
+    - ${{ inputs.spawn_rate }}
+    - --run-time
+    - ${{ inputs.run_time }}
+    - --together-api-key
+    - ${{ inputs.together_api_key }}
+branding:
+  icon: "activity"
+  color: "blue"
