@@ -80,7 +80,20 @@ devdox_ai_locust generate \
 ```
 
 
+## 🚀 Installation with Inputs
 
+Add this step to your GitHub Actions workflow:
+
+```yaml
+- name: DevDox Locust Test Generator
+  uses: montymobile1/devdox-ai-locust@v0.1.6
+  with:
+    swagger_url: "https://portal-api.devdox.ai/openapi.json"
+    output: "generated_tests"
+    users: "15"
+    spawn_rate: "3"
+    run_time: "10m"
+    together_api_key: ${{ secrets.TOGETHER_API_KEY }}
 
 
 ## 📖 Documentation
