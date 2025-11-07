@@ -12,19 +12,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-#      - name: Create output directory
-#        run: |
-#            mkdir -p generated_tests
-#            mkdir -p generated_tests/workflows
-#            chmod 755 generated_tests
-#            chmod 755 generated_tests/workflows
-#
-#            # Debug information
-#            echo "=== Directory permissions ==="
-#            ls -la generated_tests/
-#            ls -la generated_tests/workflows/
-#
-
       - name: Generate Locust tests
         uses: montymobile1/devdox-ai-locust@0.1.6.1
         with:
