@@ -9,11 +9,12 @@
 
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
+## [0.1.7] - 2025-11-11
+## 🆕 What's New in 0.1.7
 
-## [0.1.6] - 2025-11-06
-## 🆕 What's New in 0.1.6
+**Improved Naming Convention:** Generated class names now automatically capitalize group names to ensure consistent and professional naming in generated Python code.
 
- Add sonarqube badge to README.md
+**MongoDB Environment Setup:** Added example MongoDB variables (MONGODB_URI, MONGODB_DB_NAME, etc.) in the .env.example file to make it easier to configure MongoDB connections.
 
 
 ## ✨ Features

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.7] - 2025-11-11
+## 🆕 What's New in 0.1.7
+
+Capitalize group names in generated class names for improved readability and consistency across generated code.
+
+Added MongoDB-related environment variables examples to .env configuration, simplifying setup for MongoDB integrations.
+
+
 
 ## [0.1.6] - 2025-11-06
 ## 🆕 What's New in 0.1.6
