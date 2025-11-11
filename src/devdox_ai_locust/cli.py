@@ -234,6 +234,10 @@ async def _generate_and_create_tests(
             )
             created_files.extend(main_files)
 
+    if len(created_files) >0:
+        combined_path = output_dir / "locustfile.py"
+        combined_path_str = str(combined_path)
+        res = await  generator.retry_until_run(created_files,combined_path_str,combined_path_str,output_dir)
     return created_files
 
 

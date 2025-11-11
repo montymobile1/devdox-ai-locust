@@ -6,14 +6,22 @@ and domain-specific optimizations.
 """
 
 import re
+import traceback
+import sys
+import os
 import asyncio
 import logging
+import subprocess
+import importlib.util as importlib_util
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 from dataclasses import dataclass
 import uuid
 import shutil
+import warnings
+import signal
+from contextlib import contextmanager
 
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
@@ -26,6 +34,23 @@ logger = logging.getLogger(__name__)
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
+
+
+@contextmanager
+def timeout_context(seconds):
+    """Context manager for timeout handling"""
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Module execution timed out after {seconds} seconds")
+
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(seconds)
+
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 @dataclass
@@ -50,6 +75,7 @@ class AIEnhancementConfig:
     enhance_validation: bool = True
     create_domain_flows: bool = True
     update_main_locust: bool = True
+    check_flows:bool = False
 
 
 @dataclass
@@ -63,6 +89,75 @@ class EnhancementResult:
     errors: List[str]
     processing_time: float
 
+
+def trace_error_paths(created_files:list, error_output: str) -> None:
+    """
+    Extract and analyze file paths from Python error output
+    """
+
+    lines = error_output.strip().split('\n')
+    file_paths = []
+
+    # Comprehensive patterns to match different traceback formats
+    patterns = [
+        # Standard traceback: File "/path/to/file.py", line 123, in function_name
+        r'File "([^"]+\.py)"',
+        # Direct file path mentions (most relevant for project files)
+        r'File "?([^"\s]+\.py)"?',
+        # Module loading errors showing full paths
+        r'^\s*File "([^"]+\.py)"',
+    ]
+
+    # Extract file paths using patterns
+    for line in lines:
+        line = line.strip()
+
+        # Skip system/library lines that aren't relevant to user code
+        # Keep site-packages in case user wants to see those too, but prioritize project files
+        if any(skip in line for skip in ['<frozen', '__pycache__']):
+            continue
+
+        for pattern in patterns:
+            matches = re.findall(pattern, line)
+            for match in matches:
+                # Clean up the path
+                file_path = match.strip().strip('"\'')
+
+                # Only keep Python files
+                if file_path.endswith('.py') and len(file_path) > 3:
+                    file_paths.append(file_path)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_file_paths = []
+    for path in file_paths:
+        if path not in seen:
+            seen.add(path)
+            unique_file_paths.append(path)
+
+    file_paths = unique_file_paths
+
+
+    files_to_check = []
+    for i, path in enumerate(file_paths, 1):
+
+        # Check if file exists
+        exists = os.path.exists(path)
+        path_obj = Path(path)
+
+        if exists:
+            abs_path = os.path.abspath(path)
+            files_to_check.extend(
+                [f.get("full_path") for f in created_files if str(f.get("full_path") )== str(abs_path)]
+            )
+
+            new_path = os.path.join(os.getcwd(), path)
+
+            # Get parent directory
+            parent = os.path.dirname(abs_path)
+
+
+    return files_to_check
 
 class EnhancementProcessor:
     """Handles individual enhancement operations"""
@@ -666,7 +761,7 @@ class HybridLocustGenerator:
             {"role": "user", "content": prompt},
         ]
 
-    async def _make_api_call(self, messages: list[dict]) -> Optional[str]:
+    async def _make_api_call(self, messages: list[dict],multiple_file:bool= False) -> Optional[str]:
         """Make API call - ONE job"""
         async with self._api_semaphore:
             api_call = self.ai_client.chat.completions.create(
@@ -686,13 +781,55 @@ class HybridLocustGenerator:
             )
             if response.choices and response.choices[0].message:
                 content = response.choices[0].message.content.strip()
-                # Clean up the response
-                content = self._clean_ai_response(
-                    self.extract_code_from_response(content)
-                )
+                if not multiple_file:
+                    # Clean up the response
+                    content = self._clean_ai_response(
+                        self.extract_code_from_response(content)
+                    )
                 return content
 
         return None
+
+    async def _call_ai_service_for_locust_fixes(self, prompt: str,file_contents:list) -> Optional[str]:
+        """Call AI service specifically for Locust file validation and correction tasks."""
+        file_updates = {}
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert in Locust performance testing and Python development. "
+                    "Analyze the given Locust files and validation errors. "
+                    "Return corrected code for each file that needs changes. "
+                    "Follow the response format exactly as instructed by the user. "
+                    "DO NOT use <code> tags or any custom formatting — only return markdown blocks starting with ### UPDATED_FILE."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                async with self._api_semaphore:
+                    content = await self._make_api_call(messages, multiple_file=True)
+
+                    if content:
+                        return content
+
+            except asyncio.TimeoutError:
+                logger.warning(f"AI service timeout on attempt {attempt + 1}")
+
+            except Exception as e:
+                classification = self._classify_error(e, attempt)
+                if not classification.is_retryable:
+                    return ""
+                if attempt < self.MAX_RETRIES - 1:
+                    await asyncio.sleep(classification.backoff_seconds)
+                    continue
+
+            if attempt < self.MAX_RETRIES - 1:
+                await asyncio.sleep(2**attempt)
+
+        return content
 
     async def _call_ai_service(self, prompt: str) -> Optional[str]:
         """Call AI service with retry logic and validation"""
@@ -932,6 +1069,538 @@ class HybridLocustGenerator:
         finally:
             await self._cleanup_temp_directory(temp_dir)
 
+    def run_locust_file(self,created_files:list, file_path: str) -> None:
+        """
+        Validate a Locust file for syntax and import errors WITHOUT running it.
+        Returns validation results with compatibility for existing code.
+        """
+        validation_result = {
+            "file_path": file_path,
+            "files_affected":[],
+            "is_valid": False,
+            "errors": [],
+            "warnings": [],
+            "user_classes_found": [],
+            "tasks_found": 0,
+            "stdout": "",
+            "stderr": "",
+            "returncode": 1,
+        }
+
+        try:
+            # Check if file exists
+            if not os.path.exists(file_path):
+                validation_result["stderr"] = f"File not found: {file_path}"
+                return validation_result
+            # Check syntax
+            with open(file_path, "r") as f:
+                file_content = f.read()
+
+            try:
+                compile(file_content, file_path, "exec")
+            except SyntaxError as e:
+                validation_result["stderr"] = (
+                    f"SyntaxError on line {e.lineno}: {str(e)}"
+                )
+                return validation_result
+
+            # Import analysis
+            import_result = self._safe_import_analysis(created_files,file_path)
+
+            validation_result.update(import_result)
+
+            # Set result fields
+            if validation_result["errors"]:
+                validation_result["stderr"] = "\n".join(
+                    [
+                        err if isinstance(err, str) else err.get("message", str(err))
+                        for err in validation_result["errors"]
+                    ]
+                )
+            else:
+                validation_result["is_valid"] = True
+                validation_result["stdout"] = (
+                    f"✅ Validation successful: {len(validation_result['user_classes_found'])} user classes, {validation_result['tasks_found']} tasks"
+                )
+                validation_result["stderr"] = ""
+                validation_result["returncode"] = 0
+
+        except Exception as e:
+
+            validation_result["stderr"] = f"Validation error: {str(e)}"
+
+        return validation_result
+
+    def _normalize_file_path(self, file_path: str) -> str:
+        """
+        Normalize file path to handle common issues like duplication.
+
+        Args:
+            file_path: Original file path (may have issues)
+
+        Returns:
+            Normalized file path
+        """
+
+        # Step 1: Handle if path already exists as-is
+        if os.path.exists(file_path):
+            result = os.path.abspath(file_path)
+            return result
+
+        # Step 2: Handle relative paths
+        if not os.path.isabs(file_path):
+            # Check if it's relative to current working directory
+            potential_path = os.path.join(os.getcwd(), file_path)
+            if os.path.exists(potential_path):
+                result = potential_path
+                return result
+
+            # Step 3: Check for path duplication (like tests/tests/file.py)
+            parts = file_path.split(os.sep)
+            if len(parts) >= 2:
+                # Look for consecutive duplicate parts
+                for i in range(len(parts) - 1):
+                    if parts[i] == parts[i + 1] and parts[i]:  # Skip empty parts
+                        # Remove the duplicate
+                        fixed_parts = parts[:i] + parts[i+1:]
+                        fixed_path = os.sep.join(fixed_parts)
+                        potential_path = os.path.join(os.getcwd(), fixed_path)
+
+
+                        if os.path.exists(potential_path):
+                            result = potential_path
+
+                            return result
+
+            # Step 4: Try removing common problematic prefixes
+            # Sometimes paths get malformed like "project/project/tests/file.py"
+            cwd_name = os.path.basename(os.getcwd())
+            if file_path.startswith(f"{cwd_name}/"):
+                potential_path = os.path.join(os.getcwd(), file_path[len(cwd_name)+1:])
+                if os.path.exists(potential_path):
+                    result = potential_path
+                    return result
+
+        # Step 5: If nothing worked, return the absolute path (even if it doesn't exist)
+        result = os.path.abspath(file_path)
+
+        return result
+
+    def run_test_locust_file(self, created_files:list, file_path:str):
+        files_affected = []
+        try:
+
+            result = subprocess.run(
+                ["locust", "-f", file_path],  # command as list
+                capture_output=True,  # capture stdout & stderr
+                text=True,  # decode bytes to string,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                # Trace the error
+                files_affected = trace_error_paths(created_files,result.stderr)
+
+            return result, files_affected
+        except subprocess.TimeoutExpired:
+            return None, files_affected
+        except FileNotFoundError:
+
+            return None, files_affected
+        except Exception as e:
+            return None, files_affected
+
+    def _safe_import_analysis(self, created_files:list, file_path: str) -> Dict[str, Any]:
+        """
+        Safely analyze the Locust file by importing it in a controlled way.
+        Fixed version with proper path handling.
+        """
+
+        result = {
+            "errors": [],
+            "warnings": [],
+            "user_classes_found": [],
+            "tasks_found": 0,
+            "affected_files":[]
+        }
+
+        # ========================================
+        # 🔧 FIXED PATH HANDLING
+        # ========================================
+
+        # Step 1: Normalize and resolve the path
+        normalized_path = self._normalize_file_path(file_path)
+
+        # Step 2: Validate the path exists
+        if not os.path.exists(normalized_path):
+            result["errors"].append(
+                {
+                    "type": "FileNotFound",
+                    "message": f"File not found: {normalized_path} (original: {file_path})",
+                    "suggestion": "Check the file path and ensure the file exists",
+                }
+
+            )
+            result['affected_files'].append(file_path)
+            return result
+
+        # Step 3: Get directory and module info from normalized path
+        dir_path = os.path.dirname(os.path.abspath(normalized_path))
+        module_name = os.path.basename(normalized_path).replace(".py", "")
+
+        # Save current state to restore later
+        original_path = sys.path.copy()
+        original_cwd = os.getcwd()
+        original_modules = set(sys.modules.keys())
+
+        try:
+            # Add directory to Python path so imports work
+            if dir_path not in sys.path:
+                sys.path.insert(0, dir_path)
+
+            # Change to file directory for relative imports
+            os.chdir(dir_path)
+
+            # Clean any existing module from cache for fresh import
+            modules_to_remove = [
+                name
+                for name in sys.modules.keys()
+                if name == module_name or name.startswith(f"{module_name}.")
+            ]
+            for mod_name in modules_to_remove:
+                del sys.modules[mod_name]
+
+            # Create module spec and load it
+            spec = importlib_util.spec_from_file_location(module_name, normalized_path)
+
+            if spec is None:
+                result["errors"].append(
+                    {
+                        "type": "ImportError",
+                        "message": f"Could not create module spec for {normalized_path}",
+                        "suggestion": "Check that the file is a valid Python module",
+                    }
+                )
+                result["affected_files"].append(file_path)
+                return result
+
+            if spec.loader is None:
+                result["affected_files"].append(normalized_path)
+                result["errors"].append(
+                    {
+                        "type": "ImportError",
+                        "message": f"No loader available for {normalized_path}",
+                        "suggestion": "Check file permissions and format",
+                    }
+                )
+                return result
+
+            res, affected_files  = self.run_test_locust_file(created_files, normalized_path)
+            result["errors"].append(
+                {
+                    "type": "",
+                    "message": f" {res.stderr}",
+                    "missing_module": "",
+                    "suggestion": res.stderr
+                }
+            )
+            result['affected_files'].extend(affected_files)
+
+        except ImportError as e:
+            print(f"❌ ImportError: {str(e)}")
+            error_msg = str(e)
+            missing_module = None
+
+            if "No module named" in error_msg:
+                start = error_msg.find("'") + 1
+                end = error_msg.find("'", start)
+                if start > 0 and end > start:
+                    missing_module = error_msg[start:end]
+
+            result["errors"].append(
+                {
+                    "type": "ImportError",
+                    "message": f"Missing dependency: {error_msg}",
+                    "missing_module": missing_module,
+                    "suggestion": (
+                        f"Install missing module with: pip install {missing_module}"
+                        if missing_module
+                        else "Check that all imported modules are installed"
+                    ),
+                }
+            )
+            result['affected_files'].append(file_path)
+
+        except SyntaxError as e:
+            print(f"❌ SyntaxError: {str(e)}")
+            result["errors"].append(
+                {
+                    "type": "SyntaxError",
+                    "message": str(e),
+                    "line": e.lineno,
+                    "text": e.text,
+                    "suggestion": "Fix the syntax error before proceeding",
+                }
+            )
+            result["affected_files"].append(file_path)
+
+        except NameError as e:
+            print(f"❌ NameError: {str(e)}")
+            result["errors"].append(
+                {
+                    "type": "NameError",
+                    "message": str(e),
+                    "suggestion": "Check that all variables and functions are properly defined or imported",
+                }
+            )
+            result["affected_files"].append(file_path)
+
+        except AttributeError as e:
+            print(f"❌ AttributeError: {str(e)}")
+            result["errors"].append(
+                {
+                    "type": "AttributeError",
+                    "message": str(e),
+                    "suggestion": "Check that all attributes and methods exist on the objects you're using",
+                }
+            )
+            result["affected_files"].append(file_path)
+
+        except Exception as e:
+            print(f"❌ Exception: {str(e)}")
+            result["errors"].append(
+                {
+                    "type": "ExecutionError",
+                    "message": f"Error during module execution: {str(e)}",
+                    "traceback": traceback.format_exc(),
+                    "suggestion": "Check the full traceback for details about the execution error",
+                }
+            )
+            result["affected_files"].append(file_path)
+
+        finally:
+            # Restore original state
+            sys.path[:] = original_path
+            os.chdir(original_cwd)
+
+            # Clean up any modules we added
+            current_modules = set(sys.modules.keys())
+            added_modules = current_modules - original_modules
+            for mod_name in added_modules:
+                if mod_name.startswith(module_name):
+                    try:
+                        del sys.modules[mod_name]
+
+                    except KeyError:
+                        pass
+
+        return result
+
+
+    def _parse_ai_file_updates(self, ai_response: str, original_file_contents: dict) -> dict:
+        """
+        Parse AI response to extract individual file updates.
+
+        Args:
+            enhanced_response_files: The AI's response containing multiple file updates
+            original_file_contents: Dictionary of original file contents for comparison
+
+        Returns:
+            Dictionary with file paths as keys and updated content as values
+        """
+        file_updates = {}
+
+        # Pattern to match file headers: ### UPDATED_FILE: /path/to/file.py
+        file_pattern = r'### UPDATED_FILE:\s*([^\n]+)\s*\n```python\s*\n(.*?)\n```'
+        matches = re.findall(file_pattern, ai_response, re.DOTALL)
+
+        if matches:
+
+                for file_path, content in matches:
+                    file_path = file_path.strip()
+                    content = content.strip()
+
+                    # Validate that this file was in our original set
+                    if file_path in original_file_contents:
+                        # Check if content actually changed
+                        original_content = original_file_contents[file_path].strip()
+                        if content != original_content:
+                            file_updates[file_path] = content
+
+
+        else:
+                # Fallback: Try to parse as single file update (backward compatibility)
+
+                # Clean up response for single file
+                cleaned_content = ai_response.strip()
+
+                # Remove code block markers
+                if cleaned_content.startswith("```python"):
+                    cleaned_content = cleaned_content[9:]
+                elif cleaned_content.startswith("```"):
+                    cleaned_content = cleaned_content[3:]
+
+                if cleaned_content.endswith("```"):
+                    cleaned_content = cleaned_content[:-3]
+
+                cleaned_content = cleaned_content.strip()
+
+                # If we only have one file, assume the response is for that file
+                if len(original_file_contents) == 1:
+                    single_file = list(original_file_contents.keys())[0]
+                    original_content = list(original_file_contents.values())[0].strip()
+
+                    if cleaned_content != original_content:
+                        file_updates[single_file] = cleaned_content
+
+        return file_updates
+
+    async def update_files_with_AI(self,created_files: list, locust_file: str, errors: list, affected_files: list):
+        """Update the Locust file with AI suggestions."""
+        file_content=""
+        file_contents={}
+        if len(affected_files)>0:
+            for affected_file in affected_files:
+                if os.path.exists(affected_file):
+                    with open(affected_file, 'r') as f:
+                        content = f.read()
+                        file_contents[affected_file] = content
+
+                        file_content += f"the content of  ```python {affected_file}``` is {content}"
+
+        else:
+            with open(locust_file, "r") as f:
+                content = f.read()
+                file_contents[locust_file] = content
+                file_content = f"the content of  ```python {locust_file}``` is {content}"
+
+        file_updates = {}
+        prompt = f"""
+        You are an expert in Locust performance testing framework and Python development.
+        You are given a Locust test files and validation errors that occurred when running them.
+        Analyze the errors and return corrected file content for ALL files that need changes
+
+       **IMPORTANT INSTRUCTIONS:**
+        1. If the error is about "No Locust User classes found", ensure at least one top-level class inherits from HttpUser
+        2. Fix import errors (missing imports, incorrect imports, etc.)
+        3. Fix syntax errors and type annotation issues
+        4. Only modify files that actually need changes
+        5. Return each file's corrected content separately
+
+
+        **Files provided:**
+        {file_content}
+        
+        **Errors encountered:**
+        {errors}
+
+        **Response format:**
+        For each file that needs changes, respond with:
+        
+        ### UPDATED_FILE: /path/to/file.py
+        ```python
+        [corrected file content here]
+        ```
+        
+        ### UPDATED_FILE: /path/to/another_file.py  
+        ```python
+        [corrected file content here]
+        ```
+        
+        Only include files that actually need modifications. If a file doesn't need changes, don't include it in the response.
+
+        ---
+        """
+        enhanced_response_files = await self._call_ai_service_for_locust_fixes(prompt,file_contents)
+
+        if enhanced_response_files :
+            # Parse the AI response to extract individual file updates
+            file_updates = self._parse_ai_file_updates(enhanced_response_files, file_contents)
+
+        return file_updates
+
+    async def retry_until_run(
+        self,
+        created_files: list,
+        locust_file: str,
+        file_enhance_path:str,
+        output_path:Path,
+        attempt: int = 1,
+        max_retries: int = 5,
+    ) -> bool:
+        """Recursively retry validating the Locust file until no errors occur."""
+
+        result = self.run_locust_file(created_files,locust_file)
+
+        if attempt >= max_retries:
+            print(f"❌ Max retries ({max_retries}) reached for {locust_file}.")
+            return False
+
+        if len(result["errors"]) > 0:
+            try:
+                # Get AI-generated file updates
+
+                file_updates = await self.update_files_with_AI(
+                    created_files,file_enhance_path, result["errors"], result["affected_files"]
+                )
+                if file_updates:
+                    # Apply updates safely
+                    update_results = await self._create_test_files_safely(
+                        file_updates,
+                        output_path,
+                        max_file_size=1024 * 1024,
+                    )
+
+                    # Add updated files to created_files
+                    for result in update_results:
+                        file_path = result.get("file_path")
+                        if file_path and file_path not in created_files:
+                            created_files.append(file_path)
+
+                    return await self.retry_until_run(
+                            created_files,
+                            locust_file,
+                        file_enhance_path,
+                            output_path,
+                            attempt + 1,
+                            max_retries,
+                        )
+
+                else:
+                    return False
+
+            except Exception as e:
+                print(f"❌ Error in retry with AI fixes: {str(e)}")
+                return False
+        return False
+
+    async def _delete_existing_files(
+            self,
+            file_updates: Dict[str, str],
+            output_path: Path
+    ) -> None:
+        """Delete existing files that will be updated"""
+
+        deleted_count = 0
+
+        for file_path in file_updates.keys():
+            try:
+                # Resolve the full file path
+                if not os.path.isabs(file_path):
+                    full_path = output_path / file_path
+                else:
+                    full_path = Path(file_path)
+
+                # Delete if it exists
+                if full_path.exists():
+                    full_path.unlink()
+                    deleted_count += 1
+
+
+            except Exception as e:
+                print(f"❌ Failed to delete {file_path}: {str(e)}")
+                continue
+
+
     async def _process_file_creation(
         self,
         creator: SafeFileCreator,
@@ -944,6 +1613,8 @@ class HybridLocustGenerator:
         # Ensure directories exist
         output_path.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
+
+        await self._delete_existing_files(test_files, output_path)
 
         # Prepare files in temp directory
         prepared_files = await self._prepare_files_in_temp(

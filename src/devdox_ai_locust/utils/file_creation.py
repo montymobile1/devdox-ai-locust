@@ -93,7 +93,7 @@ class SafeFileCreator:
             "filename": filename,
             "temp_path": temp_file_path,
             "size": len(content.encode("utf-8")),
-            "type": file_extension.lstrip("."),
+            "type": file_extension.lstrip(".")
         }
 
     async def move_files_atomically(
@@ -111,6 +111,7 @@ class SafeFileCreator:
                 )
                 file_info["final_path"] = final_path
                 file_info["path"] = final_path
+                file_info["full_path"] = os.path.abspath(final_path)
                 successfully_moved.append(file_info)
                 logger.info(f"Created: {file_info['filename']}")
 
