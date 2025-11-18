@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
+base_workflow_path = "base_workflow.py"
+workflow_jinja_path = "workflow.j2"
 
 
 @dataclass
@@ -114,39 +116,83 @@ class EnhancementProcessor:
 
         return enhanced_files, enhancements
 
+    def _get_base_workflow_content(self, directory_files: List[Dict[str, Any]]) -> str:
+        base_files = self.locust_generator.get_files_by_key(
+            directory_files, base_workflow_path
+        )
+        if not base_files:
+            return ""
+        workflow_dict = base_files[0]
+        return workflow_dict.get(base_workflow_path) or ""
+
+    async def _process_workflow_item(
+        self,
+        file_dict: Dict[str, Any],
+        base_files: Dict[str, str],
+        base_workflow_content: str,
+        grouped_endpoints: Dict[str, List[Endpoint]],
+        db_type: str,
+        template: Optional[str] = None,
+    ) -> Dict[str, Any] | None:
+        return await self._enhance_single_workflow(
+            file_dict,
+            base_files,
+            base_workflow_content,
+            grouped_endpoints,
+            db_type,
+            template_path=template or workflow_jinja_path,
+        )
+
     async def process_workflow_enhancements(
         self,
         base_files: Dict[str, str],
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         db_type: str = "",
+        include_auth: bool = False,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
-        """Process workflow enhancements"""
+        """Process workflow enhancements with minimal duplication."""
+
+        # Early exit if enhancements disabled
+        if not (self.ai_config and self.ai_config.enhance_workflows):
+            return [], []
+
         enhanced_directory_files: List[Dict[str, Any]] = []
         enhancements: List[str] = []
 
-        if self.ai_config and not self.ai_config.enhance_workflows:
-            return enhanced_directory_files, enhancements
+        # Extract base workflow content
+        base_workflow_content = self._get_base_workflow_content(directory_files)
 
-        base_workflow_files = self.locust_generator.get_files_by_key(
-            directory_files, "base_workflow.py"
-        )
-        base_workflow_content = ""
-        if base_workflow_files:
-            first_workflow = base_workflow_files[0]
-            # Get the content from the dictionary - adjust key name as needed
-            base_workflow_content = first_workflow.get("base_workflow.py", "")
-        for workflow_item in directory_files:
-            enhanced_workflow_item = await self._enhance_single_workflow(
-                workflow_item,
-                base_files,
-                base_workflow_content,
-                grouped_endpoints,
-                db_type,
+        # Handle special case: enhancing base workflow if auth included
+        if include_auth and base_workflow_content:
+            result = await self._process_workflow_item(
+                file_dict={base_workflow_path: base_workflow_content},
+                base_files=base_files,
+                base_workflow_content=base_workflow_content,
+                grouped_endpoints=grouped_endpoints,
+                db_type=db_type,
+                template="base_workflow.j2",
             )
-            if enhanced_workflow_item:
-                enhanced_directory_files.append(enhanced_workflow_item["files"])
-                enhancements.extend(enhanced_workflow_item["enhancements"])
+            if result:
+                base_workflow_content = result["files"].get(base_workflow_path, "")
+                enhancements.extend(result["enhancements"])
+
+        # Enhance all other workflow files
+        for workflow_item in directory_files:
+            if workflow_item.get("file_name") == base_workflow_path:
+                continue
+
+            result = await self._process_workflow_item(
+                file_dict=workflow_item,
+                base_files=base_files,
+                base_workflow_content=base_workflow_content,
+                grouped_endpoints=grouped_endpoints,
+                db_type=db_type,
+                template="",
+            )
+            if result:
+                enhanced_directory_files.append(result["files"])
+                enhancements.extend(result["enhancements"])
 
         return enhanced_directory_files, enhancements
 
@@ -157,6 +203,7 @@ class EnhancementProcessor:
         base_workflow_files: str,
         grouped_endpoints: Dict[str, List[Endpoint]],
         db_type: str = "",
+        template_path: str =workflow_jinja_path,
     ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
@@ -171,6 +218,7 @@ class EnhancementProcessor:
                 grouped_enpoints=workflow_endpoints_dict,
                 auth_endpoints=auth_endpoints,
                 db_type=db_type,
+                template_path=template_path,
             )
             if enhanced_workflow:
                 return {
@@ -236,7 +284,15 @@ class HybridLocustGenerator:
         self._setup_jinja_env()
         self.MAX_RETRIES = 3
         self.RATE_LIMIT_BACKOFF = 10
-        self.NON_RETRYABLE_CODES = ["401", "403", "unauthorized", "forbidden"]
+        self.NON_RETRYABLE_CODES = [
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "authentication",
+            "unauthorized",
+            "invalid token",
+        ]
         self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
 
     def _find_project_root(self) -> Path:
@@ -333,6 +389,7 @@ class HybridLocustGenerator:
                     base_files,
                     endpoints,
                     api_info,
+                    include_auth,
                     directory_files,
                     grouped_enpoints,
                     custom_requirement,
@@ -434,6 +491,7 @@ class HybridLocustGenerator:
         base_files: Dict[str, str],
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
+        include_auth: bool,
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         custom_requirement: Optional[str] = None,
@@ -447,6 +505,7 @@ class HybridLocustGenerator:
                 base_files,
                 endpoints,
                 api_info,
+                include_auth,
                 directory_files,
                 grouped_endpoints,
                 custom_requirement,
@@ -476,6 +535,7 @@ class HybridLocustGenerator:
         base_files: Dict[str, str],
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
+        include_auth: bool,
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         custom_requirement: Optional[str] = None,
@@ -519,7 +579,7 @@ class HybridLocustGenerator:
                 workflow_files,
                 workflow_enhancements,
             ) = await processor.process_workflow_enhancements(
-                base_files, directory_files, grouped_endpoints, db_type
+                base_files, directory_files, grouped_endpoints, db_type, include_auth
             )
             enhanced_directory_files.extend(workflow_files)
             enhancements_applied.extend(workflow_enhancements)
@@ -576,9 +636,10 @@ class HybridLocustGenerator:
         grouped_enpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
+        template_path: str = workflow_jinja_path,
     ) -> Optional[str]:
         try:
-            template = self.jinja_env.get_template("workflow.j2")
+            template = self.jinja_env.get_template(template_path)
 
             # Render enhanced content
             prompt = template.render(
@@ -589,6 +650,7 @@ class HybridLocustGenerator:
                 base_content=base_content,
                 db_type=db_type,
             )
+
             enhanced_content = await self._call_ai_service(prompt)
             return enhanced_content
         except Exception as e:

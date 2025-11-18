@@ -2,13 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.8] - 2025-11-18
+### 🆕 What's New in 0.1.8
+
+**🔐 Smart Authentication Integration:**
+- Seamless integration with existing `base_workflow.py` authentication patterns
+- Automatic detection and reuse of existing authentication methods
+- Zero duplication of authentication logic across test files
+- Smart 401 response handling with automatic re-authentication
+- Configurable authentication retry mechanisms
+
+**📊 Comprehensive Test Scenario Framework:**
+- **Weighted scenario distribution** for realistic load patterns:
+  - 60% Positive scenarios (happy path, valid data)
+  - 25% Negative scenarios (validation errors, missing fields)
+  - 10% Edge cases (boundary testing, unicode characters)
+  - 4% State-dependent scenarios (concurrent operations, duplicates)
+  - 1% Security scenarios (injection attacks, vulnerability detection)
+- **Enhanced test data generators** supporting all scenario types
+- **Security vulnerability detection** with immediate alerting for critical issues
+
+
 ## [0.1.7] - 2025-11-11
 ## 🆕 What's New in 0.1.7
 
 Capitalize group names in generated class names for improved readability and consistency across generated code.
-
 Added MongoDB-related environment variables examples to .env configuration, simplifying setup for MongoDB integrations.
-
 
 
 ## [0.1.6] - 2025-11-06
