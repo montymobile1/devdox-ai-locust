@@ -842,6 +842,341 @@ class TestEnhancementProcessor:
         assert result == ""
 
     @pytest.mark.asyncio
+    async def test_process_workflow_disabled_ai_config(self):
+        """Test the early return when AI enhancement is disabled."""
+        # Test line: if not (self.ai_config and self.ai_config.enhance_workflows): return [], []
+
+        # Test Case 1: ai_config is None
+        processor_none = EnhancementProcessor(None, Mock())
+        result1 = await processor_none.process_workflow_enhancements({}, [], {})
+        assert result1 == ([], [])
+
+        # Test Case 2: enhance_workflows is False
+        ai_config_disabled = AIEnhancementConfig(enhance_workflows=False)
+        processor_disabled = EnhancementProcessor(ai_config_disabled, Mock())
+        result2 = await processor_disabled.process_workflow_enhancements({}, [], {})
+        assert result2 == ([], [])
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_enhancements_with_base_workflow_file_name_skip(
+        self,
+    ):
+        """Test skipping workflow items with file_name == base_workflow_path."""
+        # Test line: if workflow_item.get("file_name") == base_workflow_path: continue
+
+        ai_config = AIEnhancementConfig(enhance_workflows=True)
+        mock_generator = Mock()
+        mock_generator.get_files_by_key.return_value = []  # No base workflow content
+
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        # Mock _process_workflow_item to track calls
+        processor._process_workflow_item = AsyncMock(
+            return_value={
+                "files": {"test.py": "enhanced"},
+                "enhancements": ["test_enhancement"],
+            }
+        )
+
+        base_files = {"locustfile.py": "# Base"}
+        directory_files = [
+            {"users_workflow.py": "# Users workflow"},
+            {
+                "file_name": "base_workflow.py",
+                "other_key": "should be skipped",
+            },  # This should be skipped
+            {"admin_workflow.py": "# Admin workflow"},
+        ]
+        grouped_endpoints = {"users": [Mock()], "admin": [Mock()]}
+
+        enhanced_files, enhancements = await processor.process_workflow_enhancements(
+            base_files,
+            directory_files,
+            grouped_endpoints,
+            db_type="",
+            include_auth=False,
+        )
+
+        # Should only process 2 workflows (skipping the one with file_name)
+        assert processor._process_workflow_item.call_count == 2
+        assert len(enhanced_files) == 2
+        assert len(enhancements) == 2
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_enhancements_include_auth_no_base_workflow(self):
+        """Test include_auth=True but no base workflow content."""
+        # Test the negative case of: if include_auth and base_workflow_content:
+
+        ai_config = AIEnhancementConfig(enhance_workflows=True)
+        mock_generator = Mock()
+        mock_generator.get_files_by_key.return_value = []  # No base workflow
+
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base"}
+        directory_files = [{"users_workflow.py": "# Users workflow"}]
+        grouped_endpoints = {"users": [Mock()], "Authentication": [Mock()]}
+
+        processor._process_workflow_item = AsyncMock(
+            return_value={
+                "files": {"users_workflow.py": "# Enhanced"},
+                "enhancements": ["enhanced_users"],
+            }
+        )
+
+        enhanced_files, enhancements = await processor.process_workflow_enhancements(
+            base_files, directory_files, grouped_endpoints, include_auth=True
+        )
+
+        # Should only process regular workflows, not base workflow
+        assert processor._process_workflow_item.call_count == 1
+
+        # Verify it was called with template=None (default)
+        call_args = processor._process_workflow_item.call_args
+        assert call_args[1]["template"] is None
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_enhancements_result_none_handling(self):
+        """Test when _process_workflow_item returns None."""
+        # Test lines: result = await self._process_workflow_item(...) and if result:
+
+        ai_config = AIEnhancementConfig(enhance_workflows=True)
+        mock_generator = Mock()
+        mock_generator.get_files_by_key.return_value = []
+
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base"}
+        directory_files = [
+            {"users_workflow.py": "# Users workflow"},
+            {"failed_workflow.py": "# This will fail"}
+        ]
+        grouped_endpoints = {"users": [Mock()], "failed": [Mock()]}
+
+        call_count = {"count": 0}
+
+        async def mock_process_item(*args, **kwargs):
+            call_count["count"] += 1
+            if "users" in str(kwargs.get("file_dict", {})):
+                return {
+                    "files": {"users_workflow.py": "# Enhanced"},
+                    "enhancements": ["enhanced_users"]
+                }
+            else:
+                return None  # Simulate failure
+
+        processor._process_workflow_item = AsyncMock(side_effect=mock_process_item)
+
+        enhanced_files, enhancements = await processor.process_workflow_enhancements(
+            base_files, directory_files, grouped_endpoints
+        )
+
+        # Should process both but only get results from successful one
+        assert processor._process_workflow_item.call_count == 2
+        assert len(enhanced_files) == 1  # Only successful result
+        assert len(enhancements) == 1
+        assert "enhanced_users" in enhancements
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_enhancements_successful_results(self):
+        """Test successful workflow enhancement with result handling."""
+        # Test lines: if result: enhanced_directory_files.append(result["files"])
+        #             enhancements.extend(result["enhancements"])
+
+        ai_config = AIEnhancementConfig(enhance_workflows=True)
+        mock_generator = Mock()
+        mock_generator.get_files_by_key.return_value = []
+
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base"}
+        directory_files = [
+            {"users_workflow.py": "# Users workflow"},
+            {"admin_workflow.py": "# Admin workflow"}
+        ]
+        grouped_endpoints = {"users": [Mock()], "admin": [Mock()]}
+
+        call_count = {"count": 0}
+
+        async def mock_process_item(*args, **kwargs):
+            call_count["count"] += 1
+            if "users" in str(kwargs.get("file_dict", {})):
+                return {
+                    "files": {"users_workflow.py": "# Enhanced users"},
+                    "enhancements": ["enhanced_users_1", "enhanced_users_2"]
+                }
+            else:
+                return {
+                    "files": {"admin_workflow.py": "# Enhanced admin"},
+                    "enhancements": ["enhanced_admin_1"]
+                }
+
+        processor._process_workflow_item = AsyncMock(side_effect=mock_process_item)
+
+        enhanced_files, enhancements = await processor.process_workflow_enhancements(
+            base_files, directory_files, grouped_endpoints
+        )
+
+        # Should have processed both workflows
+        assert processor._process_workflow_item.call_count == 2
+        assert len(enhanced_files) == 2
+        assert len(enhancements) == 3  # 2 from users + 1 from admin
+        assert "enhanced_users_1" in enhancements
+        assert "enhanced_users_2" in enhancements
+        assert "enhanced_admin_1" in enhancement
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_enhancements_empty_directory_files(self):
+        """Test with empty directory_files list."""
+        # Test that the for loop handles empty list correctly
+
+        ai_config = AIEnhancementConfig(enhance_workflows=True)
+        mock_generator = Mock()
+        mock_generator.get_files_by_key.return_value = []
+
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base"}
+        directory_files = []  # Empty list
+        grouped_endpoints = {"users": [Mock()]}
+
+        processor._process_workflow_item = AsyncMock()
+
+        enhanced_files, enhancements = await processor.process_workflow_enhancements(
+            base_files, directory_files, grouped_endpoints
+        )
+
+        # Should not call _process_workflow_item at all
+        assert processor._process_workflow_item.call_count == 0
+        assert enhanced_files == []
+        assert enhancements == []
+
+    def test_get_base_workflow_content_none_handling(self):
+        """Test _get_base_workflow_content with None value."""
+        # Test the line: return workflow_dict.get(base_workflow_path) or ""
+
+        mock_generator = Mock()
+
+        # Test case where get returns None
+        mock_generator.get_files_by_key.return_value = [
+            {"base_workflow.py": None}  # None value
+        ]
+
+        processor = EnhancementProcessor(Mock(), mock_generator)
+        result = processor._get_base_workflow_content([{"base_workflow.py": None}])
+
+        assert result == ""  # Should return empty string for None value
+
+    def test_get_base_workflow_content_missing_key(self):
+        """Test _get_base_workflow_content with missing key."""
+        # Test the line: return workflow_dict.get(base_workflow_path) or ""
+
+        mock_generator = Mock()
+
+        # Test case where key doesn't exist
+        mock_generator.get_files_by_key.return_value = [
+            {"wrong_key.py": "some content"}  # Missing base_workflow.py key
+        ]
+
+        processor = EnhancementProcessor(Mock(), mock_generator)
+        result = processor._get_base_workflow_content([{"wrong_key.py": "content"}])
+
+        assert result == ""  # Should return empty string for missing key
+
+    def test_get_base_workflow_content_empty_string(self):
+        """Test _get_base_workflow_content with empty string value."""
+        # Test the line: return workflow_dict.get(base_workflow_path) or ""
+
+        mock_generator = Mock()
+
+        # Test case where get returns empty string
+        mock_generator.get_files_by_key.return_value = [
+            {"base_workflow.py": ""}  # Empty string value
+        ]
+
+        processor = EnhancementProcessor(Mock(), mock_generator)
+        result = processor._get_base_workflow_content([{"base_workflow.py": ""}])
+
+        assert result == ""  # Should return empty string for empty value
+
+    @pytest.mark.asyncio
+    async def test_process_main_locust_enhancement_disabled(self):
+        """Test main locust enhancement when disabled."""
+        ai_config = AIEnhancementConfig(update_main_locust=False)
+        mock_generator = Mock()
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base content"}
+        endpoints = [Mock()]
+        api_info = {"title": "Test API"}
+
+        enhanced_files, enhancements = await processor.process_main_locust_enhancement(
+            base_files, endpoints, api_info
+        )
+
+        # Should return empty when disabled
+        assert enhanced_files == {}
+        assert enhancements == []
+
+    @pytest.mark.asyncio
+    async def test_process_main_locust_enhancement_no_ai_config(self):
+        """Test main locust enhancement when ai_config is None."""
+        processor = EnhancementProcessor(None, Mock())
+
+        base_files = {"locustfile.py": "# Base content"}
+        endpoints = [Mock()]
+        api_info = {"title": "Test API"}
+
+        enhanced_files, enhancements = await processor.process_main_locust_enhancement(
+            base_files, endpoints, api_info
+        )
+
+        # Should return empty when ai_config is None
+        assert enhanced_files == {}
+        assert enhancements == []
+
+    @pytest.mark.asyncio
+    async def test_process_main_locust_enhancement_empty_result(self):
+        """Test main locust enhancement when enhancement returns empty."""
+        ai_config = AIEnhancementConfig(update_main_locust=True)
+        mock_generator = AsyncMock()
+        mock_generator._enhance_locustfile.return_value = ""  # Empty result
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base content"}
+        endpoints = [Mock()]
+        api_info = {"title": "Test API"}
+
+        enhanced_files, enhancements = await processor.process_main_locust_enhancement(
+            base_files, endpoints, api_info
+        )
+
+        # Should return empty when enhancement returns empty string
+        assert enhanced_files == {}
+        assert enhancements == []
+
+    @pytest.mark.asyncio
+    async def test_process_main_locust_enhancement_none_result(self):
+        """Test main locust enhancement when enhancement returns None."""
+        ai_config = AIEnhancementConfig(update_main_locust=True)
+        mock_generator = AsyncMock()
+        mock_generator._enhance_locustfile.return_value = None  # None result
+        processor = EnhancementProcessor(ai_config, mock_generator)
+
+        base_files = {"locustfile.py": "# Base content"}
+        endpoints = [Mock()]
+        api_info = {"title": "Test API"}
+
+        enhanced_files, enhancements = await processor.process_main_locust_enhancement(
+            base_files, endpoints, api_info
+        )
+
+        # Should return empty when enhancement returns None
+        assert enhanced_files == {}
+        assert enhancements == []
+
+
+    @pytest.mark.asyncio
     async def test_process_domain_flows_enhancement(
         self, sample_endpoints, sample_api_info
     ):
@@ -1350,6 +1685,28 @@ More explanation."""
         code = generator.extract_code_from_response(response)
 
         assert code == response.strip()
+
+    def test_extract_code_from_response_short_content(self, mock_together_client):
+        """Test extract_code_from_response with very short content."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test with content too short (≤ 10 chars)
+        response = "<code>x</code>"
+        result = generator.extract_code_from_response(response)
+
+        # Should use full response when code is too short
+        assert result == response.strip()
+
+    def test_extract_code_from_response_empty_code_block(self, mock_together_client):
+        """Test extract_code_from_response with empty code block."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test with empty code block
+        response = "Some text <code></code> more text"
+        result = generator.extract_code_from_response(response)
+
+        # Should use full response when code block is empty
+        assert result == response.strip()
 
     def test_validate_python_code_valid(self, mock_together_client):
         """Test validating valid Python code."""
