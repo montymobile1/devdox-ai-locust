@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
 base_workflow_path = "base_workflow.py"
+workflow_jinja_path = "workflow.j2"
 
 
 @dataclass
@@ -139,7 +140,7 @@ class EnhancementProcessor:
             base_workflow_content,
             grouped_endpoints,
             db_type,
-            template_path=template or "workflow.j2",
+            template_path=template or workflow_jinja_path,
         )
 
     async def process_workflow_enhancements(
@@ -202,7 +203,7 @@ class EnhancementProcessor:
         base_workflow_files: str,
         grouped_endpoints: Dict[str, List[Endpoint]],
         db_type: str = "",
-        template_path: str = "workflow.j2",
+        template_path: str =workflow_jinja_path,
     ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
@@ -635,7 +636,7 @@ class HybridLocustGenerator:
         grouped_enpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
-        template_path: str = "workflow.j2",
+        template_path: str = workflow_jinja_path,
     ) -> Optional[str]:
         try:
             template = self.jinja_env.get_template(template_path)
