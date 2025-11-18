@@ -1023,7 +1023,7 @@ class TestEnhancementProcessor:
         assert len(enhancements) == 3  # 2 from users + 1 from admin
         assert "enhanced_users_1" in enhancements
         assert "enhanced_users_2" in enhancements
-        assert "enhanced_admin_1" in enhancement
+        assert "enhanced_admin_1" in enhancements
 
     @pytest.mark.asyncio
     async def test_process_workflow_enhancements_empty_directory_files(self):
