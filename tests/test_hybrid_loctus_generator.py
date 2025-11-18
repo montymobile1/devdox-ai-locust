@@ -862,6 +862,198 @@ class TestEnhancementProcessor:
         assert call_args[1]["test_data_content"] == ""
 
     @pytest.mark.asyncio
+    async def test_process_workflow_item_with_custom_template(
+            self,
+            sample_base_files,
+            sample_grouped_endpoints
+    ):
+        """Test workflow item processing with custom template."""
+        workflow_item = {
+            "base_workflow.py": "# Base workflow content"
+        }
+
+
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        enhanced_content = "# Enhanced base workflow"
+        mock_generator._enhance_workflows.return_value = enhanced_content
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content="# Base template",
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type="mysql",
+            template="base_workflow.j2"
+        )
+
+        # Verify custom template was used
+        mock_generator._enhance_workflows.assert_called_once()
+        call_args = mock_generator._enhance_workflows.call_args
+        assert call_args[1]["template_path"] == "base_workflow.j2"
+        assert call_args[1]["db_type"] == "mysql"
+
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_no_matching_endpoints(
+            self,
+            sample_base_files
+    ):
+        """Test workflow item processing when no matching endpoints exist."""
+        workflow_item = {
+            "products_workflow.py": "# Products workflow content"
+        }
+
+        # No endpoints match "products" key
+        grouped_endpoints = {
+            "users": [Mock()],
+            "Authentication": [Mock()],
+        }
+
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        enhanced_content = "# Enhanced products workflow"
+        mock_generator._enhance_workflows.return_value = enhanced_content
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content="# Base workflow",
+            grouped_endpoints=grouped_endpoints,
+            db_type=""
+        )
+
+        # Should still process with empty endpoints list
+        assert result is not None
+        mock_generator._enhance_workflows.assert_called_once()
+        call_args = mock_generator._enhance_workflows.call_args
+        assert call_args[1]["grouped_enpoints"] == {"products": []}
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_enhancement_returns_none(
+            self,
+            sample_base_files,
+            sample_grouped_endpoints
+    ):
+        """Test when enhancement returns None."""
+        workflow_item = {
+            "users_workflow.py": "# Users workflow content"
+        }
+
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        # Mock enhancement to return None (failure case)
+        mock_generator._enhance_workflows.return_value = None
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content="# Base workflow",
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type=""
+        )
+
+        # Should return None when enhancement fails
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_enhancement_returns_empty_string(
+            self,
+            sample_base_files,
+            sample_grouped_endpoints
+    ):
+        """Test when enhancement returns empty string."""
+        workflow_item = {
+            "users_workflow.py": "# Users workflow content"
+        }
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        # Mock enhancement to return empty string
+        mock_generator._enhance_workflows.return_value = ""
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content="# Base workflow",
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type=""
+        )
+
+        # Should return None for empty enhancement
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_multiple_keys_in_workflow_item(
+            self,
+            sample_base_files,
+            sample_grouped_endpoints
+    ):
+        """Test workflow item with multiple keys (should process first)."""
+        workflow_item = {
+            "users_workflow.py": "# Users workflow content",
+            "admin_workflow.py": "# Admin workflow content",
+        }
+
+        enhanced_content = "# Enhanced users workflow"
+        mock_generator = Mock(spec=HybridLocustGenerator)
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        mock_generator._enhance_workflows.return_value = enhanced_content
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content="# Base workflow",
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type=""
+        )
+
+        # Should process first key only
+        assert result is not None
+        assert len(result["files"]) == 1
+
+        # Should be the first key processed
+        first_key = list(workflow_item.keys())[0]
+        assert first_key in result["files"]
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_empty_workflow_item(
+            self,
+            sample_base_files,
+            sample_grouped_endpoints
+    ):
+        """Test with empty workflow item."""
+        workflow_item = {}
+        mock_generator = Mock(spec=HybridLocustGenerator)
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content="# Base workflow",
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type=""
+        )
+
+        # Should return None for empty workflow item
+        assert result is None
+        mock_generator._enhance_workflows.assert_not_called()
+
+
+
+    @pytest.mark.asyncio
     async def test_realistic_workflow_processing_scenario(self, real_enhancement_processor):
         """Test realistic workflow processing scenario."""
         # Realistic workflow item
@@ -881,7 +1073,7 @@ class TestEnhancementProcessor:
     """
             }
 
-            # Realistic base files
+        # Realistic base files
         base_files = {
                 "test_data.py": """
                 TEST_USERS = [
@@ -942,6 +1134,63 @@ class TestEnhancementProcessor:
         call_args = real_enhancement_processor.locust_generator._enhance_workflows.call_args
         assert "TEST_USERS" in call_args[1]["test_data_content"]
         assert call_args[1]["db_type"] == "postgresql"
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_workflow_key_extraction(
+            self,
+            sample_base_files,
+            sample_grouped_endpoints
+    ):
+        """Test workflow key extraction from filename."""
+        test_cases = [
+            {
+                "filename": "users_workflow.py",
+                "expected_key": "users",
+                "description": "standard workflow filename"
+            },
+            {
+                "filename": "admin_panel_workflow.py",
+                "expected_key": "admin_panel",
+                "description": "multi-word workflow filename"
+            },
+            {
+                "filename": "workflow.py",
+                "expected_key": "workflow.py",
+                "description": "edge case - just workflow.py"
+            },
+        ]
+
+        mock_generator = Mock(spec=HybridLocustGenerator)
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        for test_case in test_cases:
+            workflow_item = {
+                test_case["filename"]: "# Workflow content"
+            }
+
+            mock_generator._enhance_workflows.return_value = "# Enhanced"
+
+            result = await enhancement_processor._process_workflow_item(
+                file_dict=workflow_item,
+                base_files=sample_base_files,
+                base_workflow_content="# Base workflow",
+                grouped_endpoints=sample_grouped_endpoints,
+                db_type=""
+            )
+
+            if result:
+                # Verify the workflow key was extracted correctly
+                call_args = mock_generator._enhance_workflows.call_args
+                grouped_endpoints_arg = call_args[1]["grouped_enpoints"]
+
+                # Should contain the expected key
+                assert test_case["expected_key"] in grouped_endpoints_arg, \
+                    f"Failed for {test_case['description']}: expected key '{test_case['expected_key']}'"
+
+            # Reset mock for next iteration
+            mock_generator._enhance_workflows.reset_mock()
 
     @pytest.mark.asyncio
     async def test_process_validation_enhancement(self, sample_endpoints):
