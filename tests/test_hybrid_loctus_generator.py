@@ -696,6 +696,13 @@ class TestErrorClassificationProductionScenarios:
 class TestEnhancementProcessor:
     """Test EnhancementProcessor class."""
 
+    @pytest.fixture
+    def real_enhancement_processor(self):
+        """Create real EnhancementProcessor for integration testing."""
+        ai_config = AIEnhancementConfig()
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        return EnhancementProcessor(ai_config, mock_generator)
+
     def test_init(self):
         """Test EnhancementProcessor initialization."""
         ai_config = AIEnhancementConfig()
@@ -819,6 +826,122 @@ class TestEnhancementProcessor:
         # Verify _enhance_workflows was called with correct parameters
         mock_generator._enhance_workflows.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_missing_test_data_file(
+        self, mock_together_client, sample_grouped_endpoints
+    ):
+        """Test when test_data.py is missing from base_files."""
+        workflow_item = {"users_workflow.py": "# Users workflow content"}
+
+        base_files_without_test_data = {
+            "locustfile.py": "# Main locust file",
+            "utils.py": "# Utility functions",
+            # Missing test_data.py
+        }
+
+        enhanced_content = "# Enhanced workflow"
+        generator = Mock(spec=HybridLocustGenerator)
+        generator._enhance_workflows.return_value = enhanced_content
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, generator)
+
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=base_files_without_test_data,
+            base_workflow_content="# Base workflow",
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type="",
+        )
+
+        # Should handle missing test_data.py gracefully
+        assert result is not None
+
+        # Verify empty string was passed for missing test_data.py
+        call_args = generator._enhance_workflows.call_args
+        assert call_args[1]["test_data_content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_realistic_workflow_processing_scenario(self, real_enhancement_processor):
+        """Test realistic workflow processing scenario."""
+        # Realistic workflow item
+        workflow_item = {
+                "users_workflow.py": """
+    # Users workflow for load testing
+    from locust import task, HttpUser
+
+    class UsersWorkflow(HttpUser):
+        @task
+        def get_users(self):
+            self.client.get("/users")
+
+        @task  
+        def create_user(self):
+            self.client.post("/users", json={"name": "test"})
+    """
+            }
+
+            # Realistic base files
+        base_files = {
+                "test_data.py": """
+                TEST_USERS = [
+                    {"name": "John", "email": "john@example.com"},
+                    {"name": "Jane", "email": "jane@example.com"},
+                ]
+                """,
+                "locustfile.py": "# Main locust configuration",
+            }
+
+        # Mock endpoints
+        user_endpoint = Mock()
+        user_endpoint.path = "/users"
+        user_endpoint.method = "GET"
+
+        grouped_endpoints = {
+                "users": [user_endpoint],
+                "Authentication": [],
+        }
+
+        # Mock enhancement to return enhanced workflow
+        enhanced_workflow = """
+        # Enhanced users workflow with AI improvements
+        from locust import task, HttpUser
+        import random
+    
+        class EnhancedUsersWorkflow(HttpUser):
+            @task(3)
+            def get_users_with_pagination(self):
+                page = random.randint(1, 10)
+                self.client.get(f"/users?page={page}")
+    
+            @task(2) 
+            def create_user_with_validation(self):
+                user_data = {"name": f"user_{random.randint(1000, 9999)}"}
+                response = self.client.post("/users", json=user_data)
+                assert response.status_code in [200, 201]
+        """
+
+        real_enhancement_processor.locust_generator._enhance_workflows = AsyncMock(
+                return_value=enhanced_workflow
+        )
+
+        result = await real_enhancement_processor._process_workflow_item(
+                file_dict=workflow_item,
+                base_files=base_files,
+                base_workflow_content="# Base workflow template",
+                grouped_endpoints=grouped_endpoints,
+                db_type="postgresql"
+        )
+
+        # Verify realistic enhancement result
+        assert result is not None
+        assert result["files"]["users_workflow.py"] == enhanced_workflow
+        assert "enhanced_workflows_users_workflow.py" in result["enhancements"]
+
+        # Verify enhancement was called with realistic parameters
+        call_args = real_enhancement_processor.locust_generator._enhance_workflows.call_args
+        assert "TEST_USERS" in call_args[1]["test_data_content"]
+        assert call_args[1]["db_type"] == "postgresql"
 
     @pytest.mark.asyncio
     async def test_process_validation_enhancement(self, sample_endpoints):

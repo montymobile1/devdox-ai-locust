@@ -628,7 +628,7 @@ class HybridLocustGenerator:
         grouped_enpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
-            template_path:str="workflow.j2"
+        template_path:str="workflow.j2"
     ) -> Optional[str]:
         try:
             template = self.jinja_env.get_template(template_path)
