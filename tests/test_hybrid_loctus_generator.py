@@ -4,13 +4,11 @@ Tests for hybrid_loctus_generator module
 
 import pytest
 import asyncio
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, patch
 from pathlib import Path
 
 import tempfile
-import shutil
 import time
-import concurrent.futures
 import psutil
 import os
 
@@ -19,7 +17,6 @@ from devdox_ai_locust.hybrid_loctus_generator import (
     AIEnhancementConfig,
     EnhancementResult,
     EnhancementProcessor,
-    ErrorClassification,
 )
 from devdox_ai_locust.locust_generator import TestDataConfig
 
@@ -70,13 +67,13 @@ class TestAIEnhancementConfig:
         config = AIEnhancementConfig()
 
         # Verify timeout is reasonable for production (not too high/low)
-        assert (
-            30 <= config.timeout <= 120
-        ), f"Timeout {config.timeout}s may cause issues in production"
+        assert 30 <= config.timeout <= 120, (
+            f"Timeout {config.timeout}s may cause issues in production"
+        )
         assert config.max_tokens <= 10000, "Token limit too high - cost concern"
-        assert (
-            0.1 <= config.temperature <= 0.5
-        ), "Temperature should be conservative for production"
+        assert 0.1 <= config.temperature <= 0.5, (
+            "Temperature should be conservative for production"
+        )
 
     def test_timeout_validation_extremes(self):
         """Test timeout boundary conditions that could cause outages."""
@@ -316,14 +313,10 @@ class TestHybridLocustGenerator:
         assert "comments" in resources
 
     @pytest.mark.asyncio
-
     async def test_memory_usage_with_large_files(self, mock_together_client):
-
         """Test memory behavior with large file content."""
 
         generator = HybridLocustGenerator(ai_client=mock_together_client)
-
-
 
         # Create files with large content
 
@@ -331,19 +324,20 @@ class TestHybridLocustGenerator:
         large_files = {f"large_{i}.py": large_content for i in range(10)}
 
         with tempfile.TemporaryDirectory() as temp_dir:
-
             temp_path = Path(temp_dir)
 
             # Monitor memory usage
             process = psutil.Process(os.getpid())
             memory_before = process.memory_info().rss
 
-            result = await generator._create_test_files_safely(large_files, temp_path)
+            _ = await generator._create_test_files_safely(large_files, temp_path)
 
             memory_after = process.memory_info().rss
             memory_increase = (memory_after - memory_before) / 1024 / 1024  # MB
             # Should not consume excessive memory
-            assert memory_increase < 100, f"Memory increased by {memory_increase:.2f}MB - potential memory leak"
+            assert memory_increase < 100, (
+                f"Memory increased by {memory_increase:.2f}MB - potential memory leak"
+            )
 
 
 class TestHybridLocustGeneratorAsync:
@@ -613,9 +607,7 @@ class TestHybridLocustGeneratorAsync:
 
             # This should be controlled/limited in production
             start_time = time.time()
-            result = await generator._create_test_files_safely(
-                    large_files, temp_path
-                )
+            result = await generator._create_test_files_safely(large_files, temp_path)
             processing_time = time.time() - start_time
 
             # In production, this should have limits and not process all 1000 files
@@ -623,9 +615,9 @@ class TestHybridLocustGeneratorAsync:
             assert len(result) <= 1000  # Documents current behavior
 
             # Should complete in reasonable time (not hang indefinitely)
-            assert (
-                    processing_time < 30
-                ), f"Processing took {processing_time}s - too slow for production"
+            assert processing_time < 30, (
+                f"Processing took {processing_time}s - too slow for production"
+            )
 
 
 class TestErrorClassificationProductionScenarios:
@@ -640,15 +632,15 @@ class TestErrorClassificationProductionScenarios:
             "401 Unauthorized",
             "403 Forbidden",
             "Authentication failed",
-            "Invalid Token expired"
+            "Invalid Token expired",
         ]
 
         for error_msg in auth_errors:
             error = Exception(error_msg)
             classification = generator._classify_error(error, 0)
-            assert (
-                not classification.is_retryable
-            ), f"Auth error should not retry: {error_msg}"
+            assert not classification.is_retryable, (
+                f"Auth error should not retry: {error_msg}"
+            )
             assert classification.error_type == "auth"
 
     def test_rate_limit_detection_comprehensive(self, mock_together_client):
@@ -659,15 +651,15 @@ class TestErrorClassificationProductionScenarios:
         rate_limit_errors = [
             "429 Too Many Requests",
             "Rate limit exceeded",
-            "API rate limit hit"
+            "API rate limit hit",
         ]
 
         for error_msg in rate_limit_errors:
             error = Exception(error_msg)
             classification = generator._classify_error(error, 1)
-            assert (
-                classification.is_retryable
-            ), f"Rate limit should be retryable: {error_msg}"
+            assert classification.is_retryable, (
+                f"Rate limit should be retryable: {error_msg}"
+            )
             assert classification.error_type == "rate_limit"
             assert classification.backoff_seconds == 10  # Should use longer backoff
 
@@ -688,9 +680,9 @@ class TestErrorClassificationProductionScenarios:
 
         # Total max backoff time should be reasonable
         total_backoff = sum(backoffs)
-        assert (
-            total_backoff <= 10
-        ), f"Total backoff {total_backoff}s too long for production"
+        assert total_backoff <= 10, (
+            f"Total backoff {total_backoff}s too long for production"
+        )
 
 
 class TestEnhancementProcessor:
@@ -733,9 +725,7 @@ class TestEnhancementProcessor:
         assert enhanced_files["locustfile.py"] == "# Enhanced content"
         assert "main_locust_update" in enhancements
 
-    def test_get_base_workflow_content_success(
-        self, mock_together_client
-    ):
+    def test_get_base_workflow_content_success(self, mock_together_client):
         """Test successful extraction of base workflow content."""
         directory_files = [
             {"workflow_users.py": "# Users workflow"},
@@ -751,7 +741,7 @@ class TestEnhancementProcessor:
             }
         ]
         ai_config = AIEnhancementConfig()
-        enhancement_processor= EnhancementProcessor(ai_config, generator)
+        enhancement_processor = EnhancementProcessor(ai_config, generator)
 
         result = enhancement_processor._get_base_workflow_content(directory_files)
         assert result == "# Base workflow content\nclass BaseWorkflow:\n    pass"
@@ -774,7 +764,9 @@ class TestEnhancementProcessor:
 
         # Should return empty string
         assert result == ""
-        mock_generator.get_files_by_key.assert_called_once_with(directory_files, "base_workflow.py")
+        mock_generator.get_files_by_key.assert_called_once_with(
+            directory_files, "base_workflow.py"
+        )
 
     def test_get_base_workflow_content_empty_directory_files(self):
         """Test with empty directory files list."""
@@ -788,7 +780,9 @@ class TestEnhancementProcessor:
         result = enhancement_processor._get_base_workflow_content(directory_files)
 
         assert result == ""
-        mock_generator.get_files_by_key.assert_called_once_with(directory_files, "base_workflow.py")
+        mock_generator.get_files_by_key.assert_called_once_with(
+            directory_files, "base_workflow.py"
+        )
 
     def test_get_base_workflow_content_multiple_matches(self):
         """Test when multiple base workflow files exist (edge case)."""
@@ -831,9 +825,7 @@ class TestEnhancementProcessor:
         ]
         mock_generator = Mock(spec=HybridLocustGenerator)
         # Mock get_files_by_key to return dict with None value
-        mock_generator.get_files_by_key.return_value = [
-            {"base_workflow.py": None}
-        ]
+        mock_generator.get_files_by_key.return_value = [{"base_workflow.py": None}]
         ai_config = AIEnhancementConfig()
         enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
         result = enhancement_processor._get_base_workflow_content(directory_files)
@@ -949,7 +941,7 @@ class TestEnhancementProcessor:
         base_files = {"locustfile.py": "# Base"}
         directory_files = [
             {"users_workflow.py": "# Users workflow"},
-            {"failed_workflow.py": "# This will fail"}
+            {"failed_workflow.py": "# This will fail"},
         ]
         grouped_endpoints = {"users": [Mock()], "failed": [Mock()]}
 
@@ -960,7 +952,7 @@ class TestEnhancementProcessor:
             if "users" in str(kwargs.get("file_dict", {})):
                 return {
                     "files": {"users_workflow.py": "# Enhanced"},
-                    "enhancements": ["enhanced_users"]
+                    "enhancements": ["enhanced_users"],
                 }
             else:
                 return None  # Simulate failure
@@ -992,7 +984,7 @@ class TestEnhancementProcessor:
         base_files = {"locustfile.py": "# Base"}
         directory_files = [
             {"users_workflow.py": "# Users workflow"},
-            {"admin_workflow.py": "# Admin workflow"}
+            {"admin_workflow.py": "# Admin workflow"},
         ]
         grouped_endpoints = {"users": [Mock()], "admin": [Mock()]}
 
@@ -1003,12 +995,12 @@ class TestEnhancementProcessor:
             if "users" in str(kwargs.get("file_dict", {})):
                 return {
                     "files": {"users_workflow.py": "# Enhanced users"},
-                    "enhancements": ["enhanced_users_1", "enhanced_users_2"]
+                    "enhancements": ["enhanced_users_1", "enhanced_users_2"],
                 }
             else:
                 return {
                     "files": {"admin_workflow.py": "# Enhanced admin"},
-                    "enhancements": ["enhanced_admin_1"]
+                    "enhancements": ["enhanced_admin_1"],
                 }
 
         processor._process_workflow_item = AsyncMock(side_effect=mock_process_item)
@@ -1175,7 +1167,6 @@ class TestEnhancementProcessor:
         assert enhanced_files == {}
         assert enhancements == []
 
-
     @pytest.mark.asyncio
     async def test_process_domain_flows_enhancement(
         self, sample_endpoints, sample_api_info
@@ -1213,15 +1204,18 @@ class TestEnhancementProcessor:
         assert "smart_test_data" in enhancements
 
     @pytest.mark.asyncio
-    async def test_process_workflow_item_success(self, sample_base_files,
-        sample_grouped_endpoints):
+    async def test_process_workflow_item_success(
+        self, sample_base_files, sample_grouped_endpoints
+    ):
         """Test successful workflow item processing."""
         workflow_item = {
             "users_workflow.py": "# Users workflow content\nclass UsersWorkflow:\n    pass"
         }
 
-        mock_generator =Mock(spec=HybridLocustGenerator)
-        enhanced_content = "# Enhanced users workflow\nclass EnhancedUsersWorkflow:\n    pass"
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        enhanced_content = (
+            "# Enhanced users workflow\nclass EnhancedUsersWorkflow:\n    pass"
+        )
         mock_generator._enhance_workflows.return_value = enhanced_content
 
         ai_config = AIEnhancementConfig()
@@ -1233,7 +1227,7 @@ class TestEnhancementProcessor:
             base_files=sample_base_files,
             base_workflow_content=base_workflow_content,
             grouped_endpoints=sample_grouped_endpoints,
-            db_type=""
+            db_type="",
         )
 
         # Verify result structure
@@ -1283,14 +1277,10 @@ class TestEnhancementProcessor:
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_with_custom_template(
-            self,
-            sample_base_files,
-            sample_grouped_endpoints
+        self, sample_base_files, sample_grouped_endpoints
     ):
         """Test workflow item processing with custom template."""
-        workflow_item = {
-            "base_workflow.py": "# Base workflow content"
-        }
+        workflow_item = {"base_workflow.py": "# Base workflow content"}
 
         mock_generator = Mock(spec=HybridLocustGenerator)
         enhanced_content = "# Enhanced base workflow"
@@ -1299,13 +1289,13 @@ class TestEnhancementProcessor:
         ai_config = AIEnhancementConfig()
         enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
 
-        result = await enhancement_processor._process_workflow_item(
+        _ = await enhancement_processor._process_workflow_item(
             file_dict=workflow_item,
             base_files=sample_base_files,
             base_workflow_content="# Base template",
             grouped_endpoints=sample_grouped_endpoints,
             db_type="mysql",
-            template="base_workflow.j2"
+            template="base_workflow.j2",
         )
 
         # Verify custom template was used
@@ -1315,14 +1305,9 @@ class TestEnhancementProcessor:
         assert call_args[1]["db_type"] == "mysql"
 
     @pytest.mark.asyncio
-    async def test_process_workflow_item_no_matching_endpoints(
-            self,
-            sample_base_files
-    ):
+    async def test_process_workflow_item_no_matching_endpoints(self, sample_base_files):
         """Test workflow item processing when no matching endpoints exist."""
-        workflow_item = {
-            "products_workflow.py": "# Products workflow content"
-        }
+        workflow_item = {"products_workflow.py": "# Products workflow content"}
 
         # No endpoints match "products" key
         grouped_endpoints = {
@@ -1342,7 +1327,7 @@ class TestEnhancementProcessor:
             base_files=sample_base_files,
             base_workflow_content="# Base workflow",
             grouped_endpoints=grouped_endpoints,
-            db_type=""
+            db_type="",
         )
 
         # Should still process with empty endpoints list
@@ -1353,14 +1338,10 @@ class TestEnhancementProcessor:
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_enhancement_returns_none(
-            self,
-            sample_base_files,
-            sample_grouped_endpoints
+        self, sample_base_files, sample_grouped_endpoints
     ):
         """Test when enhancement returns None."""
-        workflow_item = {
-            "users_workflow.py": "# Users workflow content"
-        }
+        workflow_item = {"users_workflow.py": "# Users workflow content"}
 
         mock_generator = Mock(spec=HybridLocustGenerator)
         # Mock enhancement to return None (failure case)
@@ -1374,7 +1355,7 @@ class TestEnhancementProcessor:
             base_files=sample_base_files,
             base_workflow_content="# Base workflow",
             grouped_endpoints=sample_grouped_endpoints,
-            db_type=""
+            db_type="",
         )
 
         # Should return None when enhancement fails
@@ -1382,14 +1363,10 @@ class TestEnhancementProcessor:
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_enhancement_returns_empty_string(
-            self,
-            sample_base_files,
-            sample_grouped_endpoints
+        self, sample_base_files, sample_grouped_endpoints
     ):
         """Test when enhancement returns empty string."""
-        workflow_item = {
-            "users_workflow.py": "# Users workflow content"
-        }
+        workflow_item = {"users_workflow.py": "# Users workflow content"}
         mock_generator = Mock(spec=HybridLocustGenerator)
         # Mock enhancement to return empty string
         mock_generator._enhance_workflows.return_value = ""
@@ -1402,7 +1379,7 @@ class TestEnhancementProcessor:
             base_files=sample_base_files,
             base_workflow_content="# Base workflow",
             grouped_endpoints=sample_grouped_endpoints,
-            db_type=""
+            db_type="",
         )
 
         # Should return None for empty enhancement
@@ -1410,9 +1387,7 @@ class TestEnhancementProcessor:
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_multiple_keys_in_workflow_item(
-            self,
-            sample_base_files,
-            sample_grouped_endpoints
+        self, sample_base_files, sample_grouped_endpoints
     ):
         """Test workflow item with multiple keys (should process first)."""
         workflow_item = {
@@ -1433,7 +1408,7 @@ class TestEnhancementProcessor:
             base_files=sample_base_files,
             base_workflow_content="# Base workflow",
             grouped_endpoints=sample_grouped_endpoints,
-            db_type=""
+            db_type="",
         )
 
         # Should process first key only
@@ -1446,9 +1421,7 @@ class TestEnhancementProcessor:
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_empty_workflow_item(
-            self,
-            sample_base_files,
-            sample_grouped_endpoints
+        self, sample_base_files, sample_grouped_endpoints
     ):
         """Test with empty workflow item."""
         workflow_item = {}
@@ -1462,7 +1435,7 @@ class TestEnhancementProcessor:
             base_files=sample_base_files,
             base_workflow_content="# Base workflow",
             grouped_endpoints=sample_grouped_endpoints,
-            db_type=""
+            db_type="",
         )
 
         # Should return None for empty workflow item
@@ -1470,11 +1443,13 @@ class TestEnhancementProcessor:
         mock_generator._enhance_workflows.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_realistic_workflow_processing_scenario(self, real_enhancement_processor):
+    async def test_realistic_workflow_processing_scenario(
+        self, real_enhancement_processor
+    ):
         """Test realistic workflow processing scenario."""
         # Realistic workflow item
         workflow_item = {
-                "users_workflow.py": """
+            "users_workflow.py": """
     # Users workflow for load testing
     from locust import task, HttpUser
 
@@ -1487,18 +1462,18 @@ class TestEnhancementProcessor:
         def create_user(self):
             self.client.post("/users", json={"name": "test"})
     """
-            }
+        }
 
         # Realistic base files
         base_files = {
-                "test_data.py": """
+            "test_data.py": """
                 TEST_USERS = [
                     {"name": "John", "email": "john@example.com"},
                     {"name": "Jane", "email": "jane@example.com"},
                 ]
                 """,
-                "locustfile.py": "# Main locust configuration",
-            }
+            "locustfile.py": "# Main locust configuration",
+        }
 
         # Mock endpoints
         user_endpoint = Mock()
@@ -1506,8 +1481,8 @@ class TestEnhancementProcessor:
         user_endpoint.method = "GET"
 
         grouped_endpoints = {
-                "users": [user_endpoint],
-                "Authentication": [],
+            "users": [user_endpoint],
+            "Authentication": [],
         }
 
         # Mock enhancement to return enhanced workflow
@@ -1530,15 +1505,15 @@ class TestEnhancementProcessor:
         """
 
         real_enhancement_processor.locust_generator._enhance_workflows = AsyncMock(
-                return_value=enhanced_workflow
+            return_value=enhanced_workflow
         )
 
         result = await real_enhancement_processor._process_workflow_item(
-                file_dict=workflow_item,
-                base_files=base_files,
-                base_workflow_content="# Base workflow template",
-                grouped_endpoints=grouped_endpoints,
-                db_type="postgresql"
+            file_dict=workflow_item,
+            base_files=base_files,
+            base_workflow_content="# Base workflow template",
+            grouped_endpoints=grouped_endpoints,
+            db_type="postgresql",
         )
 
         # Verify realistic enhancement result
@@ -1547,32 +1522,32 @@ class TestEnhancementProcessor:
         assert "enhanced_workflows_users_workflow.py" in result["enhancements"]
 
         # Verify enhancement was called with realistic parameters
-        call_args = real_enhancement_processor.locust_generator._enhance_workflows.call_args
+        call_args = (
+            real_enhancement_processor.locust_generator._enhance_workflows.call_args
+        )
         assert "TEST_USERS" in call_args[1]["test_data_content"]
         assert call_args[1]["db_type"] == "postgresql"
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_workflow_key_extraction(
-            self,
-            sample_base_files,
-            sample_grouped_endpoints
+        self, sample_base_files, sample_grouped_endpoints
     ):
         """Test workflow key extraction from filename."""
         test_cases = [
             {
                 "filename": "users_workflow.py",
                 "expected_key": "users",
-                "description": "standard workflow filename"
+                "description": "standard workflow filename",
             },
             {
                 "filename": "admin_panel_workflow.py",
                 "expected_key": "admin_panel",
-                "description": "multi-word workflow filename"
+                "description": "multi-word workflow filename",
             },
             {
                 "filename": "workflow.py",
                 "expected_key": "workflow.py",
-                "description": "edge case - just workflow.py"
+                "description": "edge case - just workflow.py",
             },
         ]
 
@@ -1582,9 +1557,7 @@ class TestEnhancementProcessor:
         enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
 
         for test_case in test_cases:
-            workflow_item = {
-                test_case["filename"]: "# Workflow content"
-            }
+            workflow_item = {test_case["filename"]: "# Workflow content"}
 
             mock_generator._enhance_workflows.return_value = "# Enhanced"
 
@@ -1593,7 +1566,7 @@ class TestEnhancementProcessor:
                 base_files=sample_base_files,
                 base_workflow_content="# Base workflow",
                 grouped_endpoints=sample_grouped_endpoints,
-                db_type=""
+                db_type="",
             )
 
             if result:
@@ -1602,8 +1575,9 @@ class TestEnhancementProcessor:
                 grouped_endpoints_arg = call_args[1]["grouped_enpoints"]
 
                 # Should contain the expected key
-                assert test_case["expected_key"] in grouped_endpoints_arg, \
+                assert test_case["expected_key"] in grouped_endpoints_arg, (
                     f"Failed for {test_case['description']}: expected key '{test_case['expected_key']}'"
+                )
 
             # Reset mock for next iteration
             mock_generator._enhance_workflows.reset_mock()
@@ -1935,8 +1909,6 @@ class TestHybridLocustGeneratorEdgeCases:
         assert hasattr(generator, "jinja_env")
         assert generator.jinja_env is not None
 
-
-
     @pytest.mark.asyncio
     async def test_concurrent_ai_calls(self, mock_together_client):
         """Test multiple concurrent AI calls."""
@@ -1966,11 +1938,15 @@ class TestAIServiceCallReliability:
             await asyncio.sleep(30)  # Longer than typical timeout
             raise asyncio.TimeoutError("Request timeout")
 
-        mock_together_client.chat.completions.create = AsyncMock(side_effect=mock_slow_response)
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_slow_response
+        )
 
         # Test with production-like timeout
         config = AIEnhancementConfig(timeout=5)  # Short timeout for production
-        generator = HybridLocustGenerator(ai_client=mock_together_client, ai_config=config)
+        generator = HybridLocustGenerator(
+            ai_client=mock_together_client, ai_config=config
+        )
 
         start_time = time.time()
         result = await generator._call_ai_service("test prompt")
@@ -1995,11 +1971,13 @@ class TestAIServiceCallReliability:
         sample_endpoints = [Mock()]
         sample_api_info = {"title": "Test API"}
 
-        with patch.object(generator.template_generator, 'generate_from_endpoints') as mock_template:
+        with patch.object(
+            generator.template_generator, "generate_from_endpoints"
+        ) as mock_template:
             mock_template.return_value = (
                 {"locustfile.py": "# Template content"},
                 [{"workflow.py": "# Workflow"}],
-                {"default": sample_endpoints}
+                {"default": sample_endpoints},
             )
 
             files, workflows = await generator.generate_from_endpoints(
@@ -2029,7 +2007,9 @@ class TestAIServiceCallReliability:
             mock_response.choices = [mock_choice]
             return mock_response
 
-        mock_together_client.chat.completions.create = AsyncMock(side_effect=mock_intermittent_failure)
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=mock_intermittent_failure
+        )
 
         generator = HybridLocustGenerator(ai_client=mock_together_client)
 
@@ -2074,7 +2054,6 @@ class TestProductionConfigurationScenarios:
             # In production, these should trigger alerts or validation errors
             assert risky_config.timeout >= baseline.timeout  # Current: no validation
 
-
     @pytest.mark.asyncio
     async def test_semaphore_configuration_impact(self, mock_together_client):
         """Test impact of changing semaphore limits in production."""
@@ -2111,7 +2090,10 @@ class TestProductionConfigurationScenarios:
         max_total_time = sum(max_backoff_per_retry) + generator.RATE_LIMIT_BACKOFF
 
         # Should complete within reasonable time even in worst case
-        assert max_total_time <= 30, f"Max retry time {max_total_time}s too long for production"
+        assert max_total_time <= 30, (
+            f"Max retry time {max_total_time}s too long for production"
+        )
+
 
 class TestResourceLimitsAndSecurity:
     """Test resource limits and security boundaries."""
@@ -2130,9 +2112,7 @@ class TestResourceLimitsAndSecurity:
 
             # Should reject oversized files
             result = await generator._create_test_files_safely(
-                {"oversized.py": oversized_content},
-                temp_path,
-                max_file_size=max_size
+                {"oversized.py": oversized_content}, temp_path, max_file_size=max_size
             )
 
             # Current implementation may not enforce this - SECURITY RISK!
@@ -2163,9 +2143,11 @@ class TestResourceLimitsAndSecurity:
 
             for malicious_name in malicious_filenames:
                 # Should sanitize or reject malicious filenames
-                asyncio.run(generator._create_test_files_safely(
-                    {malicious_name: "content"}, temp_path
-                ))
+                asyncio.run(
+                    generator._create_test_files_safely(
+                        {malicious_name: "content"}, temp_path
+                    )
+                )
 
                 # Verify no files were created outside temp directory
                 created_files = list(temp_path.rglob("*"))
@@ -2216,9 +2198,9 @@ class TestProductionIntegrationScenario:
 
         # All should complete successfully
         successful_results = [r for r in results if not isinstance(r, Exception)]
-        assert (
-            len(successful_results) >= 8
-        ), "Should handle concurrent load with minimal failures"
+        assert len(successful_results) >= 8, (
+            "Should handle concurrent load with minimal failures"
+        )
 
         # Should complete in reasonable time
         assert total_time < 60, f"High load scenario took {total_time}s - too slow"
