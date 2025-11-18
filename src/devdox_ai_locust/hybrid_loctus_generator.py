@@ -120,7 +120,7 @@ class EnhancementProcessor:
         if not base_files:
             return ""
         workflow_dict = base_files[0]
-        return workflow_dict.get(base_workflow_path, "")
+        return workflow_dict.get(base_workflow_path) or ""
 
     async def _process_workflow_item(
             self,

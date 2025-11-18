@@ -756,6 +756,91 @@ class TestEnhancementProcessor:
         result = enhancement_processor._get_base_workflow_content(directory_files)
         assert result == "# Base workflow content\nclass BaseWorkflow:\n    pass"
 
+    def test_get_base_workflow_content_no_base_workflow(self):
+        """Test when no base workflow file exists."""
+        directory_files = [
+            {"workflow_users.py": "# Users workflow"},
+            {"workflow_auth.py": "# Auth workflow"},
+        ]
+
+        # Mock get_files_by_key to return empty list
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        mock_generator.get_files_by_key.return_value = []
+
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+
+        result = enhancement_processor._get_base_workflow_content(directory_files)
+
+        # Should return empty string
+        assert result == ""
+        mock_generator.get_files_by_key.assert_called_once_with(directory_files, "base_workflow.py")
+
+    def test_get_base_workflow_content_empty_directory_files(self):
+        """Test with empty directory files list."""
+        directory_files = []
+
+        # Mock get_files_by_key to return empty list
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        mock_generator.get_files_by_key.return_value = []
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+        result = enhancement_processor._get_base_workflow_content(directory_files)
+
+        assert result == ""
+        mock_generator.get_files_by_key.assert_called_once_with(directory_files, "base_workflow.py")
+
+    def test_get_base_workflow_content_multiple_matches(self):
+        """Test when multiple base workflow files exist (edge case)."""
+        directory_files = [
+            {"base_workflow.py": "# First base workflow"},
+            {"base_workflow.py": "# Second base workflow"},  # Duplicate key (edge case)
+        ]
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        # Mock get_files_by_key to return first match
+        mock_generator.get_files_by_key.return_value = [
+            {"base_workflow.py": "# First base workflow"}
+        ]
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+        result = enhancement_processor._get_base_workflow_content(directory_files)
+
+        assert result == "# First base workflow"
+
+    def test_get_base_workflow_content_malformed_workflow_dict(self):
+        """Test when workflow dict is malformed."""
+        directory_files = [
+            {"base_workflow.py": "# Base workflow content"},
+        ]
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        # Mock get_files_by_key to return dict without expected key
+        mock_generator.get_files_by_key.return_value = [
+            {"wrong_key.py": "# Wrong content"}
+        ]
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+        result = enhancement_processor._get_base_workflow_content(directory_files)
+
+        # Should return empty string when key not found
+        assert result == ""
+
+    def test_get_base_workflow_content_none_value(self):
+        """Test when base workflow content is None."""
+        directory_files = [
+            {"base_workflow.py": None},
+        ]
+        mock_generator = Mock(spec=HybridLocustGenerator)
+        # Mock get_files_by_key to return dict with None value
+        mock_generator.get_files_by_key.return_value = [
+            {"base_workflow.py": None}
+        ]
+        ai_config = AIEnhancementConfig()
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+        result = enhancement_processor._get_base_workflow_content(directory_files)
+
+        # Should handle None gracefully and return empty string
+        assert result == ""
+
     @pytest.mark.asyncio
     async def test_process_domain_flows_enhancement(
         self, sample_endpoints, sample_api_info
@@ -872,7 +957,6 @@ class TestEnhancementProcessor:
             "base_workflow.py": "# Base workflow content"
         }
 
-
         mock_generator = Mock(spec=HybridLocustGenerator)
         enhanced_content = "# Enhanced base workflow"
         mock_generator._enhance_workflows.return_value = enhanced_content
@@ -894,7 +978,6 @@ class TestEnhancementProcessor:
         call_args = mock_generator._enhance_workflows.call_args
         assert call_args[1]["template_path"] == "base_workflow.j2"
         assert call_args[1]["db_type"] == "mysql"
-
 
     @pytest.mark.asyncio
     async def test_process_workflow_item_no_matching_endpoints(
@@ -1050,8 +1133,6 @@ class TestEnhancementProcessor:
         # Should return None for empty workflow item
         assert result is None
         mock_generator._enhance_workflows.assert_not_called()
-
-
 
     @pytest.mark.asyncio
     async def test_realistic_workflow_processing_scenario(self, real_enhancement_processor):
