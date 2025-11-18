@@ -238,7 +238,7 @@ async def _generate_and_create_tests(
 
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(version="0.1.8")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool) -> None:

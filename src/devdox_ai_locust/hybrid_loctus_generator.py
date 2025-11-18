@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
+base_workflow_path="base_workflow.py"
 
 
 @dataclass
@@ -115,11 +116,11 @@ class EnhancementProcessor:
         return enhanced_files, enhancements
 
     def _get_base_workflow_content(self, directory_files: List[Dict[str, Any]]) -> str:
-        base_files = self.locust_generator.get_files_by_key(directory_files, "base_workflow.py")
+        base_files = self.locust_generator.get_files_by_key(directory_files, base_workflow_path)
         if not base_files:
             return ""
         workflow_dict = base_files[0]
-        return workflow_dict.get("base_workflow.py", "")
+        return workflow_dict.get(base_workflow_path, "")
 
     async def _process_workflow_item(
             self,
@@ -163,7 +164,7 @@ class EnhancementProcessor:
         # Handle special case: enhancing base workflow if auth included
         if include_auth and base_workflow_content:
             result = await self._process_workflow_item(
-                file_dict={"base_workflow.py": base_workflow_content},
+                file_dict={base_workflow_path: base_workflow_content},
                 base_files=base_files,
                 base_workflow_content=base_workflow_content,
                 grouped_endpoints=grouped_endpoints,
@@ -171,12 +172,12 @@ class EnhancementProcessor:
                 template="base_workflow.j2",
             )
             if result:
-                base_workflow_content = result["files"].get("base_workflow.py", "")
+                base_workflow_content = result["files"].get(base_workflow_path, "")
                 enhancements.extend(result["enhancements"])
 
         # Enhance all other workflow files
         for workflow_item in directory_files:
-            if workflow_item.get("file_name") == "base_workflow.py":
+            if workflow_item.get("file_name") == base_workflow_path:
                 continue
 
             result = await self._process_workflow_item(
@@ -281,7 +282,7 @@ class HybridLocustGenerator:
         self._setup_jinja_env()
         self.MAX_RETRIES = 3
         self.RATE_LIMIT_BACKOFF = 10
-        self.NON_RETRYABLE_CODES = ["401", "403", "unauthorized", "forbidden"]
+        self.NON_RETRYABLE_CODES = ["401", "403", "unauthorized", "forbidden","authentication","unauthorized", "invalid token"]
         self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
 
     def _find_project_root(self) -> Path:

@@ -9,12 +9,25 @@
 
 DevDox AI Locust automatically generates comprehensive Locust load testing scripts from your API documentation (OpenAPI/Swagger specs). Using advanced AI capabilities, it creates realistic test scenarios, handles complex authentication flows, and generates production-ready performance tests.
 
-## [0.1.7] - 2025-11-11
-## 🆕 What's New in 0.1.7
+## [0.1.8] - 2025-11-18
+### 🆕 What's New in 0.1.8
 
-**Improved Naming Convention:** Generated class names now automatically capitalize group names to ensure consistent and professional naming in generated Python code.
+**🔐 Smart Authentication Integration:**
+- Seamless integration with existing `base_workflow.py` authentication patterns
+- Automatic detection and reuse of existing authentication methods
+- Zero duplication of authentication logic across test files
+- Smart 401 response handling with automatic re-authentication
+- Configurable authentication retry mechanisms
 
-**MongoDB Environment Setup:** Added example MongoDB variables (MONGODB_URI, MONGODB_DB_NAME, etc.) in the .env.example file to make it easier to configure MongoDB connections.
+**📊 Comprehensive Test Scenario Framework:**
+- **Weighted scenario distribution** for realistic load patterns:
+  - 60% Positive scenarios (happy path, valid data)
+  - 25% Negative scenarios (validation errors, missing fields)
+  - 10% Edge cases (boundary testing, unicode characters)
+  - 4% State-dependent scenarios (concurrent operations, duplicates)
+  - 1% Security scenarios (injection attacks, vulnerability detection)
+- **Enhanced test data generators** supporting all scenario types
+- **Security vulnerability detection** with immediate alerting for critical issues
 
 
 ## ✨ Features

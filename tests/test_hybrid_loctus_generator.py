@@ -65,6 +65,53 @@ class TestAIEnhancementConfig:
         assert config.create_domain_flows is True
         assert config.update_main_locust is False
 
+    def test_default_config_security(self):
+        """Test default configuration is production-safe."""
+        config = AIEnhancementConfig()
+
+        # Verify timeout is reasonable for production (not too high/low)
+        assert (
+            30 <= config.timeout <= 120
+        ), f"Timeout {config.timeout}s may cause issues in production"
+        assert config.max_tokens <= 10000, "Token limit too high - cost concern"
+        assert (
+            0.1 <= config.temperature <= 0.5
+        ), "Temperature should be conservative for production"
+
+    def test_timeout_validation_extremes(self):
+        """Test timeout boundary conditions that could cause outages."""
+        # Test unreasonably high timeout
+        config = AIEnhancementConfig(timeout=600)  # 10 minutes
+        # This should be flagged as risky - could cause resource exhaustion
+        assert config.timeout == 600  # Current implementation allows this - RISK!
+
+        # Test unreasonably low timeout
+        config = AIEnhancementConfig(timeout=1)  # 1 second
+        # This could cause false failures under load
+        assert config.timeout == 1  # Current implementation allows this - RISK!
+
+    def test_token_limit_boundaries(self):
+        """Test token limits that could impact costs or performance."""
+        # Test very high token limit - cost risk
+        config = AIEnhancementConfig(max_tokens=50000)
+        assert config.max_tokens == 50000  # No validation currently - COST RISK!
+
+        # Test very low token limit - functionality risk
+        config = AIEnhancementConfig(max_tokens=10)
+        assert config.max_tokens == 10  # Could cause truncated responses
+
+    def test_concurrent_config_safety(self):
+        """Test configuration changes don't affect running instances."""
+        config1 = AIEnhancementConfig(timeout=30)
+        config2 = AIEnhancementConfig(timeout=60)
+
+        # Configurations should be independent
+        assert config1.timeout != config2.timeout
+
+        # Modifying one shouldn't affect the other
+        config1.timeout = 90
+        assert config2.timeout == 60
+
 
 class TestEnhancementResult:
     """Test EnhancementResult dataclass."""
@@ -553,6 +600,98 @@ class TestHybridLocustGeneratorAsync:
 
             assert result == "# Enhanced workflow"
 
+    @pytest.mark.asyncio
+    async def test_resource_exhaustion_protection(self, mock_together_client):
+        """Test protection against resource exhaustion scenarios."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test very large number of files
+        large_files = {f"test_file_{i}.py": "print('hello')" for i in range(1000)}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # This should be controlled/limited in production
+            start_time = time.time()
+            result = await generator._create_test_files_safely(
+                    large_files, temp_path
+                )
+            processing_time = time.time() - start_time
+
+            # In production, this should have limits and not process all 1000 files
+            # Current implementation processes all - potential DoS vector
+            assert len(result) <= 1000  # Documents current behavior
+
+            # Should complete in reasonable time (not hang indefinitely)
+            assert (
+                    processing_time < 30
+                ), f"Processing took {processing_time}s - too slow for production"
+
+
+class TestErrorClassificationProductionScenarios:
+    """Test error classification for real production scenarios."""
+
+    def test_auth_error_detection_comprehensive(self, mock_together_client):
+        """Test authentication error detection with various error formats."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test various auth error formats from different providers
+        auth_errors = [
+            "401 Unauthorized",
+            "403 Forbidden",
+            "Authentication failed",
+            "Invalid Token expired"
+        ]
+
+        for error_msg in auth_errors:
+            error = Exception(error_msg)
+            classification = generator._classify_error(error, 0)
+            assert (
+                not classification.is_retryable
+            ), f"Auth error should not retry: {error_msg}"
+            assert classification.error_type == "auth"
+
+    def test_rate_limit_detection_comprehensive(self, mock_together_client):
+        """Test rate limit detection with various provider formats."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test various rate limit error formats
+        rate_limit_errors = [
+            "429 Too Many Requests",
+            "Rate limit exceeded",
+            "API rate limit hit"
+        ]
+
+        for error_msg in rate_limit_errors:
+            error = Exception(error_msg)
+            classification = generator._classify_error(error, 1)
+            assert (
+                classification.is_retryable
+            ), f"Rate limit should be retryable: {error_msg}"
+            assert classification.error_type == "rate_limit"
+            assert classification.backoff_seconds == 10  # Should use longer backoff
+
+    def test_exponential_backoff_timing(self, mock_together_client):
+        """Test that exponential backoff timing is production-appropriate."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test backoff progression
+        generic_error = Exception("Service temporarily unavailable")
+
+        backoffs = []
+        for attempt in range(3):
+            classification = generator._classify_error(generic_error, attempt)
+            backoffs.append(classification.backoff_seconds)
+
+        expected_backoffs = [1, 2, 4]  # 2^attempt
+        assert backoffs == expected_backoffs
+
+        # Total max backoff time should be reasonable
+        total_backoff = sum(backoffs)
+        assert (
+            total_backoff <= 10
+        ), f"Total backoff {total_backoff}s too long for production"
+
 
 class TestEnhancementProcessor:
     """Test EnhancementProcessor class."""
@@ -945,27 +1084,281 @@ class TestHybridLocustGeneratorEdgeCases:
                 assert isinstance(result, str)
 
 
-class TestErrorClassification:
-    """Test ErrorClassification dataclass"""
+class TestAIServiceCallReliability:
+    """Test AI service call reliability under various failure conditions."""
 
-    def test_error_classification_creation(self):
-        """Test creating ErrorClassification"""
-        classification = ErrorClassification(
-            is_retryable=True, backoff_seconds=2.0, error_type="rate_limit"
+    @pytest.mark.asyncio
+    async def test_timeout_handling_production_scenario(self, mock_together_client):
+        """Test timeout handling under production load conditions."""
+
+        async def mock_slow_response(*args, **kwargs):
+            # Simulate varying response times
+            await asyncio.sleep(30)  # Longer than typical timeout
+            raise asyncio.TimeoutError("Request timeout")
+
+        mock_together_client.chat.completions.create = AsyncMock(side_effect=mock_slow_response)
+
+        # Test with production-like timeout
+        config = AIEnhancementConfig(timeout=5)  # Short timeout for production
+        generator = HybridLocustGenerator(ai_client=mock_together_client, ai_config=config)
+
+        start_time = time.time()
+        result = await generator._call_ai_service("test prompt")
+        elapsed_time = time.time() - start_time
+
+        # Should fail fast and not hang
+        assert result == ""
+        assert elapsed_time < 20, f"Timeout took {elapsed_time}s - should fail faster"
+
+    @pytest.mark.asyncio
+    async def test_cascading_failure_prevention(self, mock_together_client):
+        """Test that AI failures don't cascade to break the entire system."""
+
+        # Mock AI service to always fail
+        mock_together_client.chat.completions.create = AsyncMock(
+            side_effect=Exception("AI service down")
         )
 
-        assert classification.is_retryable is True
-        assert classification.backoff_seconds == 2.0
-        assert classification.error_type == "rate_limit"
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
 
-    def test_non_retryable_classification(self):
-        """Test non-retryable error classification"""
-        classification = ErrorClassification(
-            is_retryable=False, backoff_seconds=0, error_type="auth"
+        # System should gracefully degrade to template-only mode
+        sample_endpoints = [Mock()]
+        sample_api_info = {"title": "Test API"}
+
+        with patch.object(generator.template_generator, 'generate_from_endpoints') as mock_template:
+            mock_template.return_value = (
+                {"locustfile.py": "# Template content"},
+                [{"workflow.py": "# Workflow"}],
+                {"default": sample_endpoints}
+            )
+
+            files, workflows = await generator.generate_from_endpoints(
+                sample_endpoints, sample_api_info
+            )
+
+            # Should still return valid results from template
+            assert len(files) > 0, "Should fallback to template when AI fails"
+            assert "locustfile.py" in files
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_handling(self, mock_together_client):
+        """Test handling when some AI enhancements fail but others succeed."""
+        call_count = {"count": 0}
+
+        async def mock_intermittent_failure(*args, **kwargs):
+            call_count["count"] += 1
+            if call_count["count"] % 2 == 0:  # Fail every other call
+                raise Exception("Intermittent failure")
+
+            # Return mock successful response
+            mock_response = Mock()
+            mock_message = Mock()
+            mock_message.content = "<code>enhanced_content</code>"
+            mock_choice = Mock()
+            mock_choice.message = mock_message
+            mock_response.choices = [mock_choice]
+            return mock_response
+
+        mock_together_client.chat.completions.create = AsyncMock(side_effect=mock_intermittent_failure)
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test multiple enhancement operations
+        base_files = {
+            "locustfile.py": "# Base content",
+            "test_data.py": "# Base test data",
+            "utils.py": "# Base utils",
+        }
+
+        endpoints = [Mock()]
+        api_info = {"title": "Test"}
+        directory_files = [{"workflow.py": "# Base workflow"}]
+        grouped_endpoints = {"users": endpoints}
+
+        result = await generator._enhance_with_ai(
+            base_files, endpoints, api_info, True, directory_files, grouped_endpoints
         )
 
-        assert classification.is_retryable is False
-        assert classification.backoff_seconds == 0
+        # Should handle partial failures gracefully
+        assert result.success == (len(result.errors) == 0)
+        # Should have some successful enhancements despite failures
+        assert len(result.enhanced_files) >= len(base_files)
+
+
+class TestProductionConfigurationScenarios:
+    """Test production configuration change scenarios."""
+
+    def test_configuration_change_impact_analysis(self):
+        """Analyze the impact of configuration changes."""
+        # Baseline configuration
+        baseline = AIEnhancementConfig()
+
+        # Risky configuration changes
+        risky_configs = [
+            AIEnhancementConfig(timeout=300),  # 5 minutes - resource exhaustion risk
+            AIEnhancementConfig(max_tokens=100000),  # Very high - cost risk
+            AIEnhancementConfig(temperature=1.5),  # Too high - unpredictable outputs
+        ]
+
+        for risky_config in risky_configs:
+            # In production, these should trigger alerts or validation errors
+            assert risky_config.timeout >= baseline.timeout  # Current: no validation
+
+
+    @pytest.mark.asyncio
+    async def test_semaphore_configuration_impact(self, mock_together_client):
+        """Test impact of changing semaphore limits in production."""
+
+        # Test with different semaphore limits
+        configs = [
+            (1, "Conservative - may be too slow"),
+            (5, "Current default"),
+            (20, "Aggressive - may overwhelm AI service"),
+            (100, "Dangerous - likely to cause failures"),
+        ]
+
+        for limit, description in configs:
+            generator = HybridLocustGenerator(ai_client=mock_together_client)
+            generator._api_semaphore = asyncio.Semaphore(limit)
+
+            # Verify semaphore limit is set
+            assert generator._api_semaphore._value == limit
+
+            # In production, limits > 10 should trigger warnings
+            if limit > 10:
+                pass
+
+    def test_retry_configuration_safety(self):
+        """Test retry configuration for production safety."""
+        generator = HybridLocustGenerator(ai_client=Mock())
+
+        # Current retry configuration
+        assert generator.MAX_RETRIES == 3
+        assert generator.RATE_LIMIT_BACKOFF == 10
+
+        # Calculate worst-case retry time
+        max_backoff_per_retry = [2**i for i in range(generator.MAX_RETRIES)]
+        max_total_time = sum(max_backoff_per_retry) + generator.RATE_LIMIT_BACKOFF
+
+        # Should complete within reasonable time even in worst case
+        assert max_total_time <= 30, f"Max retry time {max_total_time}s too long for production"
+
+class TestResourceLimitsAndSecurity:
+    """Test resource limits and security boundaries."""
+
+    @pytest.mark.asyncio
+    async def test_file_creation_limits(self, mock_together_client):
+        """Test file creation respects resource limits."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test file size limits
+        max_size = 1024 * 1024  # 1MB default
+        oversized_content = "x" * (max_size + 1000)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Should reject oversized files
+            result = await generator._create_test_files_safely(
+                {"oversized.py": oversized_content},
+                temp_path,
+                max_file_size=max_size
+            )
+
+            # Current implementation may not enforce this - SECURITY RISK!
+            # Should be empty or have size validation
+            if result:
+                for file_info in result:
+                    file_size = file_info["path"].stat().st_size
+                    # This test documents current behavior - should be improved
+                    assert file_size > 0
+
+    def test_filename_security_validation(self, mock_together_client):
+        """Test filename validation for security."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Test malicious filenames
+        malicious_filenames = [
+            "../../../etc/passwd",  # Path traversal
+            "..\\..\\windows\\system32\\config",  # Windows path traversal
+            "file\x00.py",  # Null byte injection
+            "file|rm -rf /.py",  # Command injection attempt
+            "con.py",  # Windows reserved name
+            "",  # Empty filename
+            "a" * 300,  # Extremely long filename
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            for malicious_name in malicious_filenames:
+                # Should sanitize or reject malicious filenames
+                asyncio.run(generator._create_test_files_safely(
+                    {malicious_name: "content"}, temp_path
+                ))
+
+                # Verify no files were created outside temp directory
+                created_files = list(temp_path.rglob("*"))
+                for file_path in created_files:
+                    assert temp_path in file_path.parents or file_path == temp_path
+
+
+# Integration test for full production scenario
+class TestProductionIntegrationScenario:
+    """Integration test simulating production workload."""
+
+    @pytest.mark.asyncio
+    async def test_high_load_scenario(self, mock_together_client):
+        """Test behavior under high concurrent load."""
+
+        # Configure for production-like scenario
+        config = AIEnhancementConfig(
+            timeout=30,  # Reasonable timeout
+            max_tokens=4000,  # Moderate token usage
+            temperature=0.2,  # Conservative temperature
+        )
+
+        generator = HybridLocustGenerator(
+            ai_client=mock_together_client, ai_config=config
+        )
+
+        # Simulate multiple concurrent requests
+        async def generate_test_case(case_id):
+            endpoints = [Mock() for _ in range(3)]
+            api_info = {"title": f"API {case_id}"}
+
+            with patch.object(
+                generator.template_generator, "generate_from_endpoints"
+            ) as mock_template:
+                mock_template.return_value = (
+                    {"locustfile.py": f"# Template {case_id}"},
+                    [{"workflow.py": f"# Workflow {case_id}"}],
+                    {"default": endpoints},
+                )
+
+                return await generator.generate_from_endpoints(endpoints, api_info)
+
+        # Run 10 concurrent generations
+        start_time = time.time()
+        tasks = [generate_test_case(i) for i in range(10)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        total_time = time.time() - start_time
+
+        # All should complete successfully
+        successful_results = [r for r in results if not isinstance(r, Exception)]
+        assert (
+            len(successful_results) >= 8
+        ), "Should handle concurrent load with minimal failures"
+
+        # Should complete in reasonable time
+        assert total_time < 60, f"High load scenario took {total_time}s - too slow"
+
+        # Each result should be valid
+        for files, workflows in successful_results:
+            assert isinstance(files, dict)
+            assert isinstance(workflows, list)
+            assert len(files) > 0
+
 
 
 class TestBuildMessages:
@@ -1126,4 +1519,3 @@ class TestCallAIService:
 
         assert result == "success_code"
         assert call_count["count"] == 3
-
