@@ -316,14 +316,16 @@ def sample_endpoints():
         ),
     ]
 
+
 @pytest.fixture
 def sample_base_files():
-        """Sample base files for testing."""
-        return {
-            "locustfile.py": "# Main locust file",
-            "test_data.py": "# Test data content",
-            "utils.py": "# Utility functions",
-        }
+    """Sample base files for testing."""
+    return {
+        "locustfile.py": "# Main locust file",
+        "test_data.py": "# Test data content",
+        "utils.py": "# Utility functions",
+    }
+
 
 @pytest.fixture()
 def sample_grouped_endpoints():
@@ -339,6 +341,7 @@ def sample_grouped_endpoints():
         "users": [users_endpoint],
         "Authentication": [auth_endpoint],
     }
+
 
 @pytest.fixture
 def sample_api_info():

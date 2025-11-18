@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
-base_workflow_path="base_workflow.py"
+base_workflow_path = "base_workflow.py"
 
 
 @dataclass
@@ -116,30 +116,31 @@ class EnhancementProcessor:
         return enhanced_files, enhancements
 
     def _get_base_workflow_content(self, directory_files: List[Dict[str, Any]]) -> str:
-        base_files = self.locust_generator.get_files_by_key(directory_files, base_workflow_path)
+        base_files = self.locust_generator.get_files_by_key(
+            directory_files, base_workflow_path
+        )
         if not base_files:
             return ""
         workflow_dict = base_files[0]
         return workflow_dict.get(base_workflow_path) or ""
 
     async def _process_workflow_item(
-            self,
-            file_dict: Dict[str, Any],
-            base_files: Dict[str, str],
-            base_workflow_content: str,
-            grouped_endpoints: Dict[str, List[Endpoint]],
-            db_type: str,
-            template: Optional[str] = None
-    ):
+        self,
+        file_dict: Dict[str, Any],
+        base_files: Dict[str, str],
+        base_workflow_content: str,
+        grouped_endpoints: Dict[str, List[Endpoint]],
+        db_type: str,
+        template: Optional[str] = None,
+    ) -> Dict[str, Any] | None:
         return await self._enhance_single_workflow(
             file_dict,
             base_files,
             base_workflow_content,
             grouped_endpoints,
             db_type,
-            template_path=template,
+            template_path=template or "workflow.j2",
         )
-
 
     async def process_workflow_enhancements(
         self,
@@ -186,7 +187,7 @@ class EnhancementProcessor:
                 base_workflow_content=base_workflow_content,
                 grouped_endpoints=grouped_endpoints,
                 db_type=db_type,
-                template=None,
+                template="",
             )
             if result:
                 enhanced_directory_files.append(result["files"])
@@ -201,7 +202,7 @@ class EnhancementProcessor:
         base_workflow_files: str,
         grouped_endpoints: Dict[str, List[Endpoint]],
         db_type: str = "",
-        template_path:str="workflow.j2"
+        template_path: str = "workflow.j2",
     ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
@@ -216,7 +217,7 @@ class EnhancementProcessor:
                 grouped_enpoints=workflow_endpoints_dict,
                 auth_endpoints=auth_endpoints,
                 db_type=db_type,
-                template_path=template_path
+                template_path=template_path,
             )
             if enhanced_workflow:
                 return {
@@ -282,7 +283,15 @@ class HybridLocustGenerator:
         self._setup_jinja_env()
         self.MAX_RETRIES = 3
         self.RATE_LIMIT_BACKOFF = 10
-        self.NON_RETRYABLE_CODES = ["401", "403", "unauthorized", "forbidden","authentication","unauthorized", "invalid token"]
+        self.NON_RETRYABLE_CODES = [
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "authentication",
+            "unauthorized",
+            "invalid token",
+        ]
         self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
 
     def _find_project_root(self) -> Path:
@@ -384,7 +393,6 @@ class HybridLocustGenerator:
                     grouped_enpoints,
                     custom_requirement,
                     db_type,
-
                 )
                 if enhancement_result.success:
                     logger.info(
@@ -482,7 +490,7 @@ class HybridLocustGenerator:
         base_files: Dict[str, str],
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-        include_auth:bool,
+        include_auth: bool,
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         custom_requirement: Optional[str] = None,
@@ -526,7 +534,7 @@ class HybridLocustGenerator:
         base_files: Dict[str, str],
         endpoints: List[Endpoint],
         api_info: Dict[str, Any],
-            include_auth:bool,
+        include_auth: bool,
         directory_files: List[Dict[str, Any]],
         grouped_endpoints: Dict[str, List[Endpoint]],
         custom_requirement: Optional[str] = None,
@@ -566,7 +574,6 @@ class HybridLocustGenerator:
 
         # Process workflow enhancements separately (more complex logic)
         try:
-
             (
                 workflow_files,
                 workflow_enhancements,
@@ -628,7 +635,7 @@ class HybridLocustGenerator:
         grouped_enpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
-        template_path:str="workflow.j2"
+        template_path: str = "workflow.j2",
     ) -> Optional[str]:
         try:
             template = self.jinja_env.get_template(template_path)

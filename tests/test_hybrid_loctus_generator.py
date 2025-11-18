@@ -925,7 +925,7 @@ class TestEnhancementProcessor:
 
         # Verify it was called with template=None (default)
         call_args = processor._process_workflow_item.call_args
-        assert call_args[1]["template"] is None
+        assert call_args[1]["template"] is ''
 
     @pytest.mark.asyncio
     async def test_process_workflow_enhancements_result_none_handling(self):
