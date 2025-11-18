@@ -1,0 +1,278 @@
+CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
+
+TASK: Enhance this Locust workflow file with realistic load testing patterns and LOGICAL TASK ORDERING while PRESERVING ALL EXISTING FUNCTIONALITY AND CLASSES.
+
+STRICT REQUIREMENTS:
+
+1. ONLY use these exact API endpoints from OpenAPI spec:
+{{  grouped_enpoints }}
+
+2. MANDATORY CLASS PRESERVATION:
+   - KEEP ALL existing classes: BaseTaskMethods, BaseAPIUser, and any workflow-specific classes
+   - DO NOT remove BaseTaskMethods class under any circumstances
+   - DO NOT remove any existing methods or functionality
+   - DO NOT change existing class inheritance patterns
+   - EXTEND existing classes, never replace them
+
+3. AUTHENTICATION INTEGRATION STRATEGY:
+   Check Authentication Endpoints: {{ auth_endpoints }}
+
+   **Step 1: Analyze base_workflow.py for existing authentication:**
+   - Parse base_workflow content for existing login/logout/auth methods
+   - Check if BaseTaskMethods or BaseAPIUser already handle authentication
+   - Identify existing token management patterns
+
+   **Step 2: Authentication Decision Logic:**
+
+   **IF base_workflow.py contains authentication methods:**
+```python
+   # INHERIT authentication from base classes
+   class YourWorkflowTaskMethods(BaseTaskMethods, SequentialTaskSet):
+       def on_start(self):
+           super().on_start()  # Uses base auth
+           logger.info("Using inherited authentication from base workflow")
+
+       def on_stop(self):
+           super().on_stop()  # Uses base cleanup
+```
+
+   **IF base_workflow.py lacks authentication AND auth endpoints exist:**
+```python
+   # ADD authentication to workflow-specific class (NOT BaseTaskMethods)
+   class YourWorkflowTaskMethods(BaseTaskMethods, SequentialTaskSet):
+       def on_start(self):
+           super().on_start()  # Keep base functionality
+           self.login_and_get_token()  # Add auth for this workflow
+
+       def login_and_get_token(self):
+           """Login and store JWT/Bearer token for API requests"""
+           login_data = {
+               "email": "test@example.com",
+               "password": "test_password"
+               # Use actual login schema from auth endpoints
+           }
+           with self.client.post("/login", json=login_data, catch_response=True) as response:
+               #use actual endpoint from login endpoint
+               if response.status_code == 200:
+                   response_data = response.json()
+                   # Extract token from response (adapt to actual response structure)
+                   self.auth_token = (response_data.get("access_token") or
+                                    response_data.get("token") or
+                                    response_data.get("data", {}).get("token"))
+
+                   # Update headers for all subsequent requests
+                   if self.auth_token:
+                       if not hasattr(self, 'default_headers'):
+                           self.default_headers = {}
+                       self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
+                       # Update client headers
+                       self.client.headers.update(self.default_headers)
+
+                   response.success()
+                   logger.info("Authentication successful - token acquired")
+               else:
+                   response.failure(f"Login failed: {response.status_code}")
+
+       def logout_session(self):
+           """Logout and clear authentication token"""
+           if hasattr(self, 'auth_token') and self.auth_token:
+               with self.client.post("/logout", catch_response=True) as response:
+                   #use actual endpoint from logout endpoint
+                   if response.status_code in [200, 204]:
+                       self.auth_token = None
+                       # Remove auth header
+                       if "Authorization" in self.client.headers:
+                           del self.client.headers["Authorization"]
+                       response.success()
+                   else:
+                       response.failure(f"Logout failed: {response.status_code}")
+
+       def handle_401_retry(self, method, path, **kwargs):
+           """Handle 401 responses with automatic re-authentication"""
+           response = self.make_request(method, path, **kwargs)
+
+           # Check if response indicates auth failure
+           if (hasattr(response, 'status_code') and response.status_code == 401) or \
+              (isinstance(response, dict) and response.get('status_code') == 401):
+               logger.warning(f"401 Unauthorized - re-authenticating and retrying {method} {path}")
+               # Re-authenticate
+               self.login_and_get_token()
+               # Retry original request
+               response = self.make_request(method, path, **kwargs)
+
+           return response
+```
+
+4. TASK METHOD ENHANCEMENT PATTERN:
+   **IF auth endpoints exist, enhance all @task methods with 401 handling:**
+```python
+   @task(10)
+   def your_api_task(self):
+       """Enhanced task with authentication handling"""
+       # Use 401 retry wrapper for authenticated endpoints
+       response = self.handle_401_retry("GET", "/api/protected-endpoint")
+
+       if response:
+           # Process response and store data for dependent tasks
+           self._store_response_data("your_api_task", response)
+```
+
+   **IF no auth endpoints, keep existing pattern:**
+```python
+   @task(10)
+   def your_api_task(self):
+       """Standard task without authentication"""
+       response = self.make_request("GET", "/api/public-endpoint")
+       # Process response normally
+```
+
+5. DATA FLOW AND ID MANAGEMENT:
+   - ADD instance variables to store IDs in on_start(): self.reseller_id, self.user_id, etc.
+   - ADD methods to extract and store IDs from API responses
+   - ADD logic to use stored IDs in subsequent API calls
+   - CREATE realistic data dependencies between tasks
+```python
+   def _extract_and_store_ids(self, response_data, task_name):
+       """Extract IDs from API responses for use in dependent tasks"""
+       if response_data and isinstance(response_data, dict):
+           # Store common ID patterns
+           for id_field in ['id', 'user_id', 'reseller_id', 'wallet_id', 'order_id']:
+               if id_field in response_data:
+                   setattr(self, id_field, response_data[id_field])
+                   logger.info(f"Stored {id_field}: {response_data[id_field]} from {task_name}")
+
+           # Store nested IDs
+           if 'data' in response_data and isinstance(response_data['data'], dict):
+               for id_field in ['id', 'user_id', 'reseller_id']:
+                   if id_field in response_data['data']:
+                       setattr(self, id_field, response_data['data'][id_field])
+```
+
+6. LOGICAL TASK SEQUENCE WITH AUTHENTICATION:
+```python
+   class YourWorkflowTaskMethods(BaseTaskMethods, SequentialTaskSet):
+       def on_start(self):
+           super().on_start()  # KEEP base functionality
+           # Initialize ID storage
+           self.stored_ids = {}
+
+           # Add authentication if auth endpoints exist
+           {{ "self.login_and_get_token()" if auth_endpoints else "# No authentication needed" }}
+
+       # Authentication Phase (only if auth endpoints exist)
+       {{ "# Authentication tasks will be added here if auth_endpoints exist" if auth_endpoints else "" }}
+
+       # Creation Phase - Create resources and store IDs
+       @task(10)
+       def create_primary_resource(self):
+           """Create main resource and store ID for dependent operations"""
+           # Implementation with ID storage
+
+       # Retrieval Phase - Get data using stored IDs
+       @task(8)
+       def get_resource_by_stored_id(self):
+           """Retrieve resource using previously stored ID"""
+           if hasattr(self, 'primary_resource_id'):
+               # Use stored ID in request
+
+       # Operations Phase - Perform business operations
+       @task(7)
+       def perform_operations_with_stored_ids(self):
+           """Execute business operations using stored resource IDs"""
+
+       # Update Phase - Modify resources
+       @task(5)
+       def update_resources_with_stored_ids(self):
+           """Update resources using stored IDs"""
+
+       # Cleanup Phase - Remove test data
+       @task(3)
+       def cleanup_created_resources(self):
+           """Clean up resources created during testing"""
+
+       def on_stop(self):
+           # Cleanup before calling super
+           {{ "self.logout_session()" if auth_endpoints else "# No logout needed" }}
+           super().on_stop()  # KEEP base cleanup
+```
+
+{% if db_type=="mongo" %}
+7. MONGODB INTEGRATION (ADD to BaseTaskMethods class):
+```python
+   # ADD this to the existing BaseTaskMethods class (don't create new class)
+   class BaseTaskMethods:
+       # ... existing methods stay here ...
+
+       # ADD MongoDB integration
+       try:
+           from data_provider import mongo_data_provider
+           MONGODB_ENABLED = True
+       except ImportError:
+           MONGODB_ENABLED = False
+           mongo_data_provider = None
+
+       def _setup_mongodb_integration(self):
+           """Setup MongoDB data source if enabled"""
+           if self.MONGODB_ENABLED and getattr(config, 'enable_mongodb', False):
+               self.use_database_data = True
+               self.test_document_ids = []
+           else:
+               self.use_database_data = False
+
+       def get_mongodb_test_data(self, collection_name, filter_criteria=None):
+           """Get test data from MongoDB"""
+           if self.use_database_data and self.MONGODB_ENABLED:
+               if filter_criteria:
+                   return mongo_data_provider.get_document(collection_name, filter_criteria)
+               else:
+                   return mongo_data_provider.get_multiple_documents(collection_name, {})
+           return None
+
+       def cleanup_mongodb_test_data(self):
+           """Clean up MongoDB test documents"""
+           if self.use_database_data and self.MONGODB_ENABLED and hasattr(self, 'test_document_ids'):
+               for doc_id in self.test_document_ids:
+                   try:
+                       mongo_data_provider.delete_document("test_collection", {"_id": doc_id})
+                   except Exception as e:
+                       logger.warning(f"Failed to cleanup test document {doc_id}: {e}")
+```
+{% endif %}
+
+8. ERROR HANDLING AND VALIDATION:
+   - ADD comprehensive error handling to all task methods
+   - ADD response validation for expected status codes
+   - ADD proper logging for debugging
+   - ADD graceful degradation for missing dependencies
+
+9. TEST DATA INTEGRATION:
+   - USE existing test_data.py functions
+   - ENHANCE data generation with realistic patterns
+   - ADD data correlation between related API calls
+   - CREATE proper data cleanup procedures
+
+10. VALIDATION RULES:
+    - Every @task method must correspond to an actual OpenAPI endpoint
+    - PRESERVE ALL existing classes and methods (especially BaseTaskMethods)
+    - INHERIT from base classes using super() calls
+    - ADD authentication only if auth endpoints exist and base_workflow lacks it
+    - MAINTAIN all existing functionality while adding enhancements
+    - USE proper task weights for realistic load distribution
+
+CURRENT WORKFLOW FILE:
+{{base_content}}
+
+BASE WORKFLOW: {{base_workflow}}
+
+TEST DATA AVAILABLE: {{test_data_content}}
+
+OUTPUT REQUIREMENTS:
+- Return the complete enhanced file preserving ALL existing classes
+- Keep BaseTaskMethods class intact with all existing methods
+- Add authentication only where needed based on endpoint availability
+- Maintain proper inheritance hierarchy
+- Include realistic task ordering and data flow
+- Add comprehensive error handling and logging
+
+Format:
+<code>your_complete_enhanced_python_code_here</code>

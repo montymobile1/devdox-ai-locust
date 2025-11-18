@@ -4,8 +4,15 @@ Tests for hybrid_loctus_generator module
 
 import pytest
 import asyncio
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from pathlib import Path
+
+import tempfile
+import shutil
+import time
+import concurrent.futures
+import psutil
+import os
 
 from devdox_ai_locust.hybrid_loctus_generator import (
     HybridLocustGenerator,
@@ -260,6 +267,36 @@ class TestHybridLocustGenerator:
         assert "users" in resources
         assert "posts" in resources
         assert "comments" in resources
+
+    @pytest.mark.asyncio
+
+    async def test_memory_usage_with_large_files(self, mock_together_client):
+
+        """Test memory behavior with large file content."""
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+
+
+        # Create files with large content
+
+        large_content = "x" * (500 * 1024)  # 500KB each
+        large_files = {f"large_{i}.py": large_content for i in range(10)}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+
+            temp_path = Path(temp_dir)
+
+            # Monitor memory usage
+            process = psutil.Process(os.getpid())
+            memory_before = process.memory_info().rss
+
+            result = await generator._create_test_files_safely(large_files, temp_path)
+
+            memory_after = process.memory_info().rss
+            memory_increase = (memory_after - memory_before) / 1024 / 1024  # MB
+            # Should not consume excessive memory
+            assert memory_increase < 100, f"Memory increased by {memory_increase:.2f}MB - potential memory leak"
 
 
 class TestHybridLocustGeneratorAsync:
@@ -876,6 +913,7 @@ class TestHybridLocustGeneratorEdgeCases:
                 base_files,
                 sample_endpoints,
                 sample_api_info,
+                True,
                 directory_files,
                 grouped_endpoints,
             )
