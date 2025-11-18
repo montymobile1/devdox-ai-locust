@@ -726,6 +726,29 @@ class TestEnhancementProcessor:
         assert enhanced_files["locustfile.py"] == "# Enhanced content"
         assert "main_locust_update" in enhancements
 
+    def test_get_base_workflow_content_success(
+        self, mock_together_client
+    ):
+        """Test successful extraction of base workflow content."""
+        directory_files = [
+            {"workflow_users.py": "# Users workflow"},
+            {
+                "base_workflow.py": "# Base workflow content\nclass BaseWorkflow:\n    pass"
+            },
+            {"workflow_auth.py": "# Auth workflow"},
+        ]
+        generator = Mock(spec=HybridLocustGenerator)
+        generator.get_files_by_key.return_value = [
+            {
+                "base_workflow.py": "# Base workflow content\nclass BaseWorkflow:\n    pass"
+            }
+        ]
+        ai_config = AIEnhancementConfig()
+        enhancement_processor= EnhancementProcessor(ai_config, generator)
+
+        result = enhancement_processor._get_base_workflow_content(directory_files)
+        assert result == "# Base workflow content\nclass BaseWorkflow:\n    pass"
+
     @pytest.mark.asyncio
     async def test_process_domain_flows_enhancement(
         self, sample_endpoints, sample_api_info
@@ -761,6 +784,41 @@ class TestEnhancementProcessor:
 
         assert enhanced_files["test_data.py"] == "# Enhanced test data"
         assert "smart_test_data" in enhancements
+
+    @pytest.mark.asyncio
+    async def test_process_workflow_item_success(self, sample_base_files,
+        sample_grouped_endpoints):
+        """Test successful workflow item processing."""
+        workflow_item = {
+            "users_workflow.py": "# Users workflow content\nclass UsersWorkflow:\n    pass"
+        }
+
+        mock_generator =Mock(spec=HybridLocustGenerator)
+        enhanced_content = "# Enhanced users workflow\nclass EnhancedUsersWorkflow:\n    pass"
+        mock_generator._enhance_workflows.return_value = enhanced_content
+
+        ai_config = AIEnhancementConfig()
+
+        enhancement_processor = EnhancementProcessor(ai_config, mock_generator)
+        base_workflow_content = "# Base workflow template"
+        result = await enhancement_processor._process_workflow_item(
+            file_dict=workflow_item,
+            base_files=sample_base_files,
+            base_workflow_content=base_workflow_content,
+            grouped_endpoints=sample_grouped_endpoints,
+            db_type=""
+        )
+
+        # Verify result structure
+        assert result is not None
+        assert "files" in result
+        assert "enhancements" in result
+        assert result["files"]["users_workflow.py"] == enhanced_content
+        assert "enhanced_workflows_users_workflow.py" in result["enhancements"]
+
+        # Verify _enhance_workflows was called with correct parameters
+        mock_generator._enhance_workflows.assert_called_once()
+
 
     @pytest.mark.asyncio
     async def test_process_validation_enhancement(self, sample_endpoints):
@@ -1067,6 +1125,8 @@ class TestHybridLocustGeneratorEdgeCases:
         assert hasattr(generator, "jinja_env")
         assert generator.jinja_env is not None
 
+
+
     @pytest.mark.asyncio
     async def test_concurrent_ai_calls(self, mock_together_client):
         """Test multiple concurrent AI calls."""
@@ -1358,7 +1418,6 @@ class TestProductionIntegrationScenario:
             assert isinstance(files, dict)
             assert isinstance(workflows, list)
             assert len(files) > 0
-
 
 
 class TestBuildMessages:

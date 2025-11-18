@@ -316,6 +316,29 @@ def sample_endpoints():
         ),
     ]
 
+@pytest.fixture
+def sample_base_files():
+        """Sample base files for testing."""
+        return {
+            "locustfile.py": "# Main locust file",
+            "test_data.py": "# Test data content",
+            "utils.py": "# Utility functions",
+        }
+
+@pytest.fixture()
+def sample_grouped_endpoints():
+    users_endpoint = Mock(spec=Endpoint)
+    users_endpoint.path = "/users"
+    users_endpoint.method = "GET"
+
+    auth_endpoint = Mock(spec=Endpoint)
+    auth_endpoint.path = "/auth/login"
+    auth_endpoint.method = "POST"
+
+    return {
+        "users": [users_endpoint],
+        "Authentication": [auth_endpoint],
+    }
 
 @pytest.fixture
 def sample_api_info():
