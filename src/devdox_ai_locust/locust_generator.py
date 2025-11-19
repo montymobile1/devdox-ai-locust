@@ -658,39 +658,8 @@ class LocustTestGenerator:
         **FIXED: Generate user classes with proper structure**
         """
 
-        return '''
-    class LightUser(BaseAPIUser, BaseTaskMethods):
-        """Light user with occasional API usage patterns"""
-        weight = 3
-        wait_time = between(3, 8)  # Longer wait times
-
-        def on_start(self):
-            super().on_start()
-            self.user_type = "light"
-   
-
-    class RegularUser( BaseAPIUser, BaseTaskMethods):
-        """Regular user with normal API usage patterns"""
-        weight = 4
-        wait_time = between(1, 4)  # Moderate wait times
-        
-        def on_start(self):
-            super().on_start()
-            self.user_type = "regular"
-        
-
-
-    class PowerUser( BaseAPIUser, BaseTaskMethods):
-        """Power user with heavy API usage patterns"""
-        weight = 3
-        wait_time = between(0.5, 2)  # Shorter wait times
-
-        def on_start(self):
-            super().on_start()
-            self.user_type = "power"
-            
-
-    '''
+        template = self.jinja_env.get_template("user_classes.py.j2")
+        return template.render()
 
     def _generate_test_data_file(self, db_type: str = "") -> str:
         """Generate test_data.py file content"""

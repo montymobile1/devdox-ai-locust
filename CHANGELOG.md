@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.9] - 2025-11-19
+### 🆕 What's New in 0.1.9
+
+**✨ User Class Templates & Jinja-Based Generator Rendering :**
+- Added dedicated Jinja templates for user class generation.
+- Refactored the generator to render user classes exclusively through template files.
+- Improved maintainability and consistency across all generated resources.
+
+
 ## [0.1.8] - 2025-11-18
 ### 🆕 What's New in 0.1.8
 
