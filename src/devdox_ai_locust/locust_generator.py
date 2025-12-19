@@ -279,7 +279,7 @@ class LocustTestGenerator:
 
             # Properly indent task methods for class inclusion
             indented_task_methods = self._indent_methods(task_methods, indent_level=1)
-            indented_task_methods = ""
+
             # Generate the complete file content
             return self._build_locustfile_template(
                 api_info=api_info,
