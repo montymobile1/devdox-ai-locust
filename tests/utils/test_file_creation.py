@@ -1,6 +1,7 @@
 """
 Tests for file_creation utility module
 """
+import os
 
 import pytest
 import asyncio
@@ -425,22 +426,27 @@ class TestSafeFileCreatorIntegration:
         # Check that all files exist
         for i in range(10):
             assert (staging_dir / f"file_{i}.py").exists()
-
+    
     @pytest.mark.asyncio
     async def test_error_handling(self, temp_dir):
-        """Test error handling in file operations."""
-        creator = SafeFileCreator()
+        
+        
+        if os.geteuid() == 0:
+            # The test depends on normal permissions rules, but root bypasses those rules, this
+            # skips it when permission is root
+            pytest.skip(
+                "PermissionError behavior is not reliable when tests run as root."
+            )
 
-        # Test with read-only directory
+        creator = SafeFileCreator()
         readonly_dir = temp_dir / "readonly"
         readonly_dir.mkdir()
-        readonly_dir.chmod(0o444)  # Read-only
+        readonly_dir.chmod(0o555)  # traverse OK, no write (for non-root)
 
         try:
             with pytest.raises(PermissionError):
                 await creator.create_temp_file("test.py", "print('test')", readonly_dir)
         finally:
-            # Restore permissions for cleanup
             readonly_dir.chmod(0o755)
 
     def test_custom_config_integration(self):
