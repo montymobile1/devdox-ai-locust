@@ -67,6 +67,7 @@ docs = [
     "myst-parser>=0.18",
 ]
 test = [
+    "pyfakefs>=5.5.0",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-mock>=3.8",
