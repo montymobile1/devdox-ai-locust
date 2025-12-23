@@ -405,6 +405,121 @@ async def _async_generate(
 
 
 @cli.command()
+@click.argument("swagger_url")
+@click.option(
+    "--suite-path",
+    "suite_path",
+    type=click.Path(exists=True, path_type=Path),
+    required=True,
+    help="Path to existing Locust suite directory or locustfile.py",
+)
+@click.option(
+    "--custom-requirement",
+    type=str,
+    required=True,
+    help="Plain English requirement describing scenarios to append",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Optional override output directory (defaults to suite path)",
+)
+@click.option(
+    "--backup-dir",
+    type=click.Path(path_type=Path),
+    help="Directory to store backups (default: .backups under suite)",
+)
+@click.option(
+    "--together-api-key",
+    type=str,
+    envvar="TOGETHER_API_KEY",
+    help="Together AI API key (can also be set via TOGETHER_API_KEY env var)",
+)
+@click.pass_context
+def augment(
+    ctx: click.Context,
+    swagger_url: str,
+    suite_path: Path,
+    custom_requirement: str,
+    output: Optional[Path],
+    backup_dir: Optional[Path],
+    together_api_key: Optional[str],
+) -> None:
+    """Augment an existing Locust suite with new scenarios."""
+
+    try:
+        asyncio.run(
+            _async_augment(
+                ctx,
+                swagger_url,
+                suite_path,
+                custom_requirement,
+                output,
+                backup_dir,
+                together_api_key,
+            )
+        )
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        if ctx.obj["verbose"]:
+            import traceback
+
+            console.print(traceback.format_exc())
+        sys.exit(1)
+
+async def _async_augment(
+    ctx: click.Context,
+    swagger_url: str,
+    suite_path: Path,
+    custom_requirement: str,
+    output: Optional[Path],
+    backup_dir: Optional[Path],
+    together_api_key: Optional[str],
+) -> None:
+    """Async augmentation pipeline."""
+
+    start_time = datetime.now(timezone.utc)
+    _, api_key = _initialize_config(together_api_key)
+    output_dir = output or suite_path
+    suite_loader = LocustSuiteLoader(suite_path=output_dir)
+    snapshot = suite_loader.load()
+
+    console.print(f"[green]✓[/green] Loaded existing suite at {snapshot.root}")
+
+    # Backup before mutation
+    backup_manager = SuiteBackupManager()
+    backup_path = backup_manager.create_backup(snapshot.root, backup_root=backup_dir)
+    console.print(f"[blue]🗂️[/blue] Backup created: {backup_path}")
+
+    # Schema processing
+    _, endpoints, api_info = await _process_api_schema(swagger_url, ctx.obj["verbose"])
+
+    # Plan augmentation
+    prompt_dir = Path(__file__).parent / "prompt"
+    enhancer = IncrementalEnhancer(ai_client=AsyncTogether(api_key=api_key), prompt_dir=prompt_dir)
+    augmentation_plan = await enhancer.plan_augmentation(
+        snapshot=snapshot,
+        endpoints=endpoints,
+        api_info=api_info,
+        custom_requirement=custom_requirement,
+    )
+
+    # Apply updates
+    writer = SuiteAugmentationWriter(snapshot.root)
+    before_state = snapshot.file_map()
+    after_state = writer.apply(snapshot, augmentation_plan.updates)
+
+    # Write changelog
+    changelog = ChangelogWriter(snapshot.root)
+    changelog_path = changelog.write(before_state, after_state, custom_requirement)
+    console.print(f"[green]✓[/green] Augmentation applied. Changelog: {changelog_path}")
+
+    processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+    console.print(f"[blue]⏱️[/blue] Processing time: {processing_time:.2f}s")
+
+
+@cli.command()
 @click.argument("test_file", type=click.Path(exists=True))
 @click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
 @click.option("--spawn-rate", "-r", type=float, default=2, help="Rate to spawn users")

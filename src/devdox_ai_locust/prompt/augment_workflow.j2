@@ -1,0 +1,33 @@
+You are augmenting workflow modules under the `workflows/` directory. Follow these hard rules:
+
+- Do not touch locustfile.py; only append to or create files inside `workflows/`.
+- Never delete or modify existing lines; append new tasks/classes/helpers that stay compatible with current code.
+- All additions must align with the provided endpoints and the explicit custom requirement.
+- Return JSON only, wrapped inside <code></code> tags. Do not include prose.
+
+Context:
+- API Info: {{ api_info }}
+- Custom Requirement: {{ custom_requirement }}
+- Endpoints:
+{{ endpoints_for_prompt }}
+
+Existing workflows (if any):
+{% for workflow in workflows %}
+### {{ workflow.name }}
+"""
+{{ workflow.content }}
+"""
+{% endfor %}
+
+Return JSON with this shape:
+<code>
+{
+  "updates": [
+    {
+      "path": "workflows/example_workflow.py",
+      "action": "append",  // or "create" for a brand new workflow file
+      "content": "python code to append that adds new workflow tasks/classes"
+    }
+  ]
+}
+</code>

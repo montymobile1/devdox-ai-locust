@@ -1,0 +1,30 @@
+You are augmenting only the main Locust file (locustfile.py). Follow these hard rules:
+
+- Never delete or modify existing lines; only append new tasks/classes/helpers to locustfile.py.
+- Keep authentication or shared helpers intact; add imports if new dependencies are required.
+- All additions must map to the provided endpoints and the explicit custom requirement.
+- Return JSON only, wrapped inside <code></code> tags. Do not include prose.
+
+Context:
+- API Info: {{ api_info }}
+- Custom Requirement: {{ custom_requirement }}
+- Endpoints:
+{{ endpoints_for_prompt }}
+
+Current locustfile.py:
+"""
+{{ locust_content }}
+"""
+
+Return JSON with this shape:
+<code>
+{
+  "updates": [
+    {
+      "path": "locustfile.py",
+      "action": "append",
+      "content": "python code to append that adds new Locust tasks/classes"
+    }
+  ]
+}
+</code>

@@ -118,7 +118,27 @@ devdox_ai_locust generate [OPTIONS] SWAGGER_URL
 | `--custom-requirement` | | String | Custom AI instructions | None |
 | `--together-api-key` | | String | Together AI API key | From env |
 
+### Augment an Existing Suite
 
+Use `augment` to append new scenarios to an already-generated Locust suite without replacing existing code. A backup is created automatically before changes, and a diff report is written under `.diff/`.
+
+```bash
+devdox_ai_locust augment https://api.example.com/openapi-v2.json \
+  --suite-path ./output \
+  --custom-requirement "Add concurrency tests for checkout with invalid cards" \
+  --together-api-key $TOGETHER_API_KEY
+```
+
+Key points:
+- `--suite-path` can point to `locustfile.py` or the suite directory.
+- `--custom-requirement` is required; keep it aligned with the API endpoints.
+- Backups are stored in `.backups/` (or your custom `--backup-dir`) and named with UTC timestamps.
+- A changelog Markdown diff is written to `.diff/augment_<timestamp>.md`.
+
+### Verbose and Debug Logging
+
+- Pass `--verbose` to any command for richer console output.
+- Enable debug logs by setting Python logging (e.g., `export LOG_LEVEL=DEBUG` or configuring `logging.basicConfig(level=logging.DEBUG)` before invoking the CLI). Debug is not a CLI flag; it follows standard Python logging configuration.
 
 
 ### Generated Test Structure
