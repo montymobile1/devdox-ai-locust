@@ -8,6 +8,8 @@ from rich.console import Console
 from rich.table import Table
 from together import AsyncTogether
 
+from devdox_ai_locust.incremental_enhancer import ChangelogWriter, IncrementalEnhancer, LocustSuiteLoader, SuiteAugmentationWriter, \
+    SuiteBackupManager
 from .hybrid_loctus_generator import HybridLocustGenerator
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema

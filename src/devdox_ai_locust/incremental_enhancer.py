@@ -7,7 +7,6 @@ existing logic; only append/create operations are permitted.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import tarfile
