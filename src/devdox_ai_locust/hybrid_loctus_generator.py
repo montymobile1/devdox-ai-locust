@@ -5,18 +5,22 @@ Combines reliable template-based generation with LLM enhancement for creativity
 and domain-specific optimizations.
 """
 
+import ast
 import re
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set, Callable, Awaitable
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
-from dataclasses import dataclass
+from pydantic import BaseModel, Field
 import uuid
 import shutil
 
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
+from devdox_ai_locust.schemas.progress import (
+    ProgressCallback, ProgressStatus, ProgressPhase
+)
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
 from together import AsyncTogether
@@ -29,20 +33,469 @@ data_provider_path = "data_provider.py"
 base_workflow_path = "base_workflow.py"
 workflow_jinja_path = "workflow.j2"
 
+# Critical classes that MUST exist in each file after AI enhancement
+# If these are missing, the AI has corrupted the file and we must use the original
+CRITICAL_CLASSES = {
+    "test_data.py": ["TestDataGenerator"],
+    "utils.py": ["ResponseValidator", "RequestLogger", "PerformanceMonitor", "DataManager"],
+}
 
-@dataclass
-class ErrorClassification:
+# Critical functions that MUST exist in each file
+CRITICAL_FUNCTIONS = {
+    "test_data.py": ["generate_json_data", "generate_string", "generate_id"],
+    "utils.py": ["validate_response", "log_request"],
+}
+
+
+class SafeCodeMerger:
+    """
+    Safely merges AI-generated code additions into original code.
+
+    This approach:
+    1. ALWAYS keeps the original code intact
+    2. Only ADDS new methods/classes from AI output
+    3. Never replaces or modifies existing code
+    4. Uses AST parsing for safety
+    """
+
+    @staticmethod
+    def get_existing_names(code: str) -> Tuple[Set[str], Set[str], Set[str]]:
+        """
+        Extract existing class names, method names, and function names from code.
+
+        Returns:
+            Tuple of (class_names, method_names, function_names)
+        """
+        class_names: Set[str] = set()
+        method_names: Set[str] = set()
+        function_names: Set[str] = set()
+
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    class_names.add(node.name)
+                    # Get methods within the class
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef):
+                            method_names.add(f"{node.name}.{item.name}")
+                elif isinstance(node, ast.FunctionDef):
+                    # Top-level function
+                    if not any(isinstance(parent, ast.ClassDef) for parent in ast.walk(tree)):
+                        function_names.add(node.name)
+        except SyntaxError:
+            logger.warning("Failed to parse code with AST, falling back to regex")
+            # Fallback to regex
+            class_names = set(re.findall(r'class\s+(\w+)\s*[:\(]', code))
+            function_names = set(re.findall(r'^def\s+(\w+)\s*\(', code, re.MULTILINE))
+
+        return class_names, method_names, function_names
+
+    @staticmethod
+    def extract_new_methods_only(original_code: str, ai_code: str, target_class: str = None) -> str:
+        """
+        Extract ONLY new methods from AI code that don't exist in original.
+
+        This is a conservative approach that:
+        1. Identifies methods in AI output
+        2. Filters out any that already exist in original
+        3. Returns only the truly new additions
+
+        Handles both:
+        - Full class definitions from AI
+        - Standalone method definitions (method-only output)
+        """
+        if not ai_code or not ai_code.strip():
+            return ""
+
+        orig_classes, orig_methods, orig_functions = SafeCodeMerger.get_existing_names(original_code)
+
+        # Get all existing method names (without class prefix) for comparison
+        existing_method_names = set()
+        for method in orig_methods:
+            if "." in method:
+                existing_method_names.add(method.split(".")[-1])
+        existing_method_names.update(orig_functions)
+
+        try:
+            ai_tree = ast.parse(ai_code)
+        except SyntaxError:
+            logger.warning("AI code has syntax errors, trying to extract methods via regex")
+            # Fallback: extract method definitions via regex
+            return SafeCodeMerger._extract_methods_regex(ai_code, existing_method_names)
+
+        new_methods = []
+
+        for node in ast.iter_child_nodes(ai_tree):
+            if isinstance(node, ast.ClassDef):
+                # Check if this is an existing class we should add methods to
+                if node.name in orig_classes:
+                    # Extract only new methods from this class
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef):
+                            if item.name not in existing_method_names:
+                                try:
+                                    method_source = ast.get_source_segment(ai_code, item)
+                                    if method_source:
+                                        # Ensure proper indentation for class method
+                                        indented = SafeCodeMerger._indent_code(method_source, 4)
+                                        new_methods.append(f"    # AI-added method\n{indented}")
+                                except Exception:
+                                    pass
+
+            elif isinstance(node, ast.FunctionDef):
+                # Standalone method definition (AI returned methods only)
+                if node.name not in existing_method_names:
+                    try:
+                        method_source = ast.get_source_segment(ai_code, node)
+                        if method_source:
+                            # Add indentation for class method
+                            indented = SafeCodeMerger._indent_code(method_source, 4)
+                            new_methods.append(f"    # AI-added method\n{indented}")
+                    except Exception:
+                        pass
+
+        return "\n\n".join(new_methods)
+
+    @staticmethod
+    def _indent_code(code: str, spaces: int) -> str:
+        """Add indentation to code block."""
+        indent = " " * spaces
+        lines = code.split("\n")
+        # Check if already indented
+        if lines and lines[0].startswith(" " * spaces):
+            return code
+        return "\n".join(indent + line if line.strip() else line for line in lines)
+
+    @staticmethod
+    def _extract_methods_regex(ai_code: str, existing_methods: Set[str]) -> str:
+        """Fallback method extraction using regex when AST fails."""
+        # Match method definitions
+        pattern = r'(def\s+(\w+)\s*\([^)]*\).*?(?=\ndef\s|\Z))'
+        matches = re.findall(pattern, ai_code, re.DOTALL)
+
+        new_methods = []
+        for full_match, method_name in matches:
+            if method_name not in existing_methods:
+                indented = SafeCodeMerger._indent_code(full_match.strip(), 4)
+                new_methods.append(f"    # AI-added method\n{indented}")
+
+        return "\n\n".join(new_methods)
+
+    @staticmethod
+    def safe_merge(original_code: str, ai_additions: str, target_class: str = None) -> str:
+        """
+        Safely merge AI additions into original code.
+
+        This method:
+        1. ALWAYS returns the original code as base
+        2. Only appends new methods that don't exist
+        3. Never modifies existing code
+
+        Args:
+            original_code: The original template-generated code (ALWAYS preserved)
+            ai_additions: Code generated by AI (only new parts used)
+            target_class: If specified, add new methods to this class
+
+        Returns:
+            Original code with safe additions appended
+        """
+        if not ai_additions or not ai_additions.strip():
+            logger.info("No AI additions to merge, returning original")
+            return original_code
+
+        # Extract only new methods (handles syntax errors internally)
+        new_methods = SafeCodeMerger.extract_new_methods_only(
+            original_code, ai_additions, target_class
+        )
+
+        if not new_methods:
+            logger.info("No new methods found in AI output, returning original")
+            return original_code
+
+        # Find where to insert new methods (at the end of the target class)
+        if target_class:
+            # Find the class definition and locate the end of the class
+            # Look for the class and find where it ends
+            lines = original_code.split('\n')
+            class_start = -1
+            class_indent = 0
+
+            for i, line in enumerate(lines):
+                if re.match(rf'\s*class\s+{target_class}\s*[\(:]', line):
+                    class_start = i
+                    class_indent = len(line) - len(line.lstrip())
+                    break
+
+            if class_start >= 0:
+                # Find the end of the class (next line with same or less indentation that's not empty)
+                class_end = len(lines)
+                for i in range(class_start + 1, len(lines)):
+                    line = lines[i]
+                    if line.strip() and not line.strip().startswith('#'):
+                        current_indent = len(line) - len(line.lstrip())
+                        if current_indent <= class_indent and not line.strip().startswith('def '):
+                            # Check if this is a new class or module-level code
+                            if re.match(r'\s*(class\s|def\s|if\s+__name__|@|[A-Z_]+\s*=)', line):
+                                class_end = i
+                                break
+
+                # Insert new methods before the class ends
+                new_lines = lines[:class_end]
+                new_lines.append("")
+                new_lines.append(new_methods)
+                new_lines.extend(lines[class_end:])
+
+                merged = '\n'.join(new_lines)
+                logger.info(f"Added new methods to {target_class}")
+                return merged
+
+        # Fallback: append at end of file
+        logger.info("Appending new methods at end of file")
+        return original_code + "\n\n# AI-enhanced additions\n" + new_methods
+
+
+class ProtectedSymbol(BaseModel):
+    """A symbol that is protected because other files depend on it."""
+    name: str
+    symbol_type: str  # 'class', 'function', 'method', 'constant'
+    defined_in: str  # file where it's defined
+    used_by: List[str]  # files that import/use it
+    reason: str  # why it's protected
+
+    class Config:
+        frozen = True
+
+
+class CodebaseAwareness:
+    """
+    Analyzes the generated codebase to understand dependencies between files.
+
+    This creates a "sandbox" for AI enhancement by identifying:
+    1. What symbols (classes, functions) each file exports
+    2. What each file imports from other files
+    3. Which symbols are "protected" (used by other files)
+    4. Which symbols are "free" (can be modified/removed)
+
+    The AI is then given this context so it knows what it MUST preserve.
+    """
+
+    def __init__(self):
+        self.files: Dict[str, str] = {}  # filename -> content
+        self.exports: Dict[str, Set[str]] = {}  # filename -> exported symbols
+        self.imports: Dict[str, Dict[str, Set[str]]] = {}  # filename -> {source_file: symbols}
+        self.protected: Dict[str, List[ProtectedSymbol]] = {}  # filename -> protected symbols
+
+    def analyze_codebase(
+        self,
+        base_files: Dict[str, str],
+        directory_files: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Analyze all generated files to build the dependency map.
+
+        Args:
+            base_files: Main files like locustfile.py, test_data.py, utils.py
+            directory_files: Workflow files in subdirectories
+        """
+        # Collect all files
+        self.files = base_files.copy()
+        for file_dict in directory_files:
+            self.files.update(file_dict)
+
+        # Analyze each file
+        for filename, content in self.files.items():
+            self._analyze_file(filename, content)
+
+        # Build protected symbols map
+        self._build_protected_map()
+
+    def _analyze_file(self, filename: str, content: str) -> None:
+        """Analyze a single file for exports and imports."""
+        if not content:
+            return
+
+        # Extract exports (classes, functions, constants defined in this file)
+        self.exports[filename] = self._extract_exports(content)
+
+        # Extract imports from other local files
+        self.imports[filename] = self._extract_local_imports(content)
+
+    def _extract_exports(self, content: str) -> Set[str]:
+        """Extract all symbols defined in this file."""
+        exports = set()
+
+        try:
+            tree = ast.parse(content)
+            for node in ast.iter_child_nodes(tree):
+                if isinstance(node, ast.ClassDef):
+                    exports.add(node.name)
+                    # Also add methods as ClassName.method_name
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef) and not item.name.startswith('_'):
+                            exports.add(f"{node.name}.{item.name}")
+                elif isinstance(node, ast.FunctionDef):
+                    exports.add(node.name)
+                elif isinstance(node, ast.Assign):
+                    # Constants like SOME_VALUE = ...
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id.isupper():
+                            exports.add(target.id)
+        except SyntaxError:
+            # Fallback to regex
+            exports.update(re.findall(r'^class\s+(\w+)', content, re.MULTILINE))
+            exports.update(re.findall(r'^def\s+(\w+)', content, re.MULTILINE))
+            exports.update(re.findall(r'^([A-Z_]+)\s*=', content, re.MULTILINE))
+
+        return exports
+
+    def _extract_local_imports(self, content: str) -> Dict[str, Set[str]]:
+        """Extract imports from other local files."""
+        imports: Dict[str, Set[str]] = {}
+
+        # Match patterns like:
+        # from test_data import TestDataGenerator
+        # from utils import ResponseValidator, RequestLogger
+        # from workflows.base_workflow import BaseWorkflow
+        patterns = [
+            r'from\s+(\w+)\s+import\s+([^#\n]+)',
+            r'from\s+workflows\.(\w+)\s+import\s+([^#\n]+)',
+        ]
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, content):
+                source_file = match.group(1)
+                if not source_file.endswith('.py'):
+                    source_file += '.py'
+                imported_symbols = match.group(2)
+
+                # Parse the imported symbols
+                symbols = set()
+                for sym in imported_symbols.split(','):
+                    sym = sym.strip()
+                    # Handle 'as' aliases
+                    if ' as ' in sym:
+                        sym = sym.split(' as ')[0].strip()
+                    if sym and sym != '*':
+                        symbols.add(sym)
+
+                if source_file not in imports:
+                    imports[source_file] = set()
+                imports[source_file].update(symbols)
+
+        return imports
+
+    def _build_protected_map(self) -> None:
+        """Build the map of protected symbols for each file."""
+        for filename in self.files:
+            self.protected[filename] = []
+
+        # For each file, find which of its exports are used by other files
+        for filename, exports in self.exports.items():
+            for symbol in exports:
+                used_by = []
+
+                # Check which other files import this symbol
+                for other_file, other_imports in self.imports.items():
+                    if other_file == filename:
+                        continue
+
+                    # Check if this file imports from our file
+                    for source, symbols in other_imports.items():
+                        if source == filename or source.replace('.py', '') in filename:
+                            if symbol in symbols or symbol.split('.')[-1] in symbols:
+                                used_by.append(other_file)
+
+                if used_by:
+                    # Determine symbol type
+                    if '.' in symbol:
+                        symbol_type = 'method'
+                    elif symbol.isupper():
+                        symbol_type = 'constant'
+                    elif symbol[0].isupper():
+                        symbol_type = 'class'
+                    else:
+                        symbol_type = 'function'
+
+                    protected_symbol = ProtectedSymbol(
+                        name=symbol,
+                        symbol_type=symbol_type,
+                        defined_in=filename,
+                        used_by=used_by,
+                        reason=f"Imported by: {', '.join(used_by)}"
+                    )
+                    self.protected[filename].append(protected_symbol)
+
+    def get_constraints_for_file(self, filename: str) -> str:
+        """
+        Generate AI constraints for a specific file.
+
+        Returns a formatted string that tells the AI what it MUST preserve.
+        """
+        if filename not in self.protected:
+            return ""
+
+        protected_symbols = self.protected[filename]
+        if not protected_symbols:
+            return "No external dependencies. You can freely modify this file."
+
+        constraints = []
+        constraints.append("🔒 PROTECTED SYMBOLS (DO NOT REMOVE - used by other files):")
+        constraints.append("")
+
+        # Group by type
+        by_type: Dict[str, List[ProtectedSymbol]] = {}
+        for sym in protected_symbols:
+            if sym.symbol_type not in by_type:
+                by_type[sym.symbol_type] = []
+            by_type[sym.symbol_type].append(sym)
+
+        for sym_type, symbols in by_type.items():
+            constraints.append(f"  {sym_type.upper()}ES:")
+            for sym in symbols:
+                constraints.append(f"    - {sym.name}")
+                constraints.append(f"      Reason: {sym.reason}")
+            constraints.append("")
+
+        constraints.append("✅ You MAY:")
+        constraints.append("  - ADD new methods to existing classes")
+        constraints.append("  - ADD new helper functions")
+        constraints.append("  - MODIFY method implementations (keep signatures)")
+        constraints.append("  - ADD new classes")
+        constraints.append("")
+        constraints.append("❌ You MUST NOT:")
+        constraints.append("  - DELETE or RENAME any protected symbol above")
+        constraints.append("  - CHANGE the signature of protected methods")
+        constraints.append("  - REMOVE imports that other files depend on")
+
+        return "\n".join(constraints)
+
+    def get_full_context(self) -> str:
+        """Get a summary of the entire codebase structure for AI context."""
+        context = []
+        context.append("📁 CODEBASE STRUCTURE:")
+        context.append("")
+
+        for filename, exports in self.exports.items():
+            context.append(f"  {filename}:")
+            if exports:
+                context.append(f"    Exports: {', '.join(sorted(exports)[:10])}")
+                if len(exports) > 10:
+                    context.append(f"    ... and {len(exports) - 10} more")
+            context.append("")
+
+        return "\n".join(context)
+
+
+class ErrorClassification(BaseModel):
     """Classification of an error for retry logic"""
-
     is_retryable: bool
     backoff_seconds: float
     error_type: str
 
 
-@dataclass
-class AIEnhancementConfig:
+class AIEnhancementConfig(BaseModel):
     """Configuration for AI enhancement"""
-
     model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
     max_tokens: int = 8000
     temperature: float = 0.3
@@ -54,16 +507,14 @@ class AIEnhancementConfig:
     update_main_locust: bool = True
 
 
-@dataclass
-class EnhancementResult:
+class EnhancementResult(BaseModel):
     """Result of AI enhancement"""
-
     success: bool
-    enhanced_files: Dict[str, str]
-    enhanced_directory_files: List[Dict[str, Any]]
-    enhancements_applied: List[str]
-    errors: List[str]
-    processing_time: float
+    enhanced_files: Dict[str, str] = Field(default_factory=dict)
+    enhanced_directory_files: List[Dict[str, Any]] = Field(default_factory=list)
+    enhancements_applied: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    processing_time: float = 0.0
 
 
 class EnhancementProcessor:
@@ -73,9 +524,11 @@ class EnhancementProcessor:
         self,
         ai_config: Optional[AIEnhancementConfig],
         locust_generator: "HybridLocustGenerator",
+        awareness: Optional[CodebaseAwareness] = None,
     ) -> None:
         self.ai_config = ai_config
         self.locust_generator = locust_generator
+        self.awareness = awareness
 
     async def process_main_locust_enhancement(
         self,
@@ -176,10 +629,20 @@ class EnhancementProcessor:
             if result:
                 base_workflow_content = result["files"].get(base_workflow_path, "")
                 enhancements.extend(result["enhancements"])
+                # Add enhanced base_workflow.py to output
+                enhanced_directory_files.append(result["files"])
+            else:
+                # Enhancement failed, preserve original base_workflow.py
+                enhanced_directory_files.append({base_workflow_path: base_workflow_content})
+        elif base_workflow_content:
+            # include_auth is False but base_workflow.py exists - preserve it
+            enhanced_directory_files.append({base_workflow_path: base_workflow_content})
 
         # Enhance all other workflow files
         for workflow_item in directory_files:
-            if workflow_item.get("file_name") == base_workflow_path:
+            # workflow_item is a dict like {"filename.py": "content"}
+            # Skip base_workflow.py as it's already handled above
+            if base_workflow_path in workflow_item:
                 continue
 
             result = await self._process_workflow_item(
@@ -203,7 +666,7 @@ class EnhancementProcessor:
         base_workflow_files: str,
         grouped_endpoints: Dict[str, List[Endpoint]],
         db_type: str = "",
-        template_path: str =workflow_jinja_path,
+        template_path: str = workflow_jinja_path,
     ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
@@ -215,7 +678,7 @@ class EnhancementProcessor:
                 base_content=value,
                 test_data_content=base_files.get(test_data_file_path, ""),
                 base_workflow=base_workflow_files,
-                grouped_enpoints=workflow_endpoints_dict,
+                grouped_endpoints=workflow_endpoints_dict,
                 auth_endpoints=auth_endpoints,
                 db_type=db_type,
                 template_path=template_path,
@@ -231,36 +694,71 @@ class EnhancementProcessor:
     async def process_test_data_enhancement(
         self, base_files: Dict[str, str], endpoints: List[Endpoint], db_type: str = ""
     ) -> Tuple[Dict[str, str], List[str]]:
-        """Process test data enhancement"""
+        """Process test data enhancement with validation and fallback"""
         enhanced_files = {}
         enhancements = []
-        if self.ai_config and self.ai_config.enhance_test_data:
+        original_content = base_files.get(test_data_file_path, "")
+
+        # Get constraints from codebase awareness
+        constraints = ""
+        if self.awareness:
+            constraints = self.awareness.get_constraints_for_file(test_data_file_path)
+            if constraints:
+                logger.info(f"📋 Applying constraints to {test_data_file_path}")
+
+        if self.ai_config and self.ai_config.enhance_test_data and original_content:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
-                base_files.get(test_data_file_path, ""),
+                original_content,
                 endpoints,
                 db_type,
                 base_files.get(data_provider_path, ""),
                 base_files.get("db_config.py", ""),
                 data_provider_path,
+                constraints=constraints,  # Pass constraints to AI
             )
-            if enhanced_test_data:
-                enhanced_files[test_data_file_path] = enhanced_test_data
+            # Use safe enhancement with validation and fallback
+            validated_content = self.locust_generator._safe_enhance_file(
+                test_data_file_path, enhanced_test_data, original_content
+            )
+            enhanced_files[test_data_file_path] = validated_content
+            # Only mark as enhanced if we actually used the AI output
+            if validated_content == enhanced_test_data:
                 enhancements.append("smart_test_data")
+            else:
+                enhancements.append("test_data_fallback_to_original")
+
         return enhanced_files, enhancements
 
     async def process_validation_enhancement(
         self, base_files: Dict[str, str], endpoints: List[Endpoint]
     ) -> Tuple[Dict[str, str], List[str]]:
-        """Process validation enhancement"""
+        """Process validation enhancement with validation and fallback"""
         enhanced_files = {}
         enhancements = []
-        if self.ai_config and self.ai_config.enhance_validation:
+        original_content = base_files.get("utils.py", "")
+
+        # Get constraints from codebase awareness
+        constraints = ""
+        if self.awareness:
+            constraints = self.awareness.get_constraints_for_file("utils.py")
+            if constraints:
+                logger.info(f"📋 Applying constraints to utils.py")
+
+        if self.ai_config and self.ai_config.enhance_validation and original_content:
             enhanced_validation = await self.locust_generator._enhance_validation(
-                base_files.get("utils.py", ""), endpoints
+                original_content, endpoints, constraints=constraints
             )
-            if enhanced_validation:
-                enhanced_files["utils.py"] = enhanced_validation
+            # Use safe enhancement with validation and fallback
+            validated_content = self.locust_generator._safe_enhance_file(
+                "utils.py", enhanced_validation, original_content
+            )
+            enhanced_files["utils.py"] = validated_content
+            # Only mark as enhanced if we actually used the AI output
+            if validated_content == enhanced_validation:
                 enhancements.append("advanced_validation")
+            else:
+                enhancements.append("utils_fallback_to_original")
+
         return enhanced_files, enhancements
 
 
@@ -275,12 +773,14 @@ class HybridLocustGenerator:
         ai_config: Optional[AIEnhancementConfig] = None,
         test_config: Optional[TestDataConfig] = None,
         prompt_dir: str = "prompt",
+        progress_callback: Optional[ProgressCallback] = None,
     ):
         self.ai_client = ai_client
         self.ai_config = ai_config or AIEnhancementConfig()
         self.template_generator = LocustTestGenerator(test_config)
         self.prompt_dir = self._find_project_root() / prompt_dir
         self._api_semaphore = asyncio.Semaphore(5)
+        self._progress_callback = progress_callback
         self._setup_jinja_env()
         self.MAX_RETRIES = 3
         self.RATE_LIMIT_BACKOFF = 10
@@ -294,6 +794,27 @@ class HybridLocustGenerator:
             "invalid token",
         ]
         self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
+
+    async def _report_progress(
+        self,
+        phase: ProgressPhase,
+        message: str,
+        detail: Optional[str] = None,
+        current: int = 0,
+        total: int = 0,
+        is_ai_call: bool = False,
+    ) -> None:
+        """Report progress to callback if available"""
+        if self._progress_callback:
+            status = ProgressStatus(
+                phase=phase,
+                message=message,
+                detail=detail,
+                current=current,
+                total=total,
+                is_ai_call=is_ai_call,
+            )
+            await self._progress_callback(status)
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -370,6 +891,11 @@ class HybridLocustGenerator:
 
         try:
             # Step 1: Generate reliable base structure
+            await self._report_progress(
+                ProgressPhase.GENERATING_TEMPLATES,
+                "Generating base test structure",
+                detail=f"Processing {len(endpoints)} endpoints",
+            )
             logger.info("🔧 Generating base test structure with templates...")
             base_files, directory_files, grouped_enpoints = (
                 self.template_generator.generate_from_endpoints(
@@ -382,6 +908,7 @@ class HybridLocustGenerator:
             )
 
             base_files = self.template_generator.fix_indent(base_files)
+
             # Step 2: Enhance with AI if available
             if self.ai_client and self._should_enhance(endpoints, api_info):
                 logger.info("🤖 Enhancing tests with AI...")
@@ -396,6 +923,11 @@ class HybridLocustGenerator:
                     db_type,
                 )
                 if enhancement_result.success:
+                    await self._report_progress(
+                        ProgressPhase.COMPLETE,
+                        "AI enhancements applied successfully",
+                        detail=f"Applied: {', '.join(enhancement_result.enhancements_applied)}",
+                    )
                     logger.info(
                         f"✅ AI enhancements applied: {', '.join(enhancement_result.enhancements_applied)}"
                     )
@@ -404,10 +936,19 @@ class HybridLocustGenerator:
                         enhancement_result.enhanced_directory_files,
                     )
                 else:
+                    await self._report_progress(
+                        ProgressPhase.COMPLETE,
+                        "Using template base (AI enhancement failed)",
+                        detail=f"Errors: {', '.join(enhancement_result.errors)}",
+                    )
                     logger.warning(
                         f"⚠️ AI enhancement failed, using template base: {', '.join(enhancement_result.errors)}"
                     )
             else:
+                await self._report_progress(
+                    ProgressPhase.COMPLETE,
+                    "Template-based generation complete",
+                )
                 logger.info("📋 Using template-based generation only")
 
             processing_time = asyncio.get_event_loop().time() - start_time
@@ -416,7 +957,12 @@ class HybridLocustGenerator:
             return base_files, directory_files
 
         except Exception as e:
-            logger.error(f"Hybrid generation failed line 267 : {e}")
+            await self._report_progress(
+                ProgressPhase.FAILED,
+                "Generation failed",
+                detail=str(e),
+            )
+            logger.error(f"Hybrid generation failed: {e}")
 
             return {}, []
 
@@ -542,38 +1088,71 @@ class HybridLocustGenerator:
         db_type: str = "",
     ) -> EnhancementResult:
         """Process all enhancements using the enhancement processor"""
-        processor = EnhancementProcessor(self.ai_config, self)
+        # Analyze codebase to understand dependencies
+        await self._report_progress(
+            ProgressPhase.ANALYZING_CODEBASE,
+            "Analyzing codebase dependencies",
+            detail="Identifying protected symbols",
+        )
+        awareness = CodebaseAwareness()
+        awareness.analyze_codebase(base_files, directory_files)
+
+        # Log the protected symbols for debugging
+        protected_count = sum(len(p) for p in awareness.protected.values())
+        logger.info("📊 Codebase analysis complete:")
+        for filename, protected in awareness.protected.items():
+            if protected:
+                logger.info(f"  {filename}: {len(protected)} protected symbols")
+
+        processor = EnhancementProcessor(self.ai_config, self, awareness)
 
         enhanced_files = base_files.copy()
         enhanced_directory_files = []
         enhancements_applied: List[str] = []
         errors = []
-        # Process each enhancement type
-        enhancement_tasks = [
-            processor.process_main_locust_enhancement(base_files, endpoints, api_info),
-            processor.process_domain_flows_enhancement(
-                endpoints, api_info, custom_requirement
-            ),
-            processor.process_test_data_enhancement(base_files, endpoints, db_type),
-            processor.process_validation_enhancement(base_files, endpoints),
+
+        # Process enhancements sequentially for better progress visibility
+        enhancement_steps = [
+            (ProgressPhase.ENHANCING_LOCUSTFILE, "Enhancing main locustfile",
+             lambda: processor.process_main_locust_enhancement(base_files, endpoints, api_info)),
+            (ProgressPhase.ENHANCING_DOMAIN_FLOWS, "Generating domain-specific flows",
+             lambda: processor.process_domain_flows_enhancement(endpoints, api_info, custom_requirement)),
+            (ProgressPhase.ENHANCING_TEST_DATA, "Enhancing test data generator",
+             lambda: processor.process_test_data_enhancement(base_files, endpoints, db_type)),
+            (ProgressPhase.ENHANCING_VALIDATION, "Enhancing validation utilities",
+             lambda: processor.process_validation_enhancement(base_files, endpoints)),
         ]
 
-        # Execute file-based enhancements concurrently
-        file_enhancement_results = await asyncio.gather(
-            *enhancement_tasks, return_exceptions=True
+        total_steps = len(enhancement_steps) + 1  # +1 for workflows
+        current_step = 0
+
+        for phase, message, task_fn in enhancement_steps:
+            current_step += 1
+            await self._report_progress(
+                phase, message,
+                detail="Calling AI model...",
+                current=current_step, total=total_steps,
+                is_ai_call=True,
+            )
+            try:
+                files, enhancements = await task_fn()
+                enhanced_files.update(files)
+                enhancements_applied.extend(enhancements)
+            except Exception as e:
+                errors.append(f"{message}: {str(e)}")
+                logger.warning(f"Enhancement step failed: {message} - {e}")
+
+        # Process workflow enhancements (the most time-consuming)
+        current_step += 1
+        await self._report_progress(
+            ProgressPhase.ENHANCING_WORKFLOWS,
+            "Enhancing workflow files",
+            detail=f"Processing {len(directory_files)} workflows...",
+            current=current_step, total=total_steps,
+            is_ai_call=True,
         )
 
-        # Process results from file-based enhancements
-        for result in file_enhancement_results:
-            if isinstance(result, BaseException):
-                errors.append(str(result))
-                continue
-
-            files, enhancements = result
-            enhanced_files.update(files)
-            enhancements_applied.extend(enhancements)
-
-        # Process workflow enhancements separately (more complex logic)
+        # Process workflow enhancements
         try:
             (
                 workflow_files,
@@ -585,6 +1164,13 @@ class HybridLocustGenerator:
             enhancements_applied.extend(workflow_enhancements)
         except Exception as e:
             errors.append(f"Workflow enhancement error: {str(e)}")
+
+        # Report merging and validation
+        await self._report_progress(
+            ProgressPhase.VALIDATING_OUTPUT,
+            "Validating generated code",
+            detail=f"Applied {len(enhancements_applied)} enhancements",
+        )
 
         return EnhancementResult(
             success=len(errors) == 0,
@@ -633,7 +1219,7 @@ class HybridLocustGenerator:
         base_content: str,
         test_data_content: str,
         base_workflow: str,
-        grouped_enpoints: Dict[str, List[Endpoint]],
+        grouped_endpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
         template_path: str = workflow_jinja_path,
@@ -643,7 +1229,7 @@ class HybridLocustGenerator:
 
             # Render enhanced content
             prompt = template.render(
-                grouped_enpoints=grouped_enpoints,
+                grouped_endpoints=grouped_endpoints,
                 test_data_content=test_data_content,
                 base_workflow=base_workflow,
                 auth_endpoints=auth_endpoints,
@@ -666,6 +1252,7 @@ class HybridLocustGenerator:
         data_provider: str = "",
         db_config: str = "",
         data_provider_path: str = "",
+        constraints: str = "",
     ) -> Optional[str]:
         """Enhance test data generation with domain knowledge"""
 
@@ -684,6 +1271,7 @@ class HybridLocustGenerator:
                 "data_provider_content": data_provider,
                 "db_config": db_config,
                 "data_provider_path": data_provider_path,
+                "constraints": constraints,  # Pass constraints to template
             }
 
             # Render enhanced content
@@ -697,7 +1285,7 @@ class HybridLocustGenerator:
         return ""
 
     async def _enhance_validation(
-        self, base_content: str, endpoints: List[Endpoint]
+        self, base_content: str, endpoints: List[Endpoint], constraints: str = ""
     ) -> Optional[str]:
         """Enhance response validation with endpoint-specific checks"""
 
@@ -707,7 +1295,9 @@ class HybridLocustGenerator:
 
             # Render enhanced content
             prompt = template.render(
-                base_content=base_content, validation_patterns=validation_patterns
+                base_content=base_content,
+                validation_patterns=validation_patterns,
+                constraints=constraints,  # Pass constraints to template
             )
             enhanced_content = await self._call_ai_service(prompt)
             if enhanced_content:
@@ -729,30 +1319,34 @@ class HybridLocustGenerator:
         ]
 
     async def _make_api_call(self, messages: list[dict]) -> Optional[str]:
-        """Make API call - ONE job"""
-        async with self._api_semaphore:
-            api_call = self.ai_client.chat.completions.create(
-                model=self.ai_config.model,
-                messages=messages,
-                max_tokens=self.ai_config.max_tokens,
-                temperature=self.ai_config.temperature,
-                top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.1,
-            )
+        """
+        Make API call - ONE job.
 
-            # Wait for the API call with timeout
-            response = await asyncio.wait_for(
-                api_call,
-                timeout=self.ai_config.timeout,
+        Note: This method assumes the caller has already acquired _api_semaphore.
+        Do NOT acquire the semaphore here to avoid deadlock.
+        """
+        api_call = self.ai_client.chat.completions.create(
+            model=self.ai_config.model,
+            messages=messages,
+            max_tokens=self.ai_config.max_tokens,
+            temperature=self.ai_config.temperature,
+            top_p=0.9,
+            top_k=40,
+            repetition_penalty=1.1,
+        )
+
+        # Wait for the API call with timeout
+        response = await asyncio.wait_for(
+            api_call,
+            timeout=self.ai_config.timeout,
+        )
+        if response.choices and response.choices[0].message:
+            content = response.choices[0].message.content.strip()
+            # Clean up the response
+            content = self._clean_ai_response(
+                self.extract_code_from_response(content)
             )
-            if response.choices and response.choices[0].message:
-                content = response.choices[0].message.content.strip()
-                # Clean up the response
-                content = self._clean_ai_response(
-                    self.extract_code_from_response(content)
-                )
-                return content
+            return content
 
         return None
 
@@ -839,7 +1433,84 @@ class HybridLocustGenerator:
                 end_idx = i + 1
                 break
 
-        return "\n".join(lines[start_idx:end_idx])
+        cleaned_content = "\n".join(lines[start_idx:end_idx])
+
+        # Remove duplicate/appended class definitions that don't belong
+        # This handles cases where AI appends TestDataGenerator or other unrelated classes
+        cleaned_content = self._remove_duplicate_class_definitions(cleaned_content)
+
+        return cleaned_content
+
+    def _remove_duplicate_class_definitions(self, content: str) -> str:
+        """
+        Remove duplicate or unrelated class definitions that AI might append.
+
+        This fixes issues where the AI appends classes like TestDataGenerator
+        to workflow files where they don't belong.
+        """
+        # Classes that should NOT appear in workflow files (they're in separate files)
+        excluded_classes = {
+            "TestDataGenerator",
+            "LoadTestConfig",
+            "ResponseValidator",
+            "RequestLogger",
+            "PerformanceMonitor",
+            "DataManager",
+        }
+
+        lines = content.split("\n")
+        result_lines = []
+        skip_until_next_class = False
+        current_indent = 0
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Check if this is a class definition we should exclude
+            if stripped.startswith("class "):
+                class_match = re.match(r"class\s+(\w+)", stripped)
+                if class_match:
+                    class_name = class_match.group(1)
+                    if class_name in excluded_classes:
+                        # Skip this entire class definition
+                        skip_until_next_class = True
+                        current_indent = len(line) - len(line.lstrip())
+                        i += 1
+                        continue
+                    else:
+                        skip_until_next_class = False
+
+            # If we're skipping a class, check if we've exited it
+            if skip_until_next_class:
+                if stripped and not stripped.startswith("#"):
+                    line_indent = len(line) - len(line.lstrip())
+                    # Check if we've returned to the same or lower indent level
+                    # (which means we've exited the class)
+                    if line_indent <= current_indent and not line.startswith(" " * (current_indent + 1)):
+                        # Check if this is a new top-level definition
+                        if stripped.startswith(("class ", "def ", "if __name__", "# Global")):
+                            # Check if it's another excluded class
+                            if stripped.startswith("class "):
+                                class_match = re.match(r"class\s+(\w+)", stripped)
+                                if class_match and class_match.group(1) in excluded_classes:
+                                    i += 1
+                                    continue
+                            skip_until_next_class = False
+                        else:
+                            i += 1
+                            continue
+                else:
+                    i += 1
+                    continue
+
+            if not skip_until_next_class:
+                result_lines.append(line)
+
+            i += 1
+
+        return "\n".join(result_lines)
 
     def _analyze_api_domain(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]
@@ -1073,3 +1744,121 @@ class HybridLocustGenerator:
             return True
         except SyntaxError:
             return False
+
+    def _validate_critical_elements(
+        self, filename: str, enhanced_content: str, original_content: str
+    ) -> Tuple[bool, str, List[str]]:
+        """
+        Validate that AI-enhanced content preserves critical classes and functions.
+
+        Args:
+            filename: Name of the file being validated
+            enhanced_content: The AI-enhanced content
+            original_content: The original template-generated content
+
+        Returns:
+            Tuple of (is_valid, content_to_use, list_of_missing_elements)
+        """
+        missing_elements = []
+
+        # Check critical classes
+        if filename in CRITICAL_CLASSES:
+            for class_name in CRITICAL_CLASSES[filename]:
+                # Look for class definition pattern
+                class_pattern = rf"class\s+{class_name}\s*[:\(]"
+                if not re.search(class_pattern, enhanced_content):
+                    missing_elements.append(f"class {class_name}")
+                    logger.warning(
+                        f"AI corrupted {filename}: missing critical class '{class_name}'"
+                    )
+
+        # Check critical functions (only if they exist in original)
+        if filename in CRITICAL_FUNCTIONS:
+            for func_name in CRITICAL_FUNCTIONS[filename]:
+                func_pattern = rf"def\s+{func_name}\s*\("
+                # Only check if the function exists in original
+                if re.search(func_pattern, original_content):
+                    if not re.search(func_pattern, enhanced_content):
+                        missing_elements.append(f"def {func_name}")
+                        logger.warning(
+                            f"AI corrupted {filename}: missing critical function '{func_name}'"
+                        )
+
+        if missing_elements:
+            logger.error(
+                f"AI enhancement corrupted {filename}, missing: {missing_elements}. "
+                f"Falling back to original template code."
+            )
+            return False, original_content, missing_elements
+
+        # Additional validation: enhanced content shouldn't be dramatically smaller
+        original_lines = len(original_content.strip().split("\n"))
+        enhanced_lines = len(enhanced_content.strip().split("\n"))
+
+        # If enhanced is less than 30% of original size, it's likely corrupted
+        if original_lines > 50 and enhanced_lines < original_lines * 0.3:
+            logger.error(
+                f"AI enhancement drastically reduced {filename} "
+                f"({original_lines} -> {enhanced_lines} lines). "
+                f"Falling back to original template code."
+            )
+            return False, original_content, ["content_too_small"]
+
+        return True, enhanced_content, []
+
+    def _safe_enhance_file(
+        self,
+        filename: str,
+        enhanced_content: Optional[str],
+        original_content: str,
+    ) -> str:
+        """
+        Safely apply AI enhancement using additive-only merging.
+
+        This method uses a fundamentally safer approach:
+        1. ALWAYS keep the original code intact as the base
+        2. Extract ONLY new methods from AI output
+        3. Merge new methods into original (never replace)
+
+        Args:
+            filename: Name of the file
+            enhanced_content: AI-generated content (may be corrupted)
+            original_content: Original template-generated content (ALWAYS preserved)
+
+        Returns:
+            Original code with any valid AI additions safely merged
+        """
+        if not enhanced_content or not enhanced_content.strip():
+            logger.info(f"No AI content for {filename}, using original")
+            return original_content
+
+        # Determine target class for this file
+        target_class = None
+        if filename == test_data_file_path:
+            target_class = "TestDataGenerator"
+        elif filename == "utils.py":
+            target_class = "ResponseValidator"  # Primary class to extend
+
+        # Use SafeCodeMerger to safely combine original + AI additions
+        merged_content = SafeCodeMerger.safe_merge(
+            original_code=original_content,
+            ai_additions=enhanced_content,
+            target_class=target_class
+        )
+
+        # Final validation: ensure critical elements still exist
+        is_valid, final_content, missing = self._validate_critical_elements(
+            filename, merged_content, original_content
+        )
+
+        if not is_valid:
+            # This should never happen with SafeCodeMerger, but just in case
+            logger.error(f"SafeCodeMerger produced invalid output for {filename}, using original")
+            return original_content
+
+        # Verify syntax of merged content
+        if not self._validate_python_code(final_content):
+            logger.error(f"Merged content has syntax errors for {filename}, using original")
+            return original_content
+
+        return final_content

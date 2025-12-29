@@ -6,12 +6,18 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from together import AsyncTogether
 
 from .hybrid_loctus_generator import HybridLocustGenerator
+from .schemas.progress import ProgressStatus, ProgressPhase
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
+from devdox_ai_locust.utils.patch_tracker import PatchTracker
+from devdox_ai_locust.utils.metadata_manager import MetadataManager
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
@@ -137,15 +143,30 @@ def _show_run_instructions(
     )
 
 
+def _is_url(source: str) -> bool:
+    """Check if the source is a URL or a file path"""
+    source = source.strip()
+    return source.startswith(('http://', 'https://'))
+
+
 async def _process_api_schema(
-    swagger_url: str, verbose: bool
+    swagger_source: str, verbose: bool
 ) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
-    """Fetch and parse API schema"""
-    source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
+    """Fetch and parse API schema from URL or file path"""
+
+    # Determine if source is URL or file path
+    is_url = _is_url(swagger_source)
+
+    # Create appropriate request based on source type
+    if is_url:
+        source_request = SwaggerProcessingRequest(swagger_url=swagger_source)
+        source_type = "URL"
+    else:
+        source_request = SwaggerProcessingRequest(swagger_path=swagger_source)
+        source_type = "file"
+
     api_schema = None
-    with console.status(
-        f"[bold green]Fetching API schema from {'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'}..."
-    ):
+    with console.status(f"[bold green]Fetching API schema from {source_type}..."):
         try:
             async with asyncio.timeout(30):
                 api_schema = await get_api_schema(source_request)
@@ -156,6 +177,9 @@ async def _process_api_schema(
 
         except asyncio.TimeoutError:
             console.print("[red]✗[/red] Timeout while fetching API schema")
+            sys.exit(1)
+        except FileNotFoundError as e:
+            console.print(f"[red]✗[/red] File not found: {e}")
             sys.exit(1)
         except Exception as e:
             console.print(f"[red]✗[/red] Error fetching API schema: {e}")
@@ -189,21 +213,174 @@ async def _process_api_schema(
             sys.exit(1)
 
 
+class ProgressDisplay:
+    """Manages live progress display for generation"""
+
+    # Phase descriptions for display
+    PHASE_ICONS = {
+        ProgressPhase.INITIALIZING: "🔧",
+        ProgressPhase.PARSING_SCHEMA: "📖",
+        ProgressPhase.GENERATING_TEMPLATES: "📝",
+        ProgressPhase.ANALYZING_CODEBASE: "🔍",
+        ProgressPhase.ENHANCING_LOCUSTFILE: "🤖",
+        ProgressPhase.ENHANCING_TEST_DATA: "🤖",
+        ProgressPhase.ENHANCING_VALIDATION: "🤖",
+        ProgressPhase.ENHANCING_DOMAIN_FLOWS: "🤖",
+        ProgressPhase.ENHANCING_WORKFLOWS: "🤖",
+        ProgressPhase.MERGING_CODE: "🔀",
+        ProgressPhase.VALIDATING_OUTPUT: "✅",
+        ProgressPhase.WRITING_FILES: "💾",
+        ProgressPhase.FINALIZING: "📦",
+        ProgressPhase.COMPLETE: "🎉",
+        ProgressPhase.FAILED: "❌",
+    }
+
+    def __init__(self):
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=30),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("[dim]{task.fields[detail]}"),
+            console=console,
+            transient=False,
+        )
+        self.main_task: Optional[TaskID] = None
+        self.current_status = ""
+        self.completed_phases: List[str] = []
+
+    def start(self) -> None:
+        """Start the progress display"""
+        self.main_task = self.progress.add_task(
+            "Generating tests...",
+            total=100,
+            detail="Initializing..."
+        )
+        self.progress.start()
+
+    def stop(self) -> None:
+        """Stop the progress display"""
+        self.progress.stop()
+
+    async def update(self, status: ProgressStatus) -> None:
+        """Update the progress display with new status"""
+        if self.main_task is None:
+            return
+
+        icon = self.PHASE_ICONS.get(status.phase, "⏳")
+        message = f"{icon} {status.message}"
+
+        # Calculate overall progress based on phase
+        phase_progress = {
+            ProgressPhase.INITIALIZING: 5,
+            ProgressPhase.GENERATING_TEMPLATES: 15,
+            ProgressPhase.ANALYZING_CODEBASE: 20,
+            ProgressPhase.ENHANCING_LOCUSTFILE: 35,
+            ProgressPhase.ENHANCING_TEST_DATA: 50,
+            ProgressPhase.ENHANCING_VALIDATION: 60,
+            ProgressPhase.ENHANCING_DOMAIN_FLOWS: 70,
+            ProgressPhase.ENHANCING_WORKFLOWS: 85,
+            ProgressPhase.VALIDATING_OUTPUT: 90,
+            ProgressPhase.WRITING_FILES: 95,
+            ProgressPhase.COMPLETE: 100,
+            ProgressPhase.FAILED: 100,
+        }
+
+        progress_value = phase_progress.get(status.phase, 0)
+        detail = status.detail or ""
+
+        # Add AI indicator
+        if status.is_ai_call:
+            detail = f"[yellow]AI[/yellow] {detail}"
+
+        self.progress.update(
+            self.main_task,
+            completed=progress_value,
+            description=message,
+            detail=detail,
+        )
+
+        # Print completed phases
+        if status.phase not in [ProgressPhase.COMPLETE, ProgressPhase.FAILED]:
+            phase_str = f"{icon} {status.message}"
+            if phase_str not in self.completed_phases:
+                self.completed_phases.append(phase_str)
+
+
 async def _generate_and_create_tests(
     api_key: str,
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
     output_dir: Path,
+    swagger_source: str = "",
+    source_type: str = "",
     custom_requirement: Optional[str] = "",
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
     db_type: str = "",
+    enable_patch_tracking: bool = True,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
 
-    with console.status("[bold green]Generating Locust tests with AI..."):
-        generator = HybridLocustGenerator(ai_client=together_client)
+    # Initialize central metadata manager
+    metadata_manager = MetadataManager(output_dir)
+    session_id = metadata_manager.initialize_session(
+        api_info=api_info,
+        swagger_source=swagger_source,
+        source_type=source_type
+    )
+    metadata_manager.update_api_endpoints_count(len(endpoints))
+    metadata_manager.update_generation_config(
+        host=host,
+        auth_enabled=auth,
+        db_type=db_type,
+        custom_requirement=custom_requirement
+    )
+
+    # Initialize patch tracker integrated with metadata manager
+    patch_tracker: Optional[PatchTracker] = None
+    if enable_patch_tracking:
+        patch_tracker = PatchTracker.from_metadata_manager(metadata_manager)
+        patch_tracker.start_session()
+
+    # Create progress display
+    progress_display = ProgressDisplay()
+
+    async def progress_callback(status: ProgressStatus) -> None:
+        """Callback to update progress display"""
+        await progress_display.update(status)
+
+    try:
+        progress_display.start()
+
+        # Create generator with progress callback
+        generator = HybridLocustGenerator(
+            ai_client=together_client,
+            progress_callback=progress_callback,
+        )
+
+        # Update metadata with AI model
+        metadata_manager.update_generation_config(
+            ai_model=generator.ai_config.model if generator.ai_config else None
+        )
+
+        # First, generate base template files (pre-LLM)
+        base_files, base_directories, grouped_endpoints = (
+            generator.template_generator.generate_from_endpoints(
+                endpoints,
+                api_info,
+                include_auth=auth,
+                target_host=host,
+                db_type=db_type,
+            )
+        )
+
+        # Capture template generation state
+        if patch_tracker:
+            patch_tracker.capture_template_state(base_files, base_directories)
+
+        # Now run the full hybrid generation (includes AI enhancement)
         test_files, test_directories = await generator.generate_from_endpoints(
             endpoints=endpoints,
             api_info=api_info,
@@ -213,26 +390,68 @@ async def _generate_and_create_tests(
             db_type=db_type,
         )
 
+        # Capture AI-enhanced state
+        if patch_tracker:
+            ai_model = generator.ai_config.model if generator.ai_config else None
+            patch_tracker.capture_enhanced_state(test_files, test_directories, ai_model=ai_model)
+
+        # Update progress for file writing
+        await progress_callback(ProgressStatus(
+            phase=ProgressPhase.WRITING_FILES,
+            message="Writing output files",
+            detail=f"Creating {len(test_files)} files...",
+        ))
+
+    finally:
+        progress_display.stop()
+
     # Create test files
-    with console.status("[bold green]Creating test files..."):
-        created_files = []
+    console.print("[green]✓[/green] AI enhancement complete, writing files...")
+    created_files = []
 
-        # Create workflow files
-        if test_directories:
-            workflows_dir = output_dir / "workflows"
-            workflows_dir.mkdir(exist_ok=True)
-            for file_workflow in test_directories:
-                workflow_files = await generator._create_test_files_safely(
-                    file_workflow, workflows_dir
-                )
-                created_files.extend(workflow_files)
+    # Create workflow files
+    if test_directories:
+        workflows_dir = output_dir / "workflows"
+        workflows_dir.mkdir(exist_ok=True)
 
-        # Create main test files
-        if test_files:
-            main_files = await generator._create_test_files_safely(
-                test_files, output_dir
+        # Create __init__.py to make workflows a proper Python package
+        init_content = '"""Workflow modules for Locust load testing"""\n'
+        init_file = workflows_dir / "__init__.py"
+        init_file.write_text(init_content, encoding="utf-8")
+        created_files.append({"filename": "workflows/__init__.py", "path": init_file})
+        metadata_manager.register_file("workflows/__init__.py", init_content)
+
+        for file_workflow in test_directories:
+            # Register workflow files
+            for filename, content in file_workflow.items():
+                metadata_manager.register_file(f"workflows/{filename}", content)
+            workflow_files = await generator._create_test_files_safely(
+                file_workflow, workflows_dir
             )
-            created_files.extend(main_files)
+            created_files.extend(workflow_files)
+
+    # Create main test files
+    if test_files:
+        # Register files in tree
+        for filename, content in test_files.items():
+            metadata_manager.register_file(filename, content)
+
+        main_files = await generator._create_test_files_safely(
+            test_files, output_dir
+        )
+        created_files.extend(main_files)
+
+    # Finalize patch tracking
+    if patch_tracker:
+        summary = patch_tracker.get_summary()
+        patch_tracker.finalize()
+        session_id = summary.get('session_id', '')
+        total = summary.get('total_patches', 0)
+        console.print(f"[blue]📋 Patches saved to: .devdox_ai_locust/{session_id}/.patches/ ({total} patches)[/blue]")
+
+    # Finalize metadata
+    metadata_manager.finalize_session()
+    console.print("[blue]📄 Metadata saved to: .devdox_ai_locust/metadata.json[/blue]")
 
     return created_files
 
@@ -376,10 +595,12 @@ async def _async_generate(
             endpoints,
             api_info,
             output_dir,
-            custom_requirement,
-            host,
-            auth,
-            db_type,
+            swagger_source=swagger_url,
+            source_type="url",
+            custom_requirement=custom_requirement,
+            host=host,
+            auth=auth,
+            db_type=db_type,
         )
 
         # Show results

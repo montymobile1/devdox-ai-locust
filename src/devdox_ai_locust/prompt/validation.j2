@@ -1,17 +1,23 @@
-Enhance this utils file with smarter response validation:
+You are enhancing utility classes for Locust load testing validation.
 
-Current File:
+{% if constraints %}
+{{ constraints }}
+{% endif %}
+
+**EXISTING CODE**:
+```python
 {{base_content}}
+```
 
 Validation Patterns Needed:
 {{ validation_patterns }}
 
-Enhance by:
-1. Adding endpoint-specific validation rules
-2. Creating schema-based response validation
-3. Adding business logic validation
-4. Implementing response data integrity checks
-5. Adding performance threshold validation
+**YOUR TASK**:
+Enhance this file by ADDING new validation capabilities. You may:
+- ADD new validation methods to ResponseValidator
+- ADD new logging methods to RequestLogger
+- ADD new monitoring methods to PerformanceMonitor
+- IMPROVE existing method implementations (keep their signatures!)
 
-Keep existing utility functions but add smarter validation logic.
-Output: Complete enhanced Python file content.
+Output the COMPLETE enhanced Python file wrapped in <code></code> tags.
+Remember: Protected symbols MUST remain in the output with unchanged signatures.

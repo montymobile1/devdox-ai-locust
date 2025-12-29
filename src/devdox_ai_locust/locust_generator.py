@@ -18,6 +18,14 @@ from datetime import datetime
 
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint, Parameter
+from devdox_ai_locust.utils.naming import (
+    DefaultNamingStrategy,
+    to_workflow_module,
+    to_workflow_filename,
+    to_task_methods_class,
+    to_api_user_class,
+    to_param_var,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +227,15 @@ class LocustTestGenerator:
                 indented_task_methods = self._indent_methods(
                     task_methods, indent_level=1
                 )
+                # Use centralized naming strategy for consistent naming
+                task_methods_class_name = to_task_methods_class(group)
+                api_user_class_name = to_api_user_class(group)
                 file_content = self._build_endpoint_template(
-                    api_info, indented_task_methods, group
+                    api_info, indented_task_methods, group,
+                    task_methods_class_name, api_user_class_name
                 )
-                file_name = f"{group}_workflow.py".replace("-", "_")
+                # Use centralized naming for filename
+                file_name = to_workflow_filename(group)
 
                 workflows.append({file_name: file_content})
 
@@ -238,11 +251,20 @@ class LocustTestGenerator:
             return []
 
     def _build_endpoint_template(
-        self, api_info: Dict[str, Any], task_methods_content: str, group: str
+        self,
+        api_info: Dict[str, Any],
+        task_methods_content: str,
+        group: str,
+        task_methods_class_name: str,
+        api_user_class_name: str,
     ) -> str:
         template = self.jinja_env.get_template("endpoint_template.py.j2")
         return template.render(
-            api_info=api_info, group=group, task_methods_content=task_methods_content
+            api_info=api_info,
+            group=group,
+            task_methods_content=task_methods_content,
+            task_methods_class_name=task_methods_class_name,
+            api_user_class_name=api_user_class_name,
         )
 
     def _generate_main_locustfile(
@@ -279,7 +301,7 @@ class LocustTestGenerator:
 
             # Properly indent task methods for class inclusion
             indented_task_methods = self._indent_methods(task_methods, indent_level=1)
-            indented_task_methods = ""
+
             # Generate the complete file content
             return self._build_locustfile_template(
                 api_info=api_info,
@@ -324,19 +346,18 @@ class LocustTestGenerator:
         template = self.jinja_env.get_template("fallback_locust.py.j2")
         return template.render(api_info=api_info)
 
-    from typing import Dict, Any
-
     def _build_locustfile_template(
         self, api_info: Dict[str, Any], task_methods_content: str, groups: List[str]
     ) -> str:
         import_group_tasks = ""
         tasks = []
         for group in groups:
-            file_name = group.lower().replace("-", "_")
-            class_name = group.capitalize().replace("-", "")
-            import_group_tasks += f"""from workflows.{file_name}_workflow import {class_name}TaskMethods\n"""
-            tasks.append(f"{class_name}TaskMethods")
-        tasks_str = "[" + ",".join(tasks) + "]"
+            # Use centralized naming for consistent imports
+            module_name = to_workflow_module(group)
+            class_name = to_task_methods_class(group)
+            import_group_tasks += f"""from workflows.{module_name}_workflow import {class_name}\n"""
+            tasks.append(class_name)
+        tasks_str = "[" + ", ".join(tasks) + "]"
         template = self.jinja_env.get_template("locust.py.j2")
 
         # Prepare template context
@@ -345,7 +366,7 @@ class LocustTestGenerator:
             "task_methods_content": task_methods_content,
             "tasks_str": tasks_str,
             "api_info": api_info,
-            "generated_task_classes": self._generate_user_classes(),
+            "generated_task_classes": self._generate_user_classes(tasks),
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -439,18 +460,20 @@ class LocustTestGenerator:
         return name if name else f"{endpoint.method.lower()}_endpoint"
 
     def _generate_path_with_params(self, endpoint: Endpoint) -> str:
-        """Generate path with parameter placeholders"""
+        """Generate path with sanitized parameter placeholders for valid Python f-strings"""
         path = endpoint.path
 
-        # Replace path parameters with f-string format
+        # Replace path parameters with sanitized f-string format
         for param in endpoint.parameters:
             if param.location.value == "path":
-                path = path.replace(f"{{{param.name}}}", f"{{{param.name}}}")
+                # Use sanitized variable name for valid Python identifier
+                safe_name = to_param_var(param.name)
+                path = path.replace(f"{{{param.name}}}", f"{{{safe_name}}}")
 
         return path
 
     def _generate_path_params_code(self, endpoint: Endpoint) -> str:
-        """Generate code for path parameters"""
+        """Generate code for path parameters with sanitized variable names"""
         path_params = [p for p in endpoint.parameters if p.location.value == "path"]
 
         if not path_params:
@@ -458,19 +481,20 @@ class LocustTestGenerator:
 
         code_lines = []
         for param in path_params:
+            # Use sanitized variable name for valid Python identifier
+            safe_name = to_param_var(param.name)
             if param.type.startswith("integer"):
-                code_lines.append(f"{param.name} = data_generator.generate_integer()")
+                code_lines.append(f"{safe_name} = data_generator.generate_integer()")
             elif param.type == "string":
                 if "id" in param.name.lower():
-                    code_lines.append(f"{param.name} = data_generator.generate_id()")
+                    code_lines.append(f"{safe_name} = data_generator.generate_id()")
                 else:
                     code_lines.append(
-                        f"{param.name} = data_generator.generate_string()"
+                        f"{safe_name} = data_generator.generate_string()"
                     )
-
             else:
                 code_lines.append(
-                    f'{param.name} = data_generator.generate_value("{param.type}")'
+                    f'{safe_name} = data_generator.generate_value("{param.type}")'
                 )
 
         return "\n".join(code_lines)
@@ -594,8 +618,16 @@ class LocustTestGenerator:
         endpoints: List[Endpoint],
         include_auth_endpoints: bool = True,
     ) -> Dict[str, List[Endpoint]]:
-        """Group endpoints by their tags"""
+        """
+        Group endpoints by their tags.
+
+        If include_auth_endpoints is True, endpoints matching auth keywords
+        are placed ONLY in the Authentication group (not duplicated to their tags).
+        """
         grouped: Dict[str, List[Endpoint]] = {}
+        # Track endpoints already assigned to auth to avoid duplication
+        auth_assigned: set = set()
+
         # Define authentication-related keywords to check for in paths
         auth_keywords = [
             "login",
@@ -629,18 +661,34 @@ class LocustTestGenerator:
             path_lower = endpoint_path.lower()
             return any(keyword in path_lower for keyword in auth_keywords)
 
+        def endpoint_key(ep: Endpoint) -> str:
+            """Create unique key for endpoint deduplication"""
+            return f"{ep.method}:{ep.path}"
+
         for endpoint in endpoints:
-            tags = endpoint.tags if endpoint.tags else ["default"]
+            ep_key = endpoint_key(endpoint)
+
+            # Check if this is an auth endpoint
             if is_auth_endpoint(endpoint.path) and include_auth_endpoints:
-                # Add to authentication group regardless of tags
+                # Add to authentication group ONLY (not to tag groups)
                 if "Authentication" not in grouped:
                     grouped["Authentication"] = []
-                grouped["Authentication"].append(endpoint)
 
+                # Deduplicate within the authentication group
+                if ep_key not in auth_assigned:
+                    grouped["Authentication"].append(endpoint)
+                    auth_assigned.add(ep_key)
+                continue  # Skip adding to tag groups
+
+            # For non-auth endpoints, add to tag groups
+            tags = endpoint.tags if endpoint.tags else ["default"]
             for tag in tags:
                 if tag not in grouped:
                     grouped[tag] = []
-                grouped[tag].append(endpoint)
+                # Deduplicate within each tag group
+                existing_keys = {endpoint_key(e) for e in grouped[tag]}
+                if ep_key not in existing_keys:
+                    grouped[tag].append(endpoint)
 
         return grouped
 
@@ -653,13 +701,20 @@ class LocustTestGenerator:
 
         return "\n".join(methods)
 
-    def _generate_user_classes(self) -> str:
+    def _generate_user_classes(self, tasks: List[str]) -> str:
         """
-        **FIXED: Generate user classes with proper structure**
-        """
+        Generate user classes with proper structure.
 
+        Args:
+            tasks: List of TaskSet class names to assign to user classes
+
+        Returns:
+            Rendered user classes code string
+        """
+        # Format tasks list as Python list literal: [Class1, Class2, ...]
+        tasks_list = "[" + ", ".join(tasks) + "]"
         template = self.jinja_env.get_template("user_classes.py.j2")
-        return template.render()
+        return template.render(tasks_list=tasks_list)
 
     def _generate_test_data_file(self, db_type: str = "") -> str:
         """Generate test_data.py file content"""

@@ -1,21 +1,25 @@
 """
-Locust performance tests for {{api_info.title}}
+Locust performance tests for {{ api_info.title }}
 
 API Information:
-- Title: {{api_info.title}}
-- Version: {{api_info.version}}
-- Base URL: {{api_info.base_url}}
+- Title: {{ api_info.title }}
+- Version: {{ api_info.version }}
+- Base URL: {{ api_info.base_url }}
 """
 
 from locust import HttpUser, task, between, events, SequentialTaskSet
 import json
 import logging
-from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from urllib.parse import urljoin
 
 from test_data import TestDataGenerator
 from utils import ResponseValidator, RequestLogger, PerformanceMonitor
 from config import LoadTestConfig
+
+if TYPE_CHECKING:
+    from locust.clients import HttpSession
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +30,44 @@ config = LoadTestConfig()
 data_generator = TestDataGenerator()
 response_validator = ResponseValidator()
 performance_monitor = PerformanceMonitor()
+
+
+@dataclass
+class ResponseEnvelope:
+    """
+    Envelope for HTTP response data with status code for proper error handling.
+
+    This provides a consistent interface for checking response status codes
+    in retry logic (like handle_401_retry) without relying on the raw Locust
+    response object which is only available inside the context manager.
+    """
+    status_code: int
+    payload: Optional[Dict[str, Any]] = None
+    text: Optional[str] = None
+    ok: bool = False
+    error: Optional[str] = None
+
+    @classmethod
+    def success(cls, status_code: int, payload: Optional[Dict] = None, text: str = "") -> "ResponseEnvelope":
+        """Create a successful response envelope"""
+        return cls(
+            status_code=status_code,
+            payload=payload,
+            text=text,
+            ok=status_code < 400,
+            error=None
+        )
+
+    @classmethod
+    def failure(cls, status_code: int, error: str, text: str = "") -> "ResponseEnvelope":
+        """Create a failed response envelope"""
+        return cls(
+            status_code=status_code,
+            payload=None,
+            text=text,
+            ok=False,
+            error=error
+        )
 
 
 class BaseTaskMethods:
@@ -54,10 +96,8 @@ class BaseTaskMethods:
 
     def on_stop(self):
         """Cleanup when user stops"""
-        if hasattr(self, 'request_count'):
-            logger.info(f"TaskSet {self.__class__.__name__} stopped after {self.request_count} requests")
-        else:
-            logger.info(f"TaskSet {self.__class__.__name__} stopped after {self.request_count} requests")
+        request_count = getattr(self, 'request_count', 0)
+        logger.info(f"TaskSet {self.__class__.__name__} stopped after {request_count} requests")
 
     def _setup_authentication(self):
         """Setup authentication (override in subclasses if needed)"""
@@ -78,8 +118,17 @@ class BaseTaskMethods:
         if self.auth_token:
             self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
 
-    def make_request(self, method: str, path: str, **kwargs) -> Optional[Dict]:
-        """Make HTTP request with logging, validation, and monitoring"""
+    # Type hint for IDE support - client is provided by SequentialTaskSet at runtime
+    client: "HttpSession"
+
+    def make_request(self, method: str, path: str, **kwargs) -> Optional[ResponseEnvelope]:
+        """
+        Make HTTP request with logging, validation, and monitoring.
+
+        Returns:
+            ResponseEnvelope with status_code and payload for proper error handling,
+            or None if the request completely failed.
+        """
         self._initialize_attributes()
         self.request_count += 1
 
@@ -105,32 +154,64 @@ class BaseTaskMethods:
                 catch_response=True,
                 **kwargs
             ) as response:
+                status_code = response.status_code
+                text = response.text if hasattr(response, 'text') else ""
+
                 # Validate and monitor
                 is_valid = response_validator.validate_response(response, method, path)
                 performance_monitor.record_response(response, method, path)
 
                 if not is_valid:
                     response.failure(f"Response validation failed for {method} {path}")
-                    return None
+                    return ResponseEnvelope.failure(
+                        status_code=status_code,
+                        error=f"Validation failed for {method} {path}",
+                        text=text
+                    )
 
                 try:
-                    return response.json() if response.content else None
+                    payload = response.json() if response.content else None
+                    return ResponseEnvelope.success(
+                        status_code=status_code,
+                        payload=payload,
+                        text=text
+                    )
                 except json.JSONDecodeError:
-                    if response.status_code < 400:
-                        return {"raw_content": response.text}
+                    if status_code < 400:
+                        return ResponseEnvelope.success(
+                            status_code=status_code,
+                            payload={"raw_content": text},
+                            text=text
+                        )
                     response.failure(f"Invalid JSON response for {method} {path}")
-                    return None
+                    return ResponseEnvelope.failure(
+                        status_code=status_code,
+                        error=f"Invalid JSON for {method} {path}",
+                        text=text
+                    )
 
         except Exception as e:
             logger.error(f"Request failed {method} {path}: {e}")
             return None
 
-    def _store_response_data(self, method_name: str, data: Dict):
-        """Store response data for future requests"""
+    def _store_response_data(self, method_name: str, data):
+        """
+        Store response data for future requests.
+
+        Args:
+            method_name: Key to store the data under
+            data: Either a ResponseEnvelope (extracts payload) or a Dict
+        """
         if not hasattr(self, 'user_data'):
             self.user_data = {}
         if data:
-            self.user_data[method_name] = data
+            # Handle ResponseEnvelope - extract payload
+            if isinstance(data, ResponseEnvelope):
+                if data.payload:
+                    self.user_data[method_name] = data.payload
+            else:
+                # Handle raw dict
+                self.user_data[method_name] = data
 
     def _get_stored_data(self, method_name: str, key: str = None):
         """Retrieve stored response data from previous requests"""
@@ -138,6 +219,42 @@ class BaseTaskMethods:
         if stored_data and key:
             return stored_data.get(key)
         return stored_data
+
+    def handle_401_retry(self, method: str, path: str, **kwargs) -> Optional[ResponseEnvelope]:
+        """
+        Handle 401 responses with automatic re-authentication.
+
+        Makes a request and if it returns 401 Unauthorized, attempts to
+        re-authenticate and retry the request once.
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            path: API path
+            **kwargs: Additional request arguments
+
+        Returns:
+            ResponseEnvelope with status_code and payload, or None on complete failure
+        """
+        response = self.make_request(method, path, **kwargs)
+
+        if response is None:
+            return None
+
+        # Check for 401 and retry with re-authentication
+        if response.status_code == 401:
+            logger.warning(f"401 Unauthorized - re-authenticating and retrying {method} {path}")
+
+            # Call login method if available
+            if hasattr(self, 'login_and_get_token'):
+                self.login_and_get_token()
+            elif hasattr(self, '_setup_authentication'):
+                self._setup_authentication()
+                self._setup_headers()
+
+            # Retry the request
+            response = self.make_request(method, path, **kwargs)
+
+        return response
 
 
 class BaseAPIUser(HttpUser):

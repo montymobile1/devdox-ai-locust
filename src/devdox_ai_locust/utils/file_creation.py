@@ -34,15 +34,30 @@ class SafeFileCreator:
         self.config = config or FileCreationConfig()
 
     def _sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename to prevent security issues"""
+        """Sanitize filename to prevent security issues and ensure valid Python module names"""
 
         # Remove directory components
         clean_name = os.path.basename(filename).lower()
 
         # Remove dangerous characters
         clean_name = re.sub(r'[<>:"/\\|?*]', "", clean_name)
-        # Replace spaces with underscores
-        clean_name = clean_name.replace("- ", "_")
+
+        # Replace spaces, dashes, and other separators with underscores
+        clean_name = re.sub(r'[\s\-]+', '_', clean_name)
+
+        # Remove any remaining non-word characters except dots and underscores
+        # Keep dots for file extensions
+        name_part, ext = os.path.splitext(clean_name)
+        name_part = re.sub(r'[^\w]', '_', name_part)
+
+        # Remove consecutive underscores
+        name_part = re.sub(r'_+', '_', name_part)
+
+        # Strip leading/trailing underscores from name part
+        name_part = name_part.strip('_')
+
+        # Reconstruct with extension
+        clean_name = f"{name_part}{ext}" if name_part else ext
 
         # Ensure reasonable length
         if len(clean_name) > 255:
