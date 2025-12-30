@@ -1,36 +1,31 @@
-🚨 **CRITICAL PRESERVATION REQUIREMENT** 🚨
-You MUST preserve ALL existing classes, methods, and functionality from the current file.
-DO NOT delete, remove, or replace any existing code. Only ADD new functionality.
-The following classes MUST remain intact:
-- ResponseValidator
-- RequestLogger
-- PerformanceMonitor
-- DataManager
+Generate ONLY NEW METHODS to add to the existing ResponseValidator class.
 
-**EXISTING CODE TO PRESERVE (DO NOT DELETE ANY OF THIS)**:
-```python
-{{base_content}}
-```
+DO NOT rewrite existing classes. DO NOT include class definitions.
+ONLY output new method definitions that can be added.
 
-⚠️ WARNING: If you delete any of the classes listed above, your output will be rejected.
+The existing classes already have these methods (DO NOT recreate them):
+- ResponseValidator: validate_response(), validate_status_code(), validate_json_structure()
+- RequestLogger: log_request(), log_response()
+- PerformanceMonitor: record_metric(), get_statistics()
+- DataManager: store_data(), get_data()
 
 Validation Patterns Needed:
 {{ validation_patterns }}
 
-**ENHANCEMENT INSTRUCTIONS** (ADD to existing code, do NOT replace):
-1. ADD endpoint-specific validation rules to ResponseValidator
-2. ADD schema-based response validation methods
-3. ADD business logic validation helpers
-4. ADD response data integrity checks
-5. ADD performance threshold validation to PerformanceMonitor
+Generate 2-4 NEW validation methods specific to these endpoint patterns.
+Focus on business logic validation.
 
-⚠️ **VALIDATION CHECK**: Your output MUST contain:
-1. `class ResponseValidator` - The response validation class
-2. `class RequestLogger` - The request logging class
-3. `class PerformanceMonitor` - The performance monitoring class
-4. `class DataManager` - The data management class
-5. ALL existing methods from each class
+Example output format:
+<code>
+def validate_user_response(self, response: dict) -> bool:
+    """Validate user endpoint response structure."""
+    required_fields = ["id", "email", "created_at"]
+    return all(field in response for field in required_fields)
 
-Return the COMPLETE enhanced Python file with ALL existing classes preserved and enhanced.
+def validate_pagination(self, response: dict) -> bool:
+    """Validate paginated response structure."""
+    return "items" in response and "total" in response
+</code>
 
-**Format**: Return ONLY the complete Python code wrapped in <code></code> tags with NO explanations outside the tags.
+Output ONLY new method definitions wrapped in <code></code> tags.
+Do NOT include imports, class definitions, or existing methods.

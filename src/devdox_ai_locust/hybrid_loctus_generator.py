@@ -5,10 +5,11 @@ Combines reliable template-based generation with LLM enhancement for creativity
 and domain-specific optimizations.
 """
 
+import ast
 import re
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 from dataclasses import dataclass
@@ -41,6 +42,214 @@ CRITICAL_FUNCTIONS = {
     "test_data.py": ["generate_json_data", "generate_string", "generate_id"],
     "utils.py": ["validate_response", "log_request"],
 }
+
+
+class SafeCodeMerger:
+    """
+    Safely merges AI-generated code additions into original code.
+
+    This approach:
+    1. ALWAYS keeps the original code intact
+    2. Only ADDS new methods/classes from AI output
+    3. Never replaces or modifies existing code
+    4. Uses AST parsing for safety
+    """
+
+    @staticmethod
+    def get_existing_names(code: str) -> Tuple[Set[str], Set[str], Set[str]]:
+        """
+        Extract existing class names, method names, and function names from code.
+
+        Returns:
+            Tuple of (class_names, method_names, function_names)
+        """
+        class_names: Set[str] = set()
+        method_names: Set[str] = set()
+        function_names: Set[str] = set()
+
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    class_names.add(node.name)
+                    # Get methods within the class
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef):
+                            method_names.add(f"{node.name}.{item.name}")
+                elif isinstance(node, ast.FunctionDef):
+                    # Top-level function
+                    if not any(isinstance(parent, ast.ClassDef) for parent in ast.walk(tree)):
+                        function_names.add(node.name)
+        except SyntaxError:
+            logger.warning("Failed to parse code with AST, falling back to regex")
+            # Fallback to regex
+            class_names = set(re.findall(r'class\s+(\w+)\s*[:\(]', code))
+            function_names = set(re.findall(r'^def\s+(\w+)\s*\(', code, re.MULTILINE))
+
+        return class_names, method_names, function_names
+
+    @staticmethod
+    def extract_new_methods_only(original_code: str, ai_code: str, target_class: str = None) -> str:
+        """
+        Extract ONLY new methods from AI code that don't exist in original.
+
+        This is a conservative approach that:
+        1. Identifies methods in AI output
+        2. Filters out any that already exist in original
+        3. Returns only the truly new additions
+
+        Handles both:
+        - Full class definitions from AI
+        - Standalone method definitions (method-only output)
+        """
+        if not ai_code or not ai_code.strip():
+            return ""
+
+        orig_classes, orig_methods, orig_functions = SafeCodeMerger.get_existing_names(original_code)
+
+        # Get all existing method names (without class prefix) for comparison
+        existing_method_names = set()
+        for method in orig_methods:
+            if "." in method:
+                existing_method_names.add(method.split(".")[-1])
+        existing_method_names.update(orig_functions)
+
+        try:
+            ai_tree = ast.parse(ai_code)
+        except SyntaxError:
+            logger.warning("AI code has syntax errors, trying to extract methods via regex")
+            # Fallback: extract method definitions via regex
+            return SafeCodeMerger._extract_methods_regex(ai_code, existing_method_names)
+
+        new_methods = []
+
+        for node in ast.iter_child_nodes(ai_tree):
+            if isinstance(node, ast.ClassDef):
+                # Check if this is an existing class we should add methods to
+                if node.name in orig_classes:
+                    # Extract only new methods from this class
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef):
+                            if item.name not in existing_method_names:
+                                try:
+                                    method_source = ast.get_source_segment(ai_code, item)
+                                    if method_source:
+                                        # Ensure proper indentation for class method
+                                        indented = SafeCodeMerger._indent_code(method_source, 4)
+                                        new_methods.append(f"    # AI-added method\n{indented}")
+                                except Exception:
+                                    pass
+
+            elif isinstance(node, ast.FunctionDef):
+                # Standalone method definition (AI returned methods only)
+                if node.name not in existing_method_names:
+                    try:
+                        method_source = ast.get_source_segment(ai_code, node)
+                        if method_source:
+                            # Add indentation for class method
+                            indented = SafeCodeMerger._indent_code(method_source, 4)
+                            new_methods.append(f"    # AI-added method\n{indented}")
+                    except Exception:
+                        pass
+
+        return "\n\n".join(new_methods)
+
+    @staticmethod
+    def _indent_code(code: str, spaces: int) -> str:
+        """Add indentation to code block."""
+        indent = " " * spaces
+        lines = code.split("\n")
+        # Check if already indented
+        if lines and lines[0].startswith(" " * spaces):
+            return code
+        return "\n".join(indent + line if line.strip() else line for line in lines)
+
+    @staticmethod
+    def _extract_methods_regex(ai_code: str, existing_methods: Set[str]) -> str:
+        """Fallback method extraction using regex when AST fails."""
+        # Match method definitions
+        pattern = r'(def\s+(\w+)\s*\([^)]*\).*?(?=\ndef\s|\Z))'
+        matches = re.findall(pattern, ai_code, re.DOTALL)
+
+        new_methods = []
+        for full_match, method_name in matches:
+            if method_name not in existing_methods:
+                indented = SafeCodeMerger._indent_code(full_match.strip(), 4)
+                new_methods.append(f"    # AI-added method\n{indented}")
+
+        return "\n\n".join(new_methods)
+
+    @staticmethod
+    def safe_merge(original_code: str, ai_additions: str, target_class: str = None) -> str:
+        """
+        Safely merge AI additions into original code.
+
+        This method:
+        1. ALWAYS returns the original code as base
+        2. Only appends new methods that don't exist
+        3. Never modifies existing code
+
+        Args:
+            original_code: The original template-generated code (ALWAYS preserved)
+            ai_additions: Code generated by AI (only new parts used)
+            target_class: If specified, add new methods to this class
+
+        Returns:
+            Original code with safe additions appended
+        """
+        if not ai_additions or not ai_additions.strip():
+            logger.info("No AI additions to merge, returning original")
+            return original_code
+
+        # Extract only new methods (handles syntax errors internally)
+        new_methods = SafeCodeMerger.extract_new_methods_only(
+            original_code, ai_additions, target_class
+        )
+
+        if not new_methods:
+            logger.info("No new methods found in AI output, returning original")
+            return original_code
+
+        # Find where to insert new methods (at the end of the target class)
+        if target_class:
+            # Find the class definition and locate the end of the class
+            # Look for the class and find where it ends
+            lines = original_code.split('\n')
+            class_start = -1
+            class_indent = 0
+
+            for i, line in enumerate(lines):
+                if re.match(rf'\s*class\s+{target_class}\s*[\(:]', line):
+                    class_start = i
+                    class_indent = len(line) - len(line.lstrip())
+                    break
+
+            if class_start >= 0:
+                # Find the end of the class (next line with same or less indentation that's not empty)
+                class_end = len(lines)
+                for i in range(class_start + 1, len(lines)):
+                    line = lines[i]
+                    if line.strip() and not line.strip().startswith('#'):
+                        current_indent = len(line) - len(line.lstrip())
+                        if current_indent <= class_indent and not line.strip().startswith('def '):
+                            # Check if this is a new class or module-level code
+                            if re.match(r'\s*(class\s|def\s|if\s+__name__|@|[A-Z_]+\s*=)', line):
+                                class_end = i
+                                break
+
+                # Insert new methods before the class ends
+                new_lines = lines[:class_end]
+                new_lines.append("")
+                new_lines.append(new_methods)
+                new_lines.extend(lines[class_end:])
+
+                merged = '\n'.join(new_lines)
+                logger.info(f"Added new methods to {target_class}")
+                return merged
+
+        # Fallback: append at end of file
+        logger.info("Appending new methods at end of file")
+        return original_code + "\n\n# AI-enhanced additions\n" + new_methods
 
 
 @dataclass
@@ -1189,33 +1398,52 @@ class HybridLocustGenerator:
         original_content: str,
     ) -> str:
         """
-        Safely apply AI enhancement with validation and fallback.
+        Safely apply AI enhancement using additive-only merging.
+
+        This method uses a fundamentally safer approach:
+        1. ALWAYS keep the original code intact as the base
+        2. Extract ONLY new methods from AI output
+        3. Merge new methods into original (never replace)
 
         Args:
             filename: Name of the file
-            enhanced_content: AI-enhanced content (may be None or corrupted)
-            original_content: Original template-generated content
+            enhanced_content: AI-generated content (may be corrupted)
+            original_content: Original template-generated content (ALWAYS preserved)
 
         Returns:
-            The validated content to use (enhanced if valid, original if corrupted)
+            Original code with any valid AI additions safely merged
         """
-        if not enhanced_content:
-            logger.warning(f"AI returned empty content for {filename}, using original")
+        if not enhanced_content or not enhanced_content.strip():
+            logger.info(f"No AI content for {filename}, using original")
             return original_content
 
-        # Validate syntax first
-        if not self._validate_python_code(enhanced_content):
-            logger.error(f"AI returned invalid Python for {filename}, using original")
-            return original_content
+        # Determine target class for this file
+        target_class = None
+        if filename == test_data_file_path:
+            target_class = "TestDataGenerator"
+        elif filename == "utils.py":
+            target_class = "ResponseValidator"  # Primary class to extend
 
-        # Validate critical elements are preserved
-        is_valid, content_to_use, missing = self._validate_critical_elements(
-            filename, enhanced_content, original_content
+        # Use SafeCodeMerger to safely combine original + AI additions
+        merged_content = SafeCodeMerger.safe_merge(
+            original_code=original_content,
+            ai_additions=enhanced_content,
+            target_class=target_class
+        )
+
+        # Final validation: ensure critical elements still exist
+        is_valid, final_content, missing = self._validate_critical_elements(
+            filename, merged_content, original_content
         )
 
         if not is_valid:
-            logger.warning(
-                f"Reverting {filename} to original due to missing: {missing}"
-            )
+            # This should never happen with SafeCodeMerger, but just in case
+            logger.error(f"SafeCodeMerger produced invalid output for {filename}, using original")
+            return original_content
 
-        return content_to_use
+        # Verify syntax of merged content
+        if not self._validate_python_code(final_content):
+            logger.error(f"Merged content has syntax errors for {filename}, using original")
+            return original_content
+
+        return final_content
