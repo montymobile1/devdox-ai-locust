@@ -452,7 +452,9 @@ async def _generate_and_create_tests(
     if patch_tracker:
         summary = patch_tracker.get_summary()
         patch_tracker.finalize()
-        console.print(f"[blue]📋 WAL patches saved to: .devdox_ai_locust/wal/ ({summary.get('total_patches', 0)} patches)[/blue]")
+        session_id = summary.get('session_id', '')
+        total = summary.get('total_patches', 0)
+        console.print(f"[blue]📋 Patches saved to: .devdox_ai_locust/{session_id}/.patches/ ({total} patches)[/blue]")
 
     # Finalize metadata
     metadata_manager.finalize_session()

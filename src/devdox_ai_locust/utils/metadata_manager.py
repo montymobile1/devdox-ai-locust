@@ -1,31 +1,30 @@
 """
 Central Metadata Manager for DevDox AI Locust
 
-PostgreSQL WAL-Inspired Structure (v3.0)
-========================================
-
-Simple, flat, extensible design inspired by PostgreSQL's Write-Ahead Log.
+Simplified Structure (v3.0)
+===========================
 
 Directory Structure:
     .devdox_ai_locust/
-    ├── metadata.json       # Central metadata (API info, config)
-    ├── manifest.json       # WAL manifest - maps patches to milestones
-    └── wal/                # Write-Ahead Log - sequential patches
-        ├── 000001_a1b2c3d4.patch
-        ├── 000002_e5f6g7h8.patch
-        └── 000003_i9j0k1l2.patch
+    ├── metadata.json                    # Central metadata (API info, config)
+    └── {session_id}/                    # e.g., 2025-12-29_10-39-24
+        ├── session.json                 # Session milestones and patches info
+        └── .patches/                    # Sequential patch files
+            ├── 000001_a1b2c3d4.patch
+            └── 000002_e5f6g7h8.patch
 
 Key Concepts:
-    - Each code change milestone gets a sequential patch file
-    - Patches are named: {sequence}_{short_uuid}.patch
-    - manifest.json tracks what each patch represents
+    - Each generation session gets a datetime-stamped directory
+    - session.json tracks milestones (what each patch represents)
+    - .patches/ contains sequential UUID-named patch files
     - Milestones can be: template_generation, llm_enhancement, validation, etc.
     - Extensible for future milestones (user_edit, refactor, etc.)
 
-Example manifest.json:
+Example session.json:
     {
         "version": "3.0",
         "session_id": "2025-12-29_10-39-24",
+        "created_at": "2025-12-29T10:39:24Z",
         "patches": [
             {
                 "id": "000001_a1b2c3d4",
@@ -60,8 +59,8 @@ logger = logging.getLogger(__name__)
 
 METADATA_VERSION = "3.0"
 METADATA_FILENAME = "metadata.json"
-MANIFEST_FILENAME = "manifest.json"
-WAL_DIR = "wal"
+SESSION_FILENAME = "session.json"
+PATCHES_DIR = ".patches"
 DEVDOX_DIR_NAME = ".devdox_ai_locust"
 
 
@@ -83,7 +82,7 @@ class PatchStats(BaseModel):
 
 
 class PatchEntry(BaseModel):
-    """Entry in the WAL manifest"""
+    """Entry in the session's patch list"""
     id: str  # e.g., "000001_a1b2c3d4"
     sequence: int
     milestone: str
@@ -93,11 +92,12 @@ class PatchEntry(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class WALManifest(BaseModel):
-    """Write-Ahead Log manifest"""
+class SessionInfo(BaseModel):
+    """Session information stored in session.json"""
     version: str = METADATA_VERSION
     session_id: str = ""
     created_at: str = ""
+    updated_at: str = ""
     patches: List[PatchEntry] = Field(default_factory=list)
 
     def get_next_sequence(self) -> int:
@@ -175,12 +175,12 @@ class CentralMetadata(BaseModel):
 
 class MetadataManager:
     """
-    Manages the .devdox_ai_locust/ directory with PostgreSQL WAL-inspired structure.
+    Manages the .devdox_ai_locust/ directory structure.
 
-    Simple, flat, extensible:
+    Structure:
     - metadata.json: Central config and API info
-    - manifest.json: WAL manifest mapping patches to milestones
-    - wal/: Directory of sequential patch files
+    - {session_id}/session.json: Session milestones info
+    - {session_id}/.patches/: Directory of sequential patch files
     """
 
     def __init__(self, output_dir: Path):
@@ -193,12 +193,14 @@ class MetadataManager:
         self.output_dir = Path(output_dir)
         self.devdox_dir = self.output_dir / DEVDOX_DIR_NAME
         self.metadata_path = self.devdox_dir / METADATA_FILENAME
-        self.manifest_path = self.devdox_dir / MANIFEST_FILENAME
-        self.wal_dir = self.devdox_dir / WAL_DIR
 
         self.session_id = ""
+        self._session_dir: Optional[Path] = None
+        self._patches_dir: Optional[Path] = None
+        self._session_path: Optional[Path] = None
+
         self.metadata = CentralMetadata()
-        self.manifest = WALManifest()
+        self.session_info = SessionInfo()
         self._start_time: Optional[datetime] = None
 
     # =========================================================================
@@ -208,7 +210,23 @@ class MetadataManager:
     def _ensure_directories(self) -> None:
         """Create directory structure if needed"""
         self.devdox_dir.mkdir(parents=True, exist_ok=True)
-        self.wal_dir.mkdir(exist_ok=True)
+        if self._session_dir:
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+        if self._patches_dir:
+            self._patches_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def patches_dir(self) -> Path:
+        """Get the patches directory for the current session"""
+        if self._patches_dir:
+            return self._patches_dir
+        # Fallback for backwards compatibility
+        return self.devdox_dir / "patches"
+
+    @property
+    def manifest(self) -> SessionInfo:
+        """Backwards compatibility alias for session_info"""
+        return self.session_info
 
     # =========================================================================
     # Session Management
@@ -231,11 +249,17 @@ class MetadataManager:
         Returns:
             Session ID
         """
-        self._ensure_directories()
         self._start_time = datetime.now(timezone.utc)
 
-        # Generate session ID
+        # Generate session ID (datetime stamp)
         self.session_id = self._start_time.strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Setup session directories
+        self._session_dir = self.devdox_dir / self.session_id
+        self._patches_dir = self._session_dir / PATCHES_DIR
+        self._session_path = self._session_dir / SESSION_FILENAME
+
+        self._ensure_directories()
 
         # Initialize metadata
         self.metadata = CentralMetadata(
@@ -255,22 +279,26 @@ class MetadataManager:
                 source_type=source_type,
             )
 
-        # Initialize manifest
-        self.manifest = WALManifest(
+        # Initialize session info
+        self.session_info = SessionInfo(
             session_id=self.session_id,
             created_at=self._start_time.isoformat(),
+            updated_at=self._start_time.isoformat(),
         )
 
-        # Load existing manifest if present (for incremental updates)
-        self._load_manifest()
+        # Load existing session if present (for incremental updates)
+        self._load_session()
 
         logger.info(f"Initialized session: {self.session_id}")
         return self.session_id
 
     def finalize_session(self) -> None:
         """Finalize the session and save all metadata"""
-        # Update timestamp
-        self.metadata.updated_at = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Update timestamps
+        self.metadata.updated_at = now
+        self.session_info.updated_at = now
 
         # Calculate totals
         self.metadata.output.total_files = (
@@ -280,12 +308,12 @@ class MetadataManager:
 
         # Save everything
         self._save_metadata()
-        self._save_manifest()
+        self._save_session()
 
         logger.info(f"Finalized session: {self.session_id}")
 
     # =========================================================================
-    # Patch Management (WAL)
+    # Patch Management
     # =========================================================================
 
     def create_patch(
@@ -297,7 +325,7 @@ class MetadataManager:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> PatchEntry:
         """
-        Create a new patch in the WAL.
+        Create a new patch in the session.
 
         Args:
             milestone: Type of milestone (template_generation, llm_enhancement, etc.)
@@ -311,8 +339,8 @@ class MetadataManager:
         """
         self._ensure_directories()
 
-        # Add to manifest
-        entry = self.manifest.add_patch(
+        # Add to session info
+        entry = self.session_info.add_patch(
             milestone=milestone,
             description=description,
             stats=stats,
@@ -320,11 +348,12 @@ class MetadataManager:
         )
 
         # Write patch file
-        patch_path = self.wal_dir / f"{entry.id}.patch"
-        patch_path.write_text(content, encoding="utf-8")
+        if self._patches_dir:
+            patch_path = self._patches_dir / f"{entry.id}.patch"
+            patch_path.write_text(content, encoding="utf-8")
 
-        # Save manifest
-        self._save_manifest()
+        # Save session info
+        self._save_session()
 
         logger.debug(f"Created patch: {entry.id} ({milestone})")
         return entry
@@ -339,25 +368,22 @@ class MetadataManager:
         Returns:
             Patch content or None if not found
         """
-        patch_path = self.wal_dir / f"{patch_id}.patch"
+        if not self._patches_dir:
+            return None
+        patch_path = self._patches_dir / f"{patch_id}.patch"
         if patch_path.exists():
             return patch_path.read_text(encoding="utf-8")
         return None
 
     def get_patches_by_milestone(self, milestone: str) -> List[PatchEntry]:
         """Get all patches for a specific milestone type"""
-        return [p for p in self.manifest.patches if p.milestone == milestone]
+        return [p for p in self.session_info.patches if p.milestone == milestone]
 
     def get_latest_patch(self) -> Optional[PatchEntry]:
         """Get the most recent patch entry"""
-        if self.manifest.patches:
-            return max(self.manifest.patches, key=lambda p: p.sequence)
+        if self.session_info.patches:
+            return max(self.session_info.patches, key=lambda p: p.sequence)
         return None
-
-    @property
-    def patches_dir(self) -> Path:
-        """Get the WAL directory (for backwards compatibility)"""
-        return self.wal_dir
 
     # =========================================================================
     # Configuration Updates
@@ -411,26 +437,29 @@ class MetadataManager:
             encoding="utf-8",
         )
 
-    def _save_manifest(self) -> None:
-        """Save WAL manifest to disk"""
+    def _save_session(self) -> None:
+        """Save session info to disk"""
+        if not self._session_path:
+            return
         self._ensure_directories()
-        self.manifest_path.write_text(
-            json.dumps(self.manifest.model_dump(), indent=2),
+        self._session_path.write_text(
+            json.dumps(self.session_info.model_dump(), indent=2),
             encoding="utf-8",
         )
 
-    def _load_manifest(self) -> None:
-        """Load existing manifest if present"""
-        if self.manifest_path.exists():
-            try:
-                data = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-                # Preserve existing patches
-                if "patches" in data:
-                    for patch_data in data["patches"]:
-                        entry = PatchEntry(**patch_data)
-                        self.manifest.patches.append(entry)
-            except Exception as e:
-                logger.warning(f"Failed to load existing manifest: {e}")
+    def _load_session(self) -> None:
+        """Load existing session if present"""
+        if not self._session_path or not self._session_path.exists():
+            return
+        try:
+            data = json.loads(self._session_path.read_text(encoding="utf-8"))
+            # Preserve existing patches
+            if "patches" in data:
+                for patch_data in data["patches"]:
+                    entry = PatchEntry(**patch_data)
+                    self.session_info.patches.append(entry)
+        except Exception as e:
+            logger.warning(f"Failed to load existing session: {e}")
 
     # =========================================================================
     # Utility Methods
@@ -438,18 +467,18 @@ class MetadataManager:
 
     def get_structure_info(self) -> str:
         """Get a formatted string showing the directory structure"""
-        patch_count = len(self.manifest.patches)
+        patch_count = len(self.session_info.patches)
         return f"""
 .devdox_ai_locust/
-├── metadata.json       # Central metadata (API info, config)
-├── manifest.json       # WAL manifest ({patch_count} patches)
-└── wal/                # Write-Ahead Log
-    └── *.patch         # Sequential patch files
+├── metadata.json                    # Central metadata (API info, config)
+└── {self.session_id}/               # Session directory
+    ├── session.json                 # Milestones ({patch_count} patches)
+    └── .patches/                    # Patch files
 """
 
     def to_dict(self) -> Dict[str, Any]:
         """Export all data as dictionary"""
         return {
             "metadata": self.metadata.model_dump(),
-            "manifest": self.manifest.model_dump(),
+            "session": self.session_info.model_dump(),
         }
