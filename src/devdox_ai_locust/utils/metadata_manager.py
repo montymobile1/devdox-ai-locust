@@ -1,32 +1,64 @@
 """
 Central Metadata Manager for DevDox AI Locust
 
-Manages the .devdox_ai_locust/ directory and central metadata.json file.
-This is the single source of truth for all generated test information and
-is extensible for features like patch tracking, test history, and more.
+Manages the .devdox_ai_locust/ directory with a clear, organized structure.
+This is the single source of truth for all generated test information.
 
-Structure:
+Directory Structure:
     .devdox_ai_locust/
-    ├── metadata.json           # Central metadata file
-    └── patches/                # Patch tracking subdirectory
-        └── 2025-12-28_21-47-06/
-            ├── pre_llm.patch
-            ├── post_llm.patch
-            └── session.json
+    ├── metadata.json                    # Central metadata file (main index)
+    │
+    ├── generation/                      # Generation-related data
+    │   └── sessions/                    # Historical session data
+    │       └── {session_id}/
+    │           └── config.json          # Session-specific config
+    │
+    ├── ai_enhancement/                  # AI enhancement tracking
+    │   ├── patches/                     # Pre/post LLM code patches
+    │   │   └── {session_id}/
+    │   │       ├── pre_llm.patch        # Code before AI enhancement
+    │   │       ├── post_llm.patch       # Code after AI enhancement
+    │   │       └── summary.json         # Patch statistics
+    │   │
+    │   └── constraints/                 # AI sandbox constraints used
+    │       └── {session_id}/
+    │           ├── test_data.txt        # Constraints for test_data.py
+    │           └── utils.txt            # Constraints for utils.py
+    │
+    ├── codebase_analysis/               # CodebaseAwareness outputs
+    │   └── {session_id}/
+    │       ├── dependencies.json        # File dependency map
+    │       ├── protected_symbols.json   # Protected symbols per file
+    │       └── exports.json             # Exports per file
+    │
+    └── logs/                            # Generation logs
+        └── {session_id}.log
 """
 
 import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Protocol
+from typing import Dict, Any, Optional, List, Protocol, Set
 from dataclasses import dataclass, asdict, field
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-METADATA_VERSION = "1.0"
+METADATA_VERSION = "2.0"
 METADATA_FILENAME = "metadata.json"
 DEVDOX_DIR_NAME = ".devdox_ai_locust"
+
+
+class SubDirectory(str, Enum):
+    """Subdirectories within .devdox_ai_locust/"""
+    GENERATION = "generation"
+    GENERATION_SESSIONS = "generation/sessions"
+    AI_ENHANCEMENT = "ai_enhancement"
+    AI_PATCHES = "ai_enhancement/patches"
+    AI_CONSTRAINTS = "ai_enhancement/constraints"
+    CODEBASE_ANALYSIS = "codebase_analysis"
+    LOGS = "logs"
 
 
 @dataclass
@@ -66,20 +98,39 @@ class OutputMetadata:
 
 
 @dataclass
-class PatchFeatureMetadata:
-    """Metadata for the patch tracking feature"""
+class PatchSessionInfo:
+    """Information about a patch session"""
+    session_id: str
+    created_at: str
+    pre_llm_files: int = 0
+    post_llm_files: int = 0
+    files_changed: int = 0
+    files_added: int = 0
+    files_removed: int = 0
+
+
+@dataclass
+class AIEnhancementMetadata:
+    """Metadata for AI enhancement feature"""
     enabled: bool = True
-    sessions: List[str] = field(default_factory=list)
+    total_sessions: int = 0
     latest_session: str = ""
+    sessions: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CodebaseAnalysisMetadata:
+    """Metadata for codebase analysis feature"""
+    enabled: bool = True
+    latest_session: str = ""
+    total_protected_symbols: int = 0
 
 
 @dataclass
 class FeaturesMetadata:
     """Container for all extensible features"""
-    patches: PatchFeatureMetadata = field(default_factory=PatchFeatureMetadata)
-    # Future features can be added here:
-    # test_history: TestHistoryMetadata = field(default_factory=TestHistoryMetadata)
-    # analytics: AnalyticsMetadata = field(default_factory=AnalyticsMetadata)
+    ai_enhancement: AIEnhancementMetadata = field(default_factory=AIEnhancementMetadata)
+    codebase_analysis: CodebaseAnalysisMetadata = field(default_factory=CodebaseAnalysisMetadata)
 
 
 @dataclass
@@ -88,8 +139,7 @@ class CentralMetadata:
     Central metadata structure for DevDox AI Locust.
 
     This is the main data structure stored in .devdox_ai_locust/metadata.json.
-    It's designed to be extensible - new features can add their own sections
-    under the `features` field.
+    It provides a high-level overview; detailed data is in subdirectories.
     """
     version: str = METADATA_VERSION
     created_at: str = ""
@@ -189,9 +239,19 @@ class FileSystemMetadataStorage:
         output = OutputMetadata(**output_data) if output_data else OutputMetadata()
 
         features_data = data.get('features', {})
-        patches_data = features_data.get('patches', {})
-        patches = PatchFeatureMetadata(**patches_data) if patches_data else PatchFeatureMetadata()
-        features = FeaturesMetadata(patches=patches)
+
+        # Handle AI enhancement metadata
+        ai_data = features_data.get('ai_enhancement', {})
+        ai_enhancement = AIEnhancementMetadata(**ai_data) if ai_data else AIEnhancementMetadata()
+
+        # Handle codebase analysis metadata
+        codebase_data = features_data.get('codebase_analysis', {})
+        codebase_analysis = CodebaseAnalysisMetadata(**codebase_data) if codebase_data else CodebaseAnalysisMetadata()
+
+        features = FeaturesMetadata(
+            ai_enhancement=ai_enhancement,
+            codebase_analysis=codebase_analysis
+        )
 
         return CentralMetadata(
             version=data.get('version', METADATA_VERSION),
@@ -232,6 +292,7 @@ class MetadataManager:
         self.storage = storage or FileSystemMetadataStorage(self.output_dir)
         self._metadata: Optional[CentralMetadata] = None
         self._session_start_time: Optional[datetime] = None
+        self._current_session_id: Optional[str] = None
 
     @property
     def metadata(self) -> CentralMetadata:
@@ -246,11 +307,60 @@ class MetadataManager:
         return self.storage.get_devdox_dir()
 
     @property
+    def session_id(self) -> str:
+        """Get the current session ID"""
+        return self._current_session_id or self.generate_session_id()
+
+    # =========================================================================
+    # Directory Access Methods
+    # =========================================================================
+
+    def get_subdir(self, subdir: SubDirectory, session_id: Optional[str] = None) -> Path:
+        """
+        Get a subdirectory path within .devdox_ai_locust/
+
+        Args:
+            subdir: The subdirectory type
+            session_id: Optional session ID for session-specific subdirs
+
+        Returns:
+            Path to the subdirectory (created if needed)
+        """
+        path = self.devdox_dir / subdir.value
+        if session_id:
+            path = path / session_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_patches_dir(self, session_id: Optional[str] = None) -> Path:
+        """Get the AI patches directory for a session"""
+        return self.get_subdir(SubDirectory.AI_PATCHES, session_id or self.session_id)
+
+    def get_constraints_dir(self, session_id: Optional[str] = None) -> Path:
+        """Get the AI constraints directory for a session"""
+        return self.get_subdir(SubDirectory.AI_CONSTRAINTS, session_id or self.session_id)
+
+    def get_codebase_analysis_dir(self, session_id: Optional[str] = None) -> Path:
+        """Get the codebase analysis directory for a session"""
+        return self.get_subdir(SubDirectory.CODEBASE_ANALYSIS, session_id or self.session_id)
+
+    def get_generation_session_dir(self, session_id: Optional[str] = None) -> Path:
+        """Get the generation session directory"""
+        return self.get_subdir(SubDirectory.GENERATION_SESSIONS, session_id or self.session_id)
+
+    def get_logs_dir(self) -> Path:
+        """Get the logs directory"""
+        return self.get_subdir(SubDirectory.LOGS)
+
+    # Backwards compatibility
+    @property
     def patches_dir(self) -> Path:
-        """Get the patches subdirectory path"""
-        patches_path = self.devdox_dir / "patches"
-        patches_path.mkdir(parents=True, exist_ok=True)
-        return patches_path
+        """Get the patches subdirectory path (backwards compatible)"""
+        return self.get_patches_dir()
+
+    # =========================================================================
+    # Session Management
+    # =========================================================================
 
     def generate_session_id(self) -> str:
         """Generate a timestamped session ID"""
@@ -273,7 +383,7 @@ class MetadataManager:
         Returns:
             Session ID
         """
-        session_id = self.generate_session_id()
+        self._current_session_id = self.generate_session_id()
         self._session_start_time = datetime.now(timezone.utc)
 
         # Load existing metadata or create new
@@ -297,15 +407,15 @@ class MetadataManager:
 
         # Initialize generation metadata
         self._metadata.generation = GenerationMetadata(
-            session_id=session_id,
+            session_id=self._current_session_id,
             created_at=self._session_start_time.isoformat()
         )
 
         # Set output directory
         self._metadata.output.directory = str(self.output_dir.absolute())
 
-        logger.info(f"Initialized metadata session: {session_id}")
-        return session_id
+        logger.info(f"Initialized metadata session: {self._current_session_id}")
+        return self._current_session_id
 
     def update_generation_config(
         self,
@@ -348,15 +458,180 @@ class MetadataManager:
 
         output.total_files = len(output.main_files) + len(output.workflow_files)
 
+    # =========================================================================
+    # AI Enhancement Tracking
+    # =========================================================================
+
+    def save_patch_summary(
+        self,
+        pre_llm_files: int,
+        post_llm_files: int,
+        files_changed: int,
+        files_added: int = 0,
+        files_removed: int = 0,
+        patches: Optional[Dict[str, str]] = None
+    ) -> Path:
+        """
+        Save patch summary to the patches directory.
+
+        Args:
+            pre_llm_files: Number of files before LLM
+            post_llm_files: Number of files after LLM
+            files_changed: Number of files changed
+            files_added: Number of files added
+            files_removed: Number of files removed
+            patches: Dict of filename -> unified diff
+
+        Returns:
+            Path to the summary file
+        """
+        patches_dir = self.get_patches_dir()
+
+        summary = {
+            "session_id": self.session_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "pre_llm_files_count": pre_llm_files,
+            "post_llm_files_count": post_llm_files,
+            "files_changed": files_changed,
+            "files_added": files_added,
+            "files_removed": files_removed,
+        }
+
+        # Save summary
+        summary_path = patches_dir / "summary.json"
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2)
+
+        # Save patches if provided
+        if patches:
+            patches_file = patches_dir / "patches.json"
+            with open(patches_file, 'w', encoding='utf-8') as f:
+                json.dump(patches, f, indent=2)
+
+        # Update metadata
+        ai_meta = self.metadata.features.ai_enhancement
+        ai_meta.enabled = True
+        ai_meta.total_sessions += 1
+        ai_meta.latest_session = self.session_id
+        if self.session_id not in ai_meta.sessions:
+            ai_meta.sessions.append(self.session_id)
+
+        logger.info(f"Saved patch summary to: {patches_dir}")
+        return summary_path
+
+    def save_constraints(
+        self,
+        filename: str,
+        constraints: str
+    ) -> Path:
+        """
+        Save AI constraints used for a file.
+
+        Args:
+            filename: The file the constraints were for (e.g., "test_data.py")
+            constraints: The constraint text sent to AI
+
+        Returns:
+            Path to the saved constraints file
+        """
+        constraints_dir = self.get_constraints_dir()
+
+        # Clean filename for saving
+        clean_name = filename.replace('.py', '').replace('/', '_')
+        constraints_path = constraints_dir / f"{clean_name}.constraints.txt"
+
+        with open(constraints_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Constraints for {filename}\n")
+            f.write(f"# Session: {self.session_id}\n")
+            f.write(f"# Generated: {datetime.now(timezone.utc).isoformat()}\n")
+            f.write("\n")
+            f.write(constraints)
+
+        logger.debug(f"Saved constraints for {filename} to: {constraints_path}")
+        return constraints_path
+
+    # =========================================================================
+    # Codebase Analysis Storage
+    # =========================================================================
+
+    def save_codebase_analysis(
+        self,
+        exports: Dict[str, List[str]],
+        imports: Dict[str, Dict[str, List[str]]],
+        protected_symbols: Dict[str, List[Dict[str, Any]]]
+    ) -> Path:
+        """
+        Save codebase analysis results.
+
+        Args:
+            exports: Dict of filename -> list of exported symbols
+            imports: Dict of filename -> {source_file: imported_symbols}
+            protected_symbols: Dict of filename -> list of protected symbol info
+
+        Returns:
+            Path to the analysis directory
+        """
+        analysis_dir = self.get_codebase_analysis_dir()
+
+        # Save exports
+        exports_path = analysis_dir / "exports.json"
+        with open(exports_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                "session_id": self.session_id,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "files": {k: list(v) if isinstance(v, set) else v for k, v in exports.items()}
+            }, f, indent=2)
+
+        # Save dependencies (imports)
+        deps_path = analysis_dir / "dependencies.json"
+        with open(deps_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                "session_id": self.session_id,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "imports": {
+                    k: {sk: list(sv) if isinstance(sv, set) else sv for sk, sv in v.items()}
+                    for k, v in imports.items()
+                }
+            }, f, indent=2)
+
+        # Save protected symbols
+        protected_path = analysis_dir / "protected_symbols.json"
+        total_protected = sum(len(v) for v in protected_symbols.values())
+        with open(protected_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                "session_id": self.session_id,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "total_protected_symbols": total_protected,
+                "by_file": protected_symbols
+            }, f, indent=2)
+
+        # Update metadata
+        codebase_meta = self.metadata.features.codebase_analysis
+        codebase_meta.enabled = True
+        codebase_meta.latest_session = self.session_id
+        codebase_meta.total_protected_symbols = total_protected
+
+        logger.info(f"Saved codebase analysis to: {analysis_dir}")
+        return analysis_dir
+
+    # =========================================================================
+    # Backwards Compatibility
+    # =========================================================================
+
     def register_patch_session(self, patch_session_id: str) -> None:
-        """Register a patch tracking session"""
-        patches = self.metadata.features.patches
-        patches.enabled = True
+        """Register a patch tracking session (backwards compatible)"""
+        ai_meta = self.metadata.features.ai_enhancement
+        ai_meta.enabled = True
 
-        if patch_session_id not in patches.sessions:
-            patches.sessions.append(patch_session_id)
+        if patch_session_id not in ai_meta.sessions:
+            ai_meta.sessions.append(patch_session_id)
 
-        patches.latest_session = patch_session_id
+        ai_meta.latest_session = patch_session_id
+        ai_meta.total_sessions = len(ai_meta.sessions)
+
+    # =========================================================================
+    # Enhancement and Error Tracking
+    # =========================================================================
 
     def add_enhancement(self, enhancement: str) -> None:
         """Add an enhancement to the list"""
@@ -366,6 +641,10 @@ class MetadataManager:
     def add_error(self, error: str) -> None:
         """Add an error to the list"""
         self.metadata.generation.errors.append(error)
+
+    # =========================================================================
+    # Session Finalization
+    # =========================================================================
 
     def finalize_session(
         self,
@@ -417,3 +696,21 @@ class MetadataManager:
     def to_dict(self) -> Dict[str, Any]:
         """Export metadata as dictionary"""
         return asdict(self.metadata)
+
+    # =========================================================================
+    # Directory Structure Info
+    # =========================================================================
+
+    def get_structure_info(self) -> str:
+        """Get a formatted string showing the directory structure"""
+        return f"""
+.devdox_ai_locust/
+├── metadata.json                         # Central metadata
+├── generation/
+│   └── sessions/{self.session_id}/       # Current session
+├── ai_enhancement/
+│   ├── patches/{self.session_id}/        # Code patches (pre/post LLM)
+│   └── constraints/{self.session_id}/    # AI sandbox constraints
+├── codebase_analysis/{self.session_id}/  # Dependency analysis
+└── logs/                                 # Generation logs
+"""

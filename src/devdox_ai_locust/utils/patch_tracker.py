@@ -6,16 +6,18 @@ Similar to PostgreSQL's WAL (Write-Ahead Logging) concept - creates timestamped
 directories with pre/post LLM patches for analysis and comparison.
 
 This module integrates with the central MetadataManager to store patch sessions
-under the .devdox_ai_locust/patches/ directory.
+under the organized .devdox_ai_locust/ directory structure.
 
-Structure:
+Structure (v2.0):
     .devdox_ai_locust/
-    ├── metadata.json              # Central metadata (managed by MetadataManager)
-    └── patches/
-        └── 2025-12-28_21-47-06/
-            ├── pre_llm.patch      # Template output before AI enhancement
-            ├── post_llm.patch     # Changes made by AI enhancement
-            └── session.json       # Session-specific metadata
+    ├── metadata.json                          # Central metadata (MetadataManager)
+    └── ai_enhancement/
+        └── patches/
+            └── {session_id}/                  # e.g., 2025-12-28_21-47-06
+                ├── pre_llm.patch              # Template output before AI
+                ├── post_llm.patch             # Changes made by AI
+                ├── summary.json               # Patch statistics
+                └── session.json               # Session-specific metadata
 """
 
 import json
