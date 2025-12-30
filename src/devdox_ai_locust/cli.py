@@ -239,6 +239,15 @@ async def _generate_and_create_tests(
         if test_directories:
             workflows_dir = output_dir / "workflows"
             workflows_dir.mkdir(exist_ok=True)
+
+            # Create __init__.py to make workflows a proper Python package
+            init_file = workflows_dir / "__init__.py"
+            init_file.write_text(
+                '"""Workflow modules for Locust load testing"""\n',
+                encoding="utf-8"
+            )
+            created_files.append({"filename": "workflows/__init__.py", "path": init_file})
+
             for file_workflow in test_directories:
                 workflow_files = await generator._create_test_files_safely(
                     file_workflow, workflows_dir
