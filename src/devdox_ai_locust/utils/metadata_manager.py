@@ -151,12 +151,38 @@ class GenerationConfig(BaseModel):
     custom_requirement: str = ""
 
 
-class OutputInfo(BaseModel):
-    """Information about generated output"""
-    directory: str = ""
-    main_files: List[str] = Field(default_factory=list)
-    workflow_files: List[str] = Field(default_factory=list)
+class FileEntry(BaseModel):
+    """Metadata for a single generated file"""
+    category: str = "main"  # main, workflow, config, data, docs
+    size_bytes: int = 0
+    lines: int = 0
+    description: str = ""
+
+
+class OutputSummary(BaseModel):
+    """Summary statistics for output"""
     total_files: int = 0
+    total_bytes: int = 0
+    by_category: Dict[str, int] = Field(default_factory=dict)
+
+
+class OutputInfo(BaseModel):
+    """
+    Information about generated output with file tree structure.
+
+    Structure:
+        {
+            "root": "locust_tests_iter_7",
+            "files": {
+                "locustfile.py": {"category": "main", "size_bytes": 1234, ...},
+                "workflows/base_workflow.py": {"category": "workflow", ...}
+            },
+            "summary": {"total_files": 14, "total_bytes": 15000, ...}
+        }
+    """
+    root: str = ""
+    files: Dict[str, FileEntry] = Field(default_factory=dict)
+    summary: OutputSummary = Field(default_factory=OutputSummary)
 
 
 class CentralMetadata(BaseModel):
@@ -300,11 +326,8 @@ class MetadataManager:
         self.metadata.updated_at = now
         self.session_info.updated_at = now
 
-        # Calculate totals
-        self.metadata.output.total_files = (
-            len(self.metadata.output.main_files) +
-            len(self.metadata.output.workflow_files)
-        )
+        # Calculate output summary
+        self._calculate_output_summary()
 
         # Save everything
         self._save_metadata()
@@ -413,17 +436,63 @@ class MetadataManager:
         if custom_requirement is not None:
             self.metadata.config.custom_requirement = custom_requirement
 
+    def register_file(
+        self,
+        path: str,
+        content: str,
+        category: str = "main",
+        description: str = "",
+    ) -> None:
+        """
+        Register a single generated file with metadata.
+
+        Args:
+            path: Relative path from output root (e.g., "workflows/base.py")
+            content: File content (used to calculate size and lines)
+            category: File category (main, workflow, config, data, docs)
+            description: Optional description of the file
+        """
+        entry = FileEntry(
+            category=category,
+            size_bytes=len(content.encode("utf-8")),
+            lines=content.count("\n") + (1 if content and not content.endswith("\n") else 0),
+            description=description,
+        )
+        self.metadata.output.files[path] = entry
+
     def register_files(
         self,
-        main_files: Optional[List[str]] = None,
-        workflow_files: Optional[List[str]] = None,
+        files: Dict[str, str],
+        category: str = "main",
     ) -> None:
-        """Register generated files"""
-        if main_files:
-            self.metadata.output.main_files = main_files
-        if workflow_files:
-            self.metadata.output.workflow_files = workflow_files
-        self.metadata.output.directory = str(self.output_dir)
+        """
+        Register multiple files at once.
+
+        Args:
+            files: Dict of {path: content}
+            category: Category for all files
+        """
+        for path, content in files.items():
+            self.register_file(path, content, category=category)
+
+    def set_output_root(self, root: str) -> None:
+        """Set the output root directory name"""
+        self.metadata.output.root = root
+
+    def _calculate_output_summary(self) -> None:
+        """Calculate output summary statistics"""
+        files = self.metadata.output.files
+        total_bytes = sum(f.size_bytes for f in files.values())
+        by_category: Dict[str, int] = {}
+
+        for entry in files.values():
+            by_category[entry.category] = by_category.get(entry.category, 0) + 1
+
+        self.metadata.output.summary = OutputSummary(
+            total_files=len(files),
+            total_bytes=total_bytes,
+            by_category=by_category,
+        )
 
     # =========================================================================
     # Persistence
