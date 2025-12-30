@@ -1356,7 +1356,84 @@ class HybridLocustGenerator:
                 end_idx = i + 1
                 break
 
-        return "\n".join(lines[start_idx:end_idx])
+        cleaned_content = "\n".join(lines[start_idx:end_idx])
+
+        # Remove duplicate/appended class definitions that don't belong
+        # This handles cases where AI appends TestDataGenerator or other unrelated classes
+        cleaned_content = self._remove_duplicate_class_definitions(cleaned_content)
+
+        return cleaned_content
+
+    def _remove_duplicate_class_definitions(self, content: str) -> str:
+        """
+        Remove duplicate or unrelated class definitions that AI might append.
+
+        This fixes issues where the AI appends classes like TestDataGenerator
+        to workflow files where they don't belong.
+        """
+        # Classes that should NOT appear in workflow files (they're in separate files)
+        excluded_classes = {
+            "TestDataGenerator",
+            "LoadTestConfig",
+            "ResponseValidator",
+            "RequestLogger",
+            "PerformanceMonitor",
+            "DataManager",
+        }
+
+        lines = content.split("\n")
+        result_lines = []
+        skip_until_next_class = False
+        current_indent = 0
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Check if this is a class definition we should exclude
+            if stripped.startswith("class "):
+                class_match = re.match(r"class\s+(\w+)", stripped)
+                if class_match:
+                    class_name = class_match.group(1)
+                    if class_name in excluded_classes:
+                        # Skip this entire class definition
+                        skip_until_next_class = True
+                        current_indent = len(line) - len(line.lstrip())
+                        i += 1
+                        continue
+                    else:
+                        skip_until_next_class = False
+
+            # If we're skipping a class, check if we've exited it
+            if skip_until_next_class:
+                if stripped and not stripped.startswith("#"):
+                    line_indent = len(line) - len(line.lstrip())
+                    # Check if we've returned to the same or lower indent level
+                    # (which means we've exited the class)
+                    if line_indent <= current_indent and not line.startswith(" " * (current_indent + 1)):
+                        # Check if this is a new top-level definition
+                        if stripped.startswith(("class ", "def ", "if __name__", "# Global")):
+                            # Check if it's another excluded class
+                            if stripped.startswith("class "):
+                                class_match = re.match(r"class\s+(\w+)", stripped)
+                                if class_match and class_match.group(1) in excluded_classes:
+                                    i += 1
+                                    continue
+                            skip_until_next_class = False
+                        else:
+                            i += 1
+                            continue
+                else:
+                    i += 1
+                    continue
+
+            if not skip_until_next_class:
+                result_lines.append(line)
+
+            i += 1
+
+        return "\n".join(result_lines)
 
     def _analyze_api_domain(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]

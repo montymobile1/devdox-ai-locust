@@ -12,6 +12,7 @@ from .hybrid_loctus_generator import HybridLocustGenerator
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
+from devdox_ai_locust.utils.patch_tracker import PatchTracker
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
@@ -216,12 +217,36 @@ async def _generate_and_create_tests(
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
     db_type: str = "",
+    enable_patch_tracking: bool = True,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
 
+    # Initialize patch tracker for before/after LLM comparison
+    patch_tracker: Optional[PatchTracker] = None
+    if enable_patch_tracking:
+        patch_tracker = PatchTracker(output_dir)
+        patch_tracker.start_session(api_info)
+
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(ai_client=together_client)
+
+        # First, generate base template files (pre-LLM)
+        base_files, base_directories, grouped_endpoints = (
+            generator.template_generator.generate_from_endpoints(
+                endpoints,
+                api_info,
+                include_auth=auth,
+                target_host=host,
+                db_type=db_type,
+            )
+        )
+
+        # Capture pre-LLM state
+        if patch_tracker:
+            patch_tracker.capture_pre_llm_state(base_files, base_directories)
+
+        # Now run the full hybrid generation (includes AI enhancement)
         test_files, test_directories = await generator.generate_from_endpoints(
             endpoints=endpoints,
             api_info=api_info,
@@ -230,6 +255,10 @@ async def _generate_and_create_tests(
             include_auth=auth,
             db_type=db_type,
         )
+
+        # Capture post-LLM state
+        if patch_tracker:
+            patch_tracker.capture_post_llm_state(test_files, test_directories)
 
     # Create test files
     with console.status("[bold green]Creating test files..."):
@@ -260,6 +289,17 @@ async def _generate_and_create_tests(
                 test_files, output_dir
             )
             created_files.extend(main_files)
+
+    # Finalize patch tracking
+    if patch_tracker:
+        patch_tracker.finalize_session(
+            api_info=api_info,
+            endpoints_count=len(endpoints),
+            ai_model=generator.ai_config.model if generator.ai_config else None,
+            enhancements_applied=[]  # Could be populated from enhancement result
+        )
+        patch_session_path = output_dir / ".devdox_ai_locust" / "patches" / patch_tracker._generate_session_id()
+        console.print(f"[blue]📋 Patch tracking saved to: .devdox_ai_locust/patches/[/blue]")
 
     return created_files
 
