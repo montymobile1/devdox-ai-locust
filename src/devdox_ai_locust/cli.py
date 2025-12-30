@@ -137,15 +137,30 @@ def _show_run_instructions(
     )
 
 
+def _is_url(source: str) -> bool:
+    """Check if the source is a URL or a file path"""
+    source = source.strip()
+    return source.startswith(('http://', 'https://'))
+
+
 async def _process_api_schema(
-    swagger_url: str, verbose: bool
+    swagger_source: str, verbose: bool
 ) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
-    """Fetch and parse API schema"""
-    source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
+    """Fetch and parse API schema from URL or file path"""
+
+    # Determine if source is URL or file path
+    is_url = _is_url(swagger_source)
+
+    # Create appropriate request based on source type
+    if is_url:
+        source_request = SwaggerProcessingRequest(swagger_url=swagger_source)
+        source_type = "URL"
+    else:
+        source_request = SwaggerProcessingRequest(swagger_path=swagger_source)
+        source_type = "file"
+
     api_schema = None
-    with console.status(
-        f"[bold green]Fetching API schema from {'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'}..."
-    ):
+    with console.status(f"[bold green]Fetching API schema from {source_type}..."):
         try:
             async with asyncio.timeout(30):
                 api_schema = await get_api_schema(source_request)
@@ -156,6 +171,9 @@ async def _process_api_schema(
 
         except asyncio.TimeoutError:
             console.print("[red]✗[/red] Timeout while fetching API schema")
+            sys.exit(1)
+        except FileNotFoundError as e:
+            console.print(f"[red]✗[/red] File not found: {e}")
             sys.exit(1)
         except Exception as e:
             console.print(f"[red]✗[/red] Error fetching API schema: {e}")

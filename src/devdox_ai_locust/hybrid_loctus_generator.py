@@ -215,7 +215,7 @@ class EnhancementProcessor:
                 base_content=value,
                 test_data_content=base_files.get(test_data_file_path, ""),
                 base_workflow=base_workflow_files,
-                grouped_enpoints=workflow_endpoints_dict,
+                grouped_endpoints=workflow_endpoints_dict,
                 auth_endpoints=auth_endpoints,
                 db_type=db_type,
                 template_path=template_path,
@@ -633,7 +633,7 @@ class HybridLocustGenerator:
         base_content: str,
         test_data_content: str,
         base_workflow: str,
-        grouped_enpoints: Dict[str, List[Endpoint]],
+        grouped_endpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
         template_path: str = workflow_jinja_path,
@@ -643,7 +643,7 @@ class HybridLocustGenerator:
 
             # Render enhanced content
             prompt = template.render(
-                grouped_enpoints=grouped_enpoints,
+                grouped_endpoints=grouped_endpoints,
                 test_data_content=test_data_content,
                 base_workflow=base_workflow,
                 auth_endpoints=auth_endpoints,
@@ -729,30 +729,34 @@ class HybridLocustGenerator:
         ]
 
     async def _make_api_call(self, messages: list[dict]) -> Optional[str]:
-        """Make API call - ONE job"""
-        async with self._api_semaphore:
-            api_call = self.ai_client.chat.completions.create(
-                model=self.ai_config.model,
-                messages=messages,
-                max_tokens=self.ai_config.max_tokens,
-                temperature=self.ai_config.temperature,
-                top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.1,
-            )
+        """
+        Make API call - ONE job.
 
-            # Wait for the API call with timeout
-            response = await asyncio.wait_for(
-                api_call,
-                timeout=self.ai_config.timeout,
+        Note: This method assumes the caller has already acquired _api_semaphore.
+        Do NOT acquire the semaphore here to avoid deadlock.
+        """
+        api_call = self.ai_client.chat.completions.create(
+            model=self.ai_config.model,
+            messages=messages,
+            max_tokens=self.ai_config.max_tokens,
+            temperature=self.ai_config.temperature,
+            top_p=0.9,
+            top_k=40,
+            repetition_penalty=1.1,
+        )
+
+        # Wait for the API call with timeout
+        response = await asyncio.wait_for(
+            api_call,
+            timeout=self.ai_config.timeout,
+        )
+        if response.choices and response.choices[0].message:
+            content = response.choices[0].message.content.strip()
+            # Clean up the response
+            content = self._clean_ai_response(
+                self.extract_code_from_response(content)
             )
-            if response.choices and response.choices[0].message:
-                content = response.choices[0].message.content.strip()
-                # Clean up the response
-                content = self._clean_ai_response(
-                    self.extract_code_from_response(content)
-                )
-                return content
+            return content
 
         return None
 

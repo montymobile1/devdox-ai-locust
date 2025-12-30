@@ -1,5 +1,5 @@
 CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
-{if auth_endpoints}
+{% if auth_endpoints %}
 **CRITICAL: Authentication Method Reuse**
 
 Before generating ANY authentication methods:
@@ -14,11 +14,11 @@ Before generating ANY authentication methods:
 3. **IF base_workflow lacks auth methods AND auth endpoints exist**:
    - **ONLY THEN** generate new auth methods
 """
-{endif}
+{% endif %}
 TASK: Enhance this Locust workflow file with COMPREHENSIVE test scenarios and LOGICAL TASK ORDERING.
 STRICT REQUIREMENTS:
         1. ONLY use these exact API endpoints from OpenAPI spec:
-        {{  grouped_enpoints }}
+        {{ grouped_endpoints }}
 
          2. Authentication Management:
         {{ auth_endpoints }}

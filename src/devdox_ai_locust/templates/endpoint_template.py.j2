@@ -1,5 +1,5 @@
 """
-Locust performance tests for {{group}}
+Locust performance tests for {{ group }}
 Generated on: {{ generated_at }}
 
 API Information:
@@ -11,6 +11,9 @@ API Information:
 from locust import HttpUser, task, between, events, SequentialTaskSet
 from locust.runners import MasterRunner
 import logging
+import json
+from typing import Dict, Any, Optional, List
+from urllib.parse import urljoin
 
 from test_data import TestDataGenerator
 from utils import ResponseValidator, RequestLogger, PerformanceMonitor
@@ -28,7 +31,12 @@ response_validator = ResponseValidator()
 performance_monitor = PerformanceMonitor()
 
 
-class {{ group | capitalize }}TaskMethods(SequentialTaskSet, BaseTaskMethods):
-    """Mixin class containing all API task methods"""
+class {{ task_methods_class_name }}(SequentialTaskSet, BaseTaskMethods):
+    """Task methods for {{ group }} workflow"""
 
-    {{task_methods_content}}
+    {{ task_methods_content }}
+
+
+class {{ api_user_class_name }}(BaseAPIUser):
+    """API User for {{ group }} workflow"""
+    tasks = [{{ task_methods_class_name }}]
