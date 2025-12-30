@@ -1,5 +1,33 @@
 CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
 
+**CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS**
+- ONLY use authentication endpoints that are EXPLICITLY listed in the auth_endpoints variable below
+- If auth_endpoints is empty or contains no login/logout endpoints, DO NOT generate login_and_get_token() or logout_session() methods
+- NEVER invent endpoints like "/api/v1/login", "/login", "/auth/login", "/api/v1/logout" unless they appear in the OpenAPI spec
+- If no authentication endpoints exist, skip authentication entirely and use config.api_key for authorization
+
+**CRITICAL: catch_response=True REQUIRES with-block**
+When using `catch_response=True`, you MUST use a `with` statement. The `response.success()` and `response.failure()` methods are ONLY valid inside the context manager.
+
+CORRECT PATTERN:
+```python
+with self.client.post("/endpoint", json=data, catch_response=True) as response:
+    if response.status_code == 200:
+        response.success()  # Valid - inside with-block
+    else:
+        response.failure("Error message")  # Valid - inside with-block
+```
+
+WRONG PATTERN (CAUSES RUNTIME ERROR):
+```python
+# WRONG - will cause LocustError: "Tried to set status on a request that has not yet been made"
+response = self.client.post("/endpoint", json=data, catch_response=True)
+if response.status_code == 200:
+    response.success()  # RUNTIME ERROR - outside with-block!
+else:
+    response.failure("Error message")  # RUNTIME ERROR - outside with-block!
+```
+
 TASK: Enhance this Locust workflow file with realistic load testing patterns and LOGICAL TASK ORDERING while PRESERVING ALL EXISTING FUNCTIONALITY AND CLASSES.
 
 STRICT REQUIREMENTS:
@@ -17,15 +45,22 @@ STRICT REQUIREMENTS:
 3. AUTHENTICATION INTEGRATION STRATEGY:
    Check Authentication Endpoints: {{ auth_endpoints }}
 
+   **CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS!**
+   - ONLY implement login_and_get_token() if a login endpoint EXISTS in auth_endpoints above
+   - ONLY implement logout_session() if a logout endpoint EXISTS in auth_endpoints above
+   - If auth_endpoints is empty or has no login/logout endpoints, DO NOT create these methods
+   - Use the EXACT endpoint path from auth_endpoints, never invent paths like "/api/v1/login"
+
    **CRITICAL: `login_and_get_token` and `logout_session` are NOT defined in parent classes.**
    These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
 
    **Step 1: Check if workflow class needs authentication methods**
-   - If auth endpoints exist and the workflow class doesn't have auth methods, ADD them
-   - Define login_and_get_token() and logout_session() in the workflow class
-   - Call them via `self` in on_start/on_stop
+   - FIRST: Check if auth_endpoints contains actual login/logout endpoints
+   - If NO login endpoint exists in auth_endpoints: DO NOT create login_and_get_token()
+   - If NO logout endpoint exists in auth_endpoints: DO NOT create logout_session()
+   - If auth endpoints exist AND the workflow class doesn't have auth methods, ADD them
 
-   **Step 2: Correct Implementation Pattern:**
+   **Step 2: Correct Implementation Pattern (ONLY if auth endpoints exist):**
 
 ```python
    class YourWorkflowTaskMethods(SequentialTaskSet, BaseTaskMethods):
@@ -34,22 +69,29 @@ STRICT REQUIREMENTS:
        def on_start(self):
            """Initialize session and authenticate"""
            super().on_start()  # Calls BaseTaskMethods.on_start() for setup
-           self.login_and_get_token()  # Call via self - defined in THIS class
+           # ONLY call if login endpoint exists in auth_endpoints
+           if hasattr(self, 'login_and_get_token'):
+               self.login_and_get_token()  # Call via self - defined in THIS class
 
        def on_stop(self):
            """Cleanup session"""
-           self.logout_session()  # Call via self - defined in THIS class
+           # ONLY call if logout endpoint exists in auth_endpoints
+           if hasattr(self, 'logout_session'):
+               self.logout_session()  # Call via self - defined in THIS class
            super().on_stop()
 
+       # ONLY define this method if a login endpoint EXISTS in auth_endpoints
        def login_and_get_token(self):
            """Login and store JWT/Bearer token for API requests"""
+           # Use the EXACT endpoint from auth_endpoints - DO NOT invent endpoints!
+           login_endpoint = "/actual/endpoint/from/auth_endpoints"  # Replace with real endpoint
            login_data = {
                "email": "test@example.com",
                "password": "test_password"
                # Use actual login schema from auth endpoints
            }
-           with self.client.post("/login", json=login_data, catch_response=True) as response:
-               # Use actual endpoint from login endpoint
+           # CRITICAL: Must use 'with' block when using catch_response=True
+           with self.client.post(login_endpoint, json=login_data, catch_response=True) as response:
                if response.status_code == 200:
                    response_data = response.json()
                    # Extract token from response (adapt to actual response structure)
@@ -70,11 +112,14 @@ STRICT REQUIREMENTS:
                else:
                    response.failure(f"Login failed: {response.status_code}")
 
+       # ONLY define this method if a logout endpoint EXISTS in auth_endpoints
        def logout_session(self):
            """Logout and clear authentication token"""
+           # Use the EXACT endpoint from auth_endpoints - DO NOT invent endpoints!
+           logout_endpoint = "/actual/endpoint/from/auth_endpoints"  # Replace with real endpoint
            if hasattr(self, 'auth_token') and self.auth_token:
-               with self.client.post("/logout", catch_response=True) as response:
-                   # Use actual endpoint from logout endpoint
+               # CRITICAL: Must use 'with' block when using catch_response=True
+               with self.client.post(logout_endpoint, catch_response=True) as response:
                    if response.status_code in [200, 204]:
                        self.auth_token = None
                        # Remove auth header
@@ -85,13 +130,26 @@ STRICT REQUIREMENTS:
                        response.failure(f"Logout failed: {response.status_code}")
 ```
 
-   **WRONG PATTERN - DO NOT USE:**
+   **WRONG PATTERNS - DO NOT USE:**
 ```python
-   # WRONG - these methods don't exist in parent classes!
+   # WRONG #1 - these methods don't exist in parent classes!
    def on_start(self):
        super().on_start()
        if hasattr(super(), 'login_and_get_token'):  # WRONG
            super().login_and_get_token()  # WRONG - will cause IDE error
+
+   # WRONG #2 - catch_response without with-block causes runtime error!
+   def login_and_get_token(self):
+       response = self.client.post("/login", json=data, catch_response=True)
+       if response.status_code == 200:
+           response.success()  # RUNTIME ERROR - must be inside 'with' block!
+       else:
+           response.failure("Failed")  # RUNTIME ERROR - must be inside 'with' block!
+
+   # WRONG #3 - inventing endpoints that don't exist in OpenAPI spec!
+   def login_and_get_token(self):
+       # DO NOT use endpoints unless they exist in auth_endpoints!
+       with self.client.post("/api/v1/login", ...)  # WRONG if not in spec!
 ```
 
 4. TASK METHOD ENHANCEMENT PATTERN:
