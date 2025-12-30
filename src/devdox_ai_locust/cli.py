@@ -409,9 +409,6 @@ async def _generate_and_create_tests(
     console.print("[green]✓[/green] AI enhancement complete, writing files...")
     created_files = []
 
-    # Set output root directory name
-    metadata_manager.set_output_root(output_dir.name)
-
     # Create workflow files
     if test_directories:
         workflows_dir = output_dir / "workflows"
@@ -422,16 +419,12 @@ async def _generate_and_create_tests(
         init_file = workflows_dir / "__init__.py"
         init_file.write_text(init_content, encoding="utf-8")
         created_files.append({"filename": "workflows/__init__.py", "path": init_file})
-        metadata_manager.register_file(
-            "workflows/__init__.py", init_content, category="workflow"
-        )
+        metadata_manager.register_file("workflows/__init__.py", init_content)
 
         for file_workflow in test_directories:
-            # Register workflow files with metadata
+            # Register workflow files
             for filename, content in file_workflow.items():
-                metadata_manager.register_file(
-                    f"workflows/{filename}", content, category="workflow"
-                )
+                metadata_manager.register_file(f"workflows/{filename}", content)
             workflow_files = await generator._create_test_files_safely(
                 file_workflow, workflows_dir
             )
@@ -439,16 +432,9 @@ async def _generate_and_create_tests(
 
     # Create main test files
     if test_files:
-        # Register main files with metadata
+        # Register files in tree
         for filename, content in test_files.items():
-            # Determine category based on filename
-            if filename in ("config.py", ".env.example", "env.example"):
-                category = "config"
-            elif filename in ("requirements.txt", "readme.md", "README.md"):
-                category = "docs"
-            else:
-                category = "main"
-            metadata_manager.register_file(filename, content, category=category)
+            metadata_manager.register_file(filename, content)
 
         main_files = await generator._create_test_files_safely(
             test_files, output_dir
