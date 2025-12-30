@@ -1,10 +1,17 @@
-Evolve this Test Data Generator into a fully production-ready, intelligent data generation framework.
-{% if data_provider_content %}Incorporate MongoDB integration for live data enrichment, delivering a complete, robust, and realistic test data engine with domain awareness, caching, and smart relationships.{% endif %}
+🚨 **CRITICAL PRESERVATION REQUIREMENT** 🚨
+You MUST preserve ALL existing classes, methods, and functionality from the current file.
+DO NOT delete, remove, or replace any existing code. Only ADD new functionality.
+The TestDataGenerator class and ALL its methods MUST remain intact.
 
-**CURRENT STATE ANALYSIS**:
+Enhance this Test Data Generator by ADDING new capabilities while PRESERVING everything that exists.
+{% if data_provider_content %}Add MongoDB integration for live data enrichment.{% endif %}
+
+**EXISTING CODE TO PRESERVE (DO NOT DELETE ANY OF THIS)**:
 ```python
 {{base_content}}
 ```
+
+⚠️ WARNING: If you delete the TestDataGenerator class or any of its methods, your output will be rejected.
 
 
 {% if data_provider_content %}
@@ -175,12 +182,21 @@ The generated code MUST contain these exact function calls:
 10. **MongoDB Integration**: Seamless integration with provided data provider
 
 🚨 **CRITICAL SUCCESS CRITERIA**:
+- **PRESERVATION**: The TestDataGenerator class MUST be present with ALL original methods
+- **PRESERVATION**: ALL existing methods (generate_json_data, generate_string, generate_id, etc.) MUST remain
 - NO methods should contain `pass` or placeholder comments
 - ALL caching methods must be fully functional
 - ALL data generation must produce realistic, coherent data
 - ALL MongoDB integration must handle errors gracefully
 - ALL relationships must be properly tracked and maintained
 
-Return the COMPLETE, PRODUCTION-READY Python file with every method fully implemented and tested-quality code.
+⚠️ **VALIDATION CHECK**: Your output MUST contain:
+1. `class TestDataGenerator` - The main class definition
+2. `def generate_json_data` - The JSON data generation method
+3. `def generate_string` - The string generation method
+4. `def generate_id` - The ID generation method
+5. ALL other methods from the original file
 
-**Format**: Return ONLY the complete Python code wrapped in ```python``` tags with NO explanations outside the code block.
+Return the COMPLETE, PRODUCTION-READY Python file with the existing TestDataGenerator class fully preserved and enhanced.
+
+**Format**: Return ONLY the complete Python code wrapped in <code></code> tags with NO explanations outside the tags.

@@ -29,6 +29,19 @@ data_provider_path = "data_provider.py"
 base_workflow_path = "base_workflow.py"
 workflow_jinja_path = "workflow.j2"
 
+# Critical classes that MUST exist in each file after AI enhancement
+# If these are missing, the AI has corrupted the file and we must use the original
+CRITICAL_CLASSES = {
+    "test_data.py": ["TestDataGenerator"],
+    "utils.py": ["ResponseValidator", "RequestLogger", "PerformanceMonitor", "DataManager"],
+}
+
+# Critical functions that MUST exist in each file
+CRITICAL_FUNCTIONS = {
+    "test_data.py": ["generate_json_data", "generate_string", "generate_id"],
+    "utils.py": ["validate_response", "log_request"],
+}
+
 
 @dataclass
 class ErrorClassification:
@@ -241,36 +254,56 @@ class EnhancementProcessor:
     async def process_test_data_enhancement(
         self, base_files: Dict[str, str], endpoints: List[Endpoint], db_type: str = ""
     ) -> Tuple[Dict[str, str], List[str]]:
-        """Process test data enhancement"""
+        """Process test data enhancement with validation and fallback"""
         enhanced_files = {}
         enhancements = []
-        if self.ai_config and self.ai_config.enhance_test_data:
+        original_content = base_files.get(test_data_file_path, "")
+
+        if self.ai_config and self.ai_config.enhance_test_data and original_content:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
-                base_files.get(test_data_file_path, ""),
+                original_content,
                 endpoints,
                 db_type,
                 base_files.get(data_provider_path, ""),
                 base_files.get("db_config.py", ""),
                 data_provider_path,
             )
-            if enhanced_test_data:
-                enhanced_files[test_data_file_path] = enhanced_test_data
+            # Use safe enhancement with validation and fallback
+            validated_content = self.locust_generator._safe_enhance_file(
+                test_data_file_path, enhanced_test_data, original_content
+            )
+            enhanced_files[test_data_file_path] = validated_content
+            # Only mark as enhanced if we actually used the AI output
+            if validated_content == enhanced_test_data:
                 enhancements.append("smart_test_data")
+            else:
+                enhancements.append("test_data_fallback_to_original")
+
         return enhanced_files, enhancements
 
     async def process_validation_enhancement(
         self, base_files: Dict[str, str], endpoints: List[Endpoint]
     ) -> Tuple[Dict[str, str], List[str]]:
-        """Process validation enhancement"""
+        """Process validation enhancement with validation and fallback"""
         enhanced_files = {}
         enhancements = []
-        if self.ai_config and self.ai_config.enhance_validation:
+        original_content = base_files.get("utils.py", "")
+
+        if self.ai_config and self.ai_config.enhance_validation and original_content:
             enhanced_validation = await self.locust_generator._enhance_validation(
-                base_files.get("utils.py", ""), endpoints
+                original_content, endpoints
             )
-            if enhanced_validation:
-                enhanced_files["utils.py"] = enhanced_validation
+            # Use safe enhancement with validation and fallback
+            validated_content = self.locust_generator._safe_enhance_file(
+                "utils.py", enhanced_validation, original_content
+            )
+            enhanced_files["utils.py"] = validated_content
+            # Only mark as enhanced if we actually used the AI output
+            if validated_content == enhanced_validation:
                 enhancements.append("advanced_validation")
+            else:
+                enhancements.append("utils_fallback_to_original")
+
         return enhanced_files, enhancements
 
 
@@ -1087,3 +1120,102 @@ class HybridLocustGenerator:
             return True
         except SyntaxError:
             return False
+
+    def _validate_critical_elements(
+        self, filename: str, enhanced_content: str, original_content: str
+    ) -> Tuple[bool, str, List[str]]:
+        """
+        Validate that AI-enhanced content preserves critical classes and functions.
+
+        Args:
+            filename: Name of the file being validated
+            enhanced_content: The AI-enhanced content
+            original_content: The original template-generated content
+
+        Returns:
+            Tuple of (is_valid, content_to_use, list_of_missing_elements)
+        """
+        missing_elements = []
+
+        # Check critical classes
+        if filename in CRITICAL_CLASSES:
+            for class_name in CRITICAL_CLASSES[filename]:
+                # Look for class definition pattern
+                class_pattern = rf"class\s+{class_name}\s*[:\(]"
+                if not re.search(class_pattern, enhanced_content):
+                    missing_elements.append(f"class {class_name}")
+                    logger.warning(
+                        f"AI corrupted {filename}: missing critical class '{class_name}'"
+                    )
+
+        # Check critical functions (only if they exist in original)
+        if filename in CRITICAL_FUNCTIONS:
+            for func_name in CRITICAL_FUNCTIONS[filename]:
+                func_pattern = rf"def\s+{func_name}\s*\("
+                # Only check if the function exists in original
+                if re.search(func_pattern, original_content):
+                    if not re.search(func_pattern, enhanced_content):
+                        missing_elements.append(f"def {func_name}")
+                        logger.warning(
+                            f"AI corrupted {filename}: missing critical function '{func_name}'"
+                        )
+
+        if missing_elements:
+            logger.error(
+                f"AI enhancement corrupted {filename}, missing: {missing_elements}. "
+                f"Falling back to original template code."
+            )
+            return False, original_content, missing_elements
+
+        # Additional validation: enhanced content shouldn't be dramatically smaller
+        original_lines = len(original_content.strip().split("\n"))
+        enhanced_lines = len(enhanced_content.strip().split("\n"))
+
+        # If enhanced is less than 30% of original size, it's likely corrupted
+        if original_lines > 50 and enhanced_lines < original_lines * 0.3:
+            logger.error(
+                f"AI enhancement drastically reduced {filename} "
+                f"({original_lines} -> {enhanced_lines} lines). "
+                f"Falling back to original template code."
+            )
+            return False, original_content, ["content_too_small"]
+
+        return True, enhanced_content, []
+
+    def _safe_enhance_file(
+        self,
+        filename: str,
+        enhanced_content: Optional[str],
+        original_content: str,
+    ) -> str:
+        """
+        Safely apply AI enhancement with validation and fallback.
+
+        Args:
+            filename: Name of the file
+            enhanced_content: AI-enhanced content (may be None or corrupted)
+            original_content: Original template-generated content
+
+        Returns:
+            The validated content to use (enhanced if valid, original if corrupted)
+        """
+        if not enhanced_content:
+            logger.warning(f"AI returned empty content for {filename}, using original")
+            return original_content
+
+        # Validate syntax first
+        if not self._validate_python_code(enhanced_content):
+            logger.error(f"AI returned invalid Python for {filename}, using original")
+            return original_content
+
+        # Validate critical elements are preserved
+        is_valid, content_to_use, missing = self._validate_critical_elements(
+            filename, enhanced_content, original_content
+        )
+
+        if not is_valid:
+            logger.warning(
+                f"Reverting {filename} to original due to missing: {missing}"
+            )
+
+        return content_to_use
