@@ -1,17 +1,13 @@
-Generate ONLY NEW METHODS to add to an existing TestDataGenerator class.
+You are enhancing a TestDataGenerator class for Locust load testing.
 
-DO NOT rewrite the existing class. DO NOT include the class definition.
-ONLY output new method definitions that can be added to the class.
+{% if constraints %}
+{{ constraints }}
+{% endif %}
 
-The existing TestDataGenerator class already has these methods (DO NOT recreate them):
-- generate_json_data()
-- generate_string()
-- generate_id()
-- generate_email()
-- generate_phone()
-- generate_date()
-- generate_url()
-- And many more...
+**EXISTING CODE**:
+```python
+{{base_content}}
+```
 
 API Context:
 - Endpoints: [{% for ep in endpoints -%}
@@ -19,31 +15,16 @@ API Context:
 - Schemas: {{ schemas_info }}
 
 {% if data_provider_content %}
-MongoDB is available via: mongo_data_provider.get_document(collection, query)
+**MongoDB Available** via:
+- mongo_data_provider.get_document(collection, query)
+- mongo_data_provider.get_multiple_documents(collection, count, query)
 {% endif %}
 
-Generate 3-5 NEW utility methods that would be useful for testing these specific endpoints.
-Focus on domain-specific data generation based on the API patterns.
+**YOUR TASK**:
+Enhance this file by ADDING new domain-specific methods. You may:
+- ADD new methods for generating test data specific to these endpoints
+- ADD MongoDB integration methods if MongoDB is available
+- IMPROVE existing method implementations (keep their signatures!)
 
-Example output format:
-<code>
-def generate_affiliate_data(self) -> Dict[str, Any]:
-    """Generate realistic affiliate data for testing."""
-    return {
-        "affiliate_id": self.generate_id("affiliate"),
-        "name": self.generate_string(prefix="Affiliate"),
-        "email": self.generate_email(),
-        "status": random.choice(["active", "pending", "inactive"])
-    }
-
-def generate_product_payload(self) -> Dict[str, Any]:
-    """Generate a product creation payload."""
-    return {
-        "name": self.generate_string(prefix="Product"),
-        "price": round(random.uniform(10.0, 1000.0), 2),
-        "category": random.choice(["electronics", "clothing", "food"])
-    }
-</code>
-
-Output ONLY new method definitions wrapped in <code></code> tags.
-Do NOT include imports, class definitions, or existing methods.
+Output the COMPLETE enhanced Python file wrapped in <code></code> tags.
+Remember: Protected symbols MUST remain in the output with unchanged signatures.
