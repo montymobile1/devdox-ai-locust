@@ -342,7 +342,7 @@ async def _generate_and_create_tests(
     patch_tracker: Optional[PatchTracker] = None
     if enable_patch_tracking:
         patch_tracker = PatchTracker.from_metadata_manager(metadata_manager)
-        patch_tracker.start_session(api_info)
+        patch_tracker.start_session()
 
     # Create progress display
     progress_display = ProgressDisplay()
@@ -376,9 +376,9 @@ async def _generate_and_create_tests(
             )
         )
 
-        # Capture pre-LLM state
+        # Capture template generation state
         if patch_tracker:
-            patch_tracker.capture_pre_llm_state(base_files, base_directories)
+            patch_tracker.capture_template_state(base_files, base_directories)
 
         # Now run the full hybrid generation (includes AI enhancement)
         test_files, test_directories = await generator.generate_from_endpoints(
@@ -390,9 +390,10 @@ async def _generate_and_create_tests(
             db_type=db_type,
         )
 
-        # Capture post-LLM state
+        # Capture AI-enhanced state
         if patch_tracker:
-            patch_tracker.capture_post_llm_state(test_files, test_directories)
+            ai_model = generator.ai_config.model if generator.ai_config else None
+            patch_tracker.capture_enhanced_state(test_files, test_directories, ai_model=ai_model)
 
         # Update progress for file writing
         await progress_callback(ProgressStatus(
@@ -449,13 +450,9 @@ async def _generate_and_create_tests(
 
     # Finalize patch tracking
     if patch_tracker:
-        patch_tracker.finalize_session(
-            api_info=api_info,
-            endpoints_count=len(endpoints),
-            ai_model=generator.ai_config.model if generator.ai_config else None,
-            enhancements_applied=[]  # Could be populated from enhancement result
-        )
-        console.print("[blue]📋 Patch tracking saved to: .devdox_ai_locust/ai_enhancement/patches/[/blue]")
+        summary = patch_tracker.get_summary()
+        patch_tracker.finalize()
+        console.print(f"[blue]📋 WAL patches saved to: .devdox_ai_locust/wal/ ({summary.get('total_patches', 0)} patches)[/blue]")
 
     # Finalize metadata
     metadata_manager.finalize_session()

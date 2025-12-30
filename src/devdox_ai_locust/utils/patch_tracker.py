@@ -1,239 +1,269 @@
 """
 Patch Tracking System for DevDox AI Locust
 
-Tracks code generation by saving patch files before and after AI LLM operations.
-Similar to PostgreSQL's WAL (Write-Ahead Logging) concept - creates timestamped
-directories with pre/post LLM patches for analysis and comparison.
+PostgreSQL WAL-Inspired Design (v3.0)
+=====================================
 
-This module integrates with the central MetadataManager to store patch sessions
-under the organized .devdox_ai_locust/ directory structure.
+Tracks code generation milestones by creating sequential patch files.
+Each milestone (template generation, LLM enhancement, etc.) gets its own patch.
 
-Structure (v2.0):
+Structure:
     .devdox_ai_locust/
-    ├── metadata.json                          # Central metadata (MetadataManager)
-    └── ai_enhancement/
-        └── patches/
-            └── {session_id}/                  # e.g., 2025-12-28_21-47-06
-                ├── pre_llm.patch              # Template output before AI
-                ├── post_llm.patch             # Changes made by AI
-                ├── summary.json               # Patch statistics
-                └── session.json               # Session-specific metadata
+    ├── metadata.json       # Central metadata
+    ├── manifest.json       # WAL manifest - maps patches to milestones
+    └── wal/                # Sequential patches
+        ├── 000001_a1b2c3d4.patch   # template_generation
+        ├── 000002_e5f6g7h8.patch   # llm_enhancement
+        └── ...
+
+Key Concepts:
+    - Milestones are types of code changes (template_generation, llm_enhancement, etc.)
+    - Each patch is named with sequence number + short UUID
+    - manifest.json tracks what milestone each patch represents
+    - Extensible for future milestone types
 """
 
-import json
 import logging
 import difflib
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Protocol, TYPE_CHECKING
-from pydantic import BaseModel, Field
-import asyncio
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .metadata_manager import MetadataManager
+    from .metadata_manager import MetadataManager, PatchEntry, PatchStats
 
 logger = logging.getLogger(__name__)
 
 
-class PatchSessionMetadata(BaseModel):
-    """Metadata for a single patch session (stored in session.json)"""
-    session_id: str
-    timestamp: str
-    api_title: str
-    api_version: str
-    endpoints_count: int
-    files_generated: List[str] = Field(default_factory=list)
-    ai_model: Optional[str] = None
-    enhancements_applied: List[str] = Field(default_factory=list)
-    generation_time_seconds: float = 0.0
-    pre_llm_files_count: int = 0
-    post_llm_files_count: int = 0
-    files_changed: int = 0
-    error: Optional[str] = None
-
-
-class PatchStorageProtocol(Protocol):
-    """Protocol for patch storage backends (allows dependency injection)"""
-
-    def save_patch(self, session_id: str, patch_name: str, content: str) -> Path:
-        """Save a patch file"""
-        ...
-
-    def save_session_metadata(self, session_id: str, metadata: PatchSessionMetadata) -> Path:
-        """Save session metadata file"""
-        ...
-
-    def get_session_dir(self, session_id: str) -> Path:
-        """Get the session directory path"""
-        ...
-
-
-class FileSystemPatchStorage:
-    """File system based patch storage"""
-
-    def __init__(self, patches_dir: Path):
-        """
-        Initialize patch storage.
-
-        Args:
-            patches_dir: The patches directory (typically .devdox_ai_locust/patches/)
-        """
-        self.patches_dir = Path(patches_dir)
-
-    def _ensure_dir(self, path: Path) -> Path:
-        """Ensure directory exists"""
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def get_session_dir(self, session_id: str) -> Path:
-        """Get the session directory path"""
-        return self._ensure_dir(self.patches_dir / session_id)
-
-    def save_patch(self, session_id: str, patch_name: str, content: str) -> Path:
-        """Save a patch file"""
-        session_dir = self.get_session_dir(session_id)
-        patch_file = session_dir / f"{patch_name}.patch"
-        patch_file.write_text(content, encoding="utf-8")
-        logger.debug(f"Saved patch: {patch_file}")
-        return patch_file
-
-    def save_session_metadata(self, session_id: str, metadata: PatchSessionMetadata) -> Path:
-        """Save session-specific metadata file (session.json)"""
-        session_dir = self.get_session_dir(session_id)
-        session_file = session_dir / "session.json"
-        session_file.write_text(
-            json.dumps(metadata.model_dump(), indent=2, default=str),
-            encoding="utf-8"
-        )
-        logger.debug(f"Saved session metadata: {session_file}")
-        return session_file
-
-
 class PatchTracker:
     """
-    Tracks code generation by creating unified diffs before/after AI operations.
+    Tracks code generation milestones by creating sequential patches.
 
-    Integrates with MetadataManager to store patches under .devdox_ai_locust/patches/
-    and register sessions with the central metadata.
+    Integrates with MetadataManager to store patches in the WAL directory.
+    Each milestone (template generation, LLM enhancement, etc.) creates a patch.
 
     Usage:
-        # Standalone usage (creates its own patches directory)
-        tracker = PatchTracker(output_dir)
-        tracker.start_session(api_info)
-
-        # Or integrated with MetadataManager
         metadata_manager = MetadataManager(output_dir)
+        metadata_manager.initialize_session(api_info)
+
         tracker = PatchTracker.from_metadata_manager(metadata_manager)
-        tracker.start_session(api_info)
 
-        # Before AI enhancement
-        tracker.capture_pre_llm_state(files_dict)
-
-        # ... AI enhancement happens ...
+        # After template generation
+        tracker.capture_template_state(files_dict)
 
         # After AI enhancement
-        tracker.capture_post_llm_state(enhanced_files_dict)
+        tracker.capture_enhanced_state(enhanced_files_dict)
 
-        tracker.finalize_session(metadata)
+        # Finalize
+        tracker.finalize()
     """
 
     def __init__(
         self,
         output_dir: Path,
-        storage: Optional[PatchStorageProtocol] = None,
         metadata_manager: Optional["MetadataManager"] = None
     ):
+        """
+        Initialize patch tracker.
+
+        Args:
+            output_dir: Base output directory
+            metadata_manager: MetadataManager instance (recommended)
+        """
         self.output_dir = Path(output_dir)
         self.metadata_manager = metadata_manager
 
-        # Determine patches directory
-        if metadata_manager:
-            patches_dir = metadata_manager.patches_dir
-        else:
-            patches_dir = self.output_dir / ".devdox_ai_locust" / "patches"
-            patches_dir.mkdir(parents=True, exist_ok=True)
-
-        self.storage = storage or FileSystemPatchStorage(patches_dir)
-        self.session_id: Optional[str] = None
-        self.pre_llm_files: Dict[str, str] = {}
-        self.post_llm_files: Dict[str, str] = {}
+        # State tracking
+        self.template_files: Dict[str, str] = {}
+        self.enhanced_files: Dict[str, str] = {}
         self._start_time: Optional[datetime] = None
+        self._session_started = False
 
     @classmethod
     def from_metadata_manager(cls, metadata_manager: "MetadataManager") -> "PatchTracker":
-        """Create a PatchTracker integrated with a MetadataManager"""
+        """Create a PatchTracker integrated with a MetadataManager."""
         return cls(
             output_dir=metadata_manager.output_dir,
             metadata_manager=metadata_manager
         )
 
-    def _generate_session_id(self) -> str:
-        """Generate PostgreSQL-style timestamped session ID"""
-        return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-    def start_session(self, api_info: Optional[Dict[str, Any]] = None) -> str:
-        """Start a new patch tracking session"""
-        self.session_id = self._generate_session_id()
+    def start_session(self) -> None:
+        """Start tracking a new session."""
         self._start_time = datetime.now()
-        self.pre_llm_files = {}
-        self.post_llm_files = {}
+        self.template_files = {}
+        self.enhanced_files = {}
+        self._session_started = True
+        logger.debug("Started patch tracking session")
 
-        logger.info(f"Started patch tracking session: {self.session_id}")
-        return self.session_id
-
-    def capture_pre_llm_state(
+    def capture_template_state(
         self,
         files: Dict[str, str],
-        directory_files: Optional[List[Dict[str, str]]] = None
-    ) -> None:
+        workflow_files: Optional[List[Dict[str, str]]] = None
+    ) -> Optional["PatchEntry"]:
         """
-        Capture the state of generated files BEFORE AI LLM enhancement.
+        Capture files after template generation (before AI enhancement).
+
+        Creates a template_generation milestone patch.
 
         Args:
             files: Main files dict (filename -> content)
-            directory_files: List of workflow file dicts
+            workflow_files: List of workflow file dicts
+
+        Returns:
+            PatchEntry if patch was created
         """
-        if not self.session_id:
+        if not self._session_started:
             self.start_session()
 
         # Capture main files
         for filename, content in files.items():
-            self.pre_llm_files[filename] = content
+            self.template_files[filename] = content
 
         # Capture workflow/directory files
-        if directory_files:
-            for file_dict in directory_files:
+        if workflow_files:
+            for file_dict in workflow_files:
                 for filename, content in file_dict.items():
-                    self.pre_llm_files[f"workflows/{filename}"] = content
+                    self.template_files[f"workflows/{filename}"] = content
 
-        logger.debug(f"Captured pre-LLM state: {len(self.pre_llm_files)} files")
+        logger.debug(f"Captured template state: {len(self.template_files)} files")
 
-    def capture_post_llm_state(
+        # Create the template generation patch
+        return self._create_milestone_patch(
+            milestone="template_generation",
+            files_before={},
+            files_after=self.template_files,
+            description="Initial template-based generation",
+        )
+
+    def capture_enhanced_state(
         self,
         files: Dict[str, str],
-        directory_files: Optional[List[Dict[str, str]]] = None
-    ) -> None:
+        workflow_files: Optional[List[Dict[str, str]]] = None,
+        ai_model: Optional[str] = None,
+    ) -> Optional["PatchEntry"]:
         """
-        Capture the state of generated files AFTER AI LLM enhancement.
+        Capture files after AI enhancement.
+
+        Creates an llm_enhancement milestone patch showing the diff.
 
         Args:
-            files: Main files dict (filename -> content)
-            directory_files: List of workflow file dicts
+            files: Enhanced files dict (filename -> content)
+            workflow_files: List of workflow file dicts
+            ai_model: Name of the AI model used
+
+        Returns:
+            PatchEntry if patch was created
         """
-        if not self.session_id:
+        if not self._session_started:
             raise RuntimeError("No active session. Call start_session() first.")
 
         # Capture main files
         for filename, content in files.items():
-            self.post_llm_files[filename] = content
+            self.enhanced_files[filename] = content
 
         # Capture workflow/directory files
-        if directory_files:
-            for file_dict in directory_files:
+        if workflow_files:
+            for file_dict in workflow_files:
                 for filename, content in file_dict.items():
-                    self.post_llm_files[f"workflows/{filename}"] = content
+                    self.enhanced_files[f"workflows/{filename}"] = content
 
-        logger.debug(f"Captured post-LLM state: {len(self.post_llm_files)} files")
+        logger.debug(f"Captured enhanced state: {len(self.enhanced_files)} files")
+
+        # Create the LLM enhancement patch
+        metadata = {}
+        if ai_model:
+            metadata["ai_model"] = ai_model
+
+        return self._create_milestone_patch(
+            milestone="llm_enhancement",
+            files_before=self.template_files,
+            files_after=self.enhanced_files,
+            description="AI enhancement of test files",
+            extra_metadata=metadata,
+        )
+
+    def capture_validation_state(
+        self,
+        files: Dict[str, str],
+        validation_results: Optional[Dict[str, Any]] = None,
+    ) -> Optional["PatchEntry"]:
+        """
+        Capture files after validation/fixes.
+
+        Creates a validation milestone patch.
+
+        Args:
+            files: Files after validation
+            validation_results: Optional validation metadata
+
+        Returns:
+            PatchEntry if patch was created
+        """
+        if not self._session_started:
+            raise RuntimeError("No active session.")
+
+        # Get the previous state (enhanced or template)
+        previous = self.enhanced_files if self.enhanced_files else self.template_files
+
+        metadata = {}
+        if validation_results:
+            metadata["validation"] = validation_results
+
+        return self._create_milestone_patch(
+            milestone="validation",
+            files_before=previous,
+            files_after=files,
+            description="Validation and fixes",
+            extra_metadata=metadata,
+        )
+
+    def _create_milestone_patch(
+        self,
+        milestone: str,
+        files_before: Dict[str, str],
+        files_after: Dict[str, str],
+        description: str = "",
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional["PatchEntry"]:
+        """
+        Create a patch for a milestone.
+
+        Args:
+            milestone: Type of milestone
+            files_before: Files before this milestone
+            files_after: Files after this milestone
+            description: Human-readable description
+            extra_metadata: Additional metadata
+
+        Returns:
+            PatchEntry if patch was created, None if no changes
+        """
+        if not self.metadata_manager:
+            logger.warning("No metadata manager - patch not saved")
+            return None
+
+        # Generate unified diff
+        diff_content = self._generate_unified_diff(files_before, files_after)
+
+        if not diff_content.strip():
+            logger.debug(f"No changes for milestone: {milestone}")
+            return None
+
+        # Calculate stats
+        from .metadata_manager import PatchStats
+        stats = self._calculate_stats(files_before, files_after)
+
+        # Create the patch
+        entry = self.metadata_manager.create_patch(
+            milestone=milestone,
+            content=diff_content,
+            description=description,
+            stats=stats,
+            metadata=extra_metadata,
+        )
+
+        logger.info(f"Created patch {entry.id} for milestone: {milestone}")
+        return entry
 
     def _generate_unified_diff(
         self,
@@ -241,7 +271,7 @@ class PatchTracker:
         files_after: Dict[str, str],
         context_lines: int = 3
     ) -> str:
-        """Generate unified diff between two file states"""
+        """Generate unified diff between two file states."""
         diff_lines = []
 
         # Get all unique filenames
@@ -275,103 +305,73 @@ class PatchTracker:
 
         return "".join(diff_lines)
 
-    def save_patches(self) -> Dict[str, Path]:
-        """Save pre-LLM and post-LLM patches"""
-        if not self.session_id:
-            raise RuntimeError("No active session.")
-
-        saved_paths = {}
-
-        # Pre-LLM patch: diff from empty to pre-LLM state (shows template output)
-        pre_llm_diff = self._generate_unified_diff({}, self.pre_llm_files)
-        if pre_llm_diff:
-            saved_paths["pre_llm"] = self.storage.save_patch(
-                self.session_id, "pre_llm", pre_llm_diff
-            )
-
-        # Post-LLM patch: diff from pre-LLM to post-LLM (shows AI changes)
-        post_llm_diff = self._generate_unified_diff(
-            self.pre_llm_files, self.post_llm_files
-        )
-        if post_llm_diff:
-            saved_paths["post_llm"] = self.storage.save_patch(
-                self.session_id, "post_llm", post_llm_diff
-            )
-
-        return saved_paths
-
-    def finalize_session(
+    def _calculate_stats(
         self,
-        api_info: Optional[Dict[str, Any]] = None,
-        endpoints_count: int = 0,
-        ai_model: Optional[str] = None,
-        enhancements_applied: Optional[List[str]] = None,
-        error: Optional[str] = None
-    ) -> PatchSessionMetadata:
-        """Finalize the session and save metadata"""
-        if not self.session_id:
-            raise RuntimeError("No active session.")
+        files_before: Dict[str, str],
+        files_after: Dict[str, str],
+    ) -> "PatchStats":
+        """Calculate patch statistics."""
+        from .metadata_manager import PatchStats
 
-        # Calculate generation time
-        generation_time = 0.0
-        if self._start_time:
-            generation_time = (datetime.now() - self._start_time).total_seconds()
+        files_changed = 0
+        additions = 0
+        deletions = 0
 
-        # Calculate files changed
-        files_changed = self._count_changed_files()
+        all_files = set(files_before.keys()) | set(files_after.keys())
 
-        # Build session metadata
-        metadata = PatchSessionMetadata(
-            session_id=self.session_id,
-            timestamp=datetime.now().isoformat(),
-            api_title=api_info.get("title", "Unknown") if api_info else "Unknown",
-            api_version=api_info.get("version", "Unknown") if api_info else "Unknown",
-            endpoints_count=endpoints_count,
-            files_generated=list(self.post_llm_files.keys() or self.pre_llm_files.keys()),
-            ai_model=ai_model,
-            enhancements_applied=enhancements_applied or [],
-            generation_time_seconds=generation_time,
-            pre_llm_files_count=len(self.pre_llm_files),
-            post_llm_files_count=len(self.post_llm_files),
+        for filename in all_files:
+            before = files_before.get(filename, "")
+            after = files_after.get(filename, "")
+
+            if before != after:
+                files_changed += 1
+
+                before_lines = set(before.splitlines())
+                after_lines = set(after.splitlines())
+
+                additions += len(after_lines - before_lines)
+                deletions += len(before_lines - after_lines)
+
+        return PatchStats(
             files_changed=files_changed,
-            error=error
+            additions=additions,
+            deletions=deletions,
         )
 
-        # Save patches and session metadata
-        self.save_patches()
-        self.storage.save_session_metadata(self.session_id, metadata)
+    def finalize(self) -> None:
+        """
+        Finalize the tracking session.
 
-        # Register with central metadata manager if available
-        if self.metadata_manager:
-            self.metadata_manager.register_patch_session(self.session_id)
-
-        logger.info(f"Finalized patch session: {self.session_id}")
-
+        Note: Does NOT call metadata_manager.finalize_session().
+        The caller should finalize the metadata manager separately.
+        """
         # Reset state
-        session_id = self.session_id
-        self.session_id = None
-        self.pre_llm_files = {}
-        self.post_llm_files = {}
+        self.template_files = {}
+        self.enhanced_files = {}
         self._start_time = None
+        self._session_started = False
 
-        return metadata
+        logger.info("Finalized patch tracking session")
 
-    def _count_changed_files(self) -> int:
-        """Count number of files that were changed by LLM"""
-        changed = 0
-        all_files = set(self.pre_llm_files.keys()) | set(self.post_llm_files.keys())
-        for filename in all_files:
-            before = self.pre_llm_files.get(filename, "")
-            after = self.post_llm_files.get(filename, "")
-            if before != after:
-                changed += 1
-        return changed
+    def get_summary(self) -> Dict[str, Any]:
+        """Get a summary of the current session."""
+        if not self.metadata_manager:
+            return {"patches": 0}
 
-    def get_session_path(self) -> Optional[Path]:
-        """Get the current session's directory path"""
-        if not self.session_id:
-            return None
-        return self.storage.get_session_dir(self.session_id)
+        manifest = self.metadata_manager.manifest
+        patches_by_milestone = {}
+
+        for patch in manifest.patches:
+            milestone = patch.milestone
+            if milestone not in patches_by_milestone:
+                patches_by_milestone[milestone] = []
+            patches_by_milestone[milestone].append(patch.id)
+
+        return {
+            "session_id": manifest.session_id,
+            "total_patches": len(manifest.patches),
+            "patches_by_milestone": patches_by_milestone,
+        }
 
 
 class PatchTrackerContext:
@@ -379,47 +379,50 @@ class PatchTrackerContext:
     Context manager for patch tracking.
 
     Usage:
-        # Standalone usage
-        async with PatchTrackerContext(output_dir, api_info) as tracker:
-            tracker.capture_pre_llm_state(base_files, workflow_files)
-            enhanced_files = await enhance_with_ai(base_files)
-            tracker.capture_post_llm_state(enhanced_files, enhanced_workflow_files)
-
-        # With MetadataManager integration
         metadata_manager = MetadataManager(output_dir)
-        async with PatchTrackerContext(output_dir, api_info, metadata_manager=metadata_manager) as tracker:
-            ...
+        metadata_manager.initialize_session(api_info)
+
+        async with PatchTrackerContext(metadata_manager) as tracker:
+            tracker.capture_template_state(base_files, workflow_files)
+            enhanced_files = await enhance_with_ai(base_files)
+            tracker.capture_enhanced_state(enhanced_files)
     """
 
     def __init__(
         self,
-        output_dir: Path,
-        api_info: Optional[Dict[str, Any]] = None,
+        metadata_manager: "MetadataManager",
         enabled: bool = True,
-        metadata_manager: Optional["MetadataManager"] = None
     ):
-        self.output_dir = output_dir
-        self.api_info = api_info
-        self.enabled = enabled
+        """
+        Initialize context.
+
+        Args:
+            metadata_manager: MetadataManager instance
+            enabled: Whether tracking is enabled
+        """
         self.metadata_manager = metadata_manager
+        self.enabled = enabled
         self.tracker: Optional[PatchTracker] = None
 
     async def __aenter__(self) -> Optional[PatchTracker]:
         if not self.enabled:
             return None
 
-        if self.metadata_manager:
-            self.tracker = PatchTracker.from_metadata_manager(self.metadata_manager)
-        else:
-            self.tracker = PatchTracker(self.output_dir)
-
-        self.tracker.start_session(self.api_info)
+        self.tracker = PatchTracker.from_metadata_manager(self.metadata_manager)
+        self.tracker.start_session()
         return self.tracker
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self.tracker and self.tracker.session_id:
-            error_msg = str(exc_val) if exc_val else None
-            self.tracker.finalize_session(
-                api_info=self.api_info,
-                error=error_msg
-            )
+        if self.tracker and self.tracker._session_started:
+            self.tracker.finalize()
+
+
+# Backwards compatibility aliases
+def capture_pre_llm_state(tracker: PatchTracker, files: Dict[str, str], workflow_files=None):
+    """Backwards compatible wrapper for capture_template_state."""
+    return tracker.capture_template_state(files, workflow_files)
+
+
+def capture_post_llm_state(tracker: PatchTracker, files: Dict[str, str], workflow_files=None):
+    """Backwards compatible wrapper for capture_enhanced_state."""
+    return tracker.capture_enhanced_state(files, workflow_files)
