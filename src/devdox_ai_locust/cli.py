@@ -13,6 +13,7 @@ from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
 from devdox_ai_locust.utils.patch_tracker import PatchTracker
+from devdox_ai_locust.utils.metadata_manager import MetadataManager
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
@@ -213,6 +214,8 @@ async def _generate_and_create_tests(
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
     output_dir: Path,
+    swagger_source: str = "",
+    source_type: str = "",
     custom_requirement: Optional[str] = "",
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
@@ -222,14 +225,34 @@ async def _generate_and_create_tests(
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
 
-    # Initialize patch tracker for before/after LLM comparison
+    # Initialize central metadata manager
+    metadata_manager = MetadataManager(output_dir)
+    session_id = metadata_manager.initialize_session(
+        api_info=api_info,
+        swagger_source=swagger_source,
+        source_type=source_type
+    )
+    metadata_manager.update_api_endpoints_count(len(endpoints))
+    metadata_manager.update_generation_config(
+        host=host,
+        auth_enabled=auth,
+        db_type=db_type,
+        custom_requirement=custom_requirement
+    )
+
+    # Initialize patch tracker integrated with metadata manager
     patch_tracker: Optional[PatchTracker] = None
     if enable_patch_tracking:
-        patch_tracker = PatchTracker(output_dir)
+        patch_tracker = PatchTracker.from_metadata_manager(metadata_manager)
         patch_tracker.start_session(api_info)
 
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(ai_client=together_client)
+
+        # Update metadata with AI model
+        metadata_manager.update_generation_config(
+            ai_model=generator.ai_config.model if generator.ai_config else None
+        )
 
         # First, generate base template files (pre-LLM)
         base_files, base_directories, grouped_endpoints = (
@@ -263,6 +286,8 @@ async def _generate_and_create_tests(
     # Create test files
     with console.status("[bold green]Creating test files..."):
         created_files = []
+        main_file_names = []
+        workflow_file_names = []
 
         # Create workflow files
         if test_directories:
@@ -276,12 +301,15 @@ async def _generate_and_create_tests(
                 encoding="utf-8"
             )
             created_files.append({"filename": "workflows/__init__.py", "path": init_file})
+            workflow_file_names.append("workflows/__init__.py")
 
             for file_workflow in test_directories:
                 workflow_files = await generator._create_test_files_safely(
                     file_workflow, workflows_dir
                 )
                 created_files.extend(workflow_files)
+                for wf in workflow_files:
+                    workflow_file_names.append(f"workflows/{wf.get('filename', '')}")
 
         # Create main test files
         if test_files:
@@ -289,6 +317,14 @@ async def _generate_and_create_tests(
                 test_files, output_dir
             )
             created_files.extend(main_files)
+            for mf in main_files:
+                main_file_names.append(mf.get('filename', ''))
+
+    # Register files with metadata manager
+    metadata_manager.register_files(
+        main_files=main_file_names,
+        workflow_files=workflow_file_names
+    )
 
     # Finalize patch tracking
     if patch_tracker:
@@ -298,8 +334,11 @@ async def _generate_and_create_tests(
             ai_model=generator.ai_config.model if generator.ai_config else None,
             enhancements_applied=[]  # Could be populated from enhancement result
         )
-        patch_session_path = output_dir / ".devdox_ai_locust" / "patches" / patch_tracker._generate_session_id()
-        console.print(f"[blue]📋 Patch tracking saved to: .devdox_ai_locust/patches/[/blue]")
+        console.print("[blue]📋 Patch tracking saved to: .devdox_ai_locust/patches/[/blue]")
+
+    # Finalize metadata
+    metadata_manager.finalize_session()
+    console.print("[blue]📄 Metadata saved to: .devdox_ai_locust/metadata.json[/blue]")
 
     return created_files
 
@@ -443,10 +482,12 @@ async def _async_generate(
             endpoints,
             api_info,
             output_dir,
-            custom_requirement,
-            host,
-            auth,
-            db_type,
+            swagger_source=swagger_url,
+            source_type="url",
+            custom_requirement=custom_requirement,
+            host=host,
+            auth=auth,
+            db_type=db_type,
         )
 
         # Show results

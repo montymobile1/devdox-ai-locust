@@ -5,13 +5,17 @@ Tracks code generation by saving patch files before and after AI LLM operations.
 Similar to PostgreSQL's WAL (Write-Ahead Logging) concept - creates timestamped
 directories with pre/post LLM patches for analysis and comparison.
 
+This module integrates with the central MetadataManager to store patch sessions
+under the .devdox_ai_locust/patches/ directory.
+
 Structure:
     .devdox_ai_locust/
+    ├── metadata.json              # Central metadata (managed by MetadataManager)
     └── patches/
         └── 2025-12-28_21-47-06/
-            ├── pre_llm.patch
-            ├── post_llm.patch
-            └── metadata.json
+            ├── pre_llm.patch      # Template output before AI enhancement
+            ├── post_llm.patch     # Changes made by AI enhancement
+            └── session.json       # Session-specific metadata
 """
 
 import json
@@ -19,16 +23,20 @@ import logging
 import difflib
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Protocol
+from typing import Dict, Any, Optional, List, Protocol, TYPE_CHECKING
 from dataclasses import dataclass, asdict, field
 import asyncio
+
+if TYPE_CHECKING:
+    from .metadata_manager import MetadataManager
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class PatchMetadata:
-    """Metadata for a patch session"""
+class PatchSessionMetadata:
+    """Metadata for a single patch session (stored in session.json)"""
+    session_id: str
     timestamp: str
     api_title: str
     api_version: str
@@ -37,6 +45,9 @@ class PatchMetadata:
     ai_model: Optional[str] = None
     enhancements_applied: List[str] = field(default_factory=list)
     generation_time_seconds: float = 0.0
+    pre_llm_files_count: int = 0
+    post_llm_files_count: int = 0
+    files_changed: int = 0
     error: Optional[str] = None
 
 
@@ -47,8 +58,8 @@ class PatchStorageProtocol(Protocol):
         """Save a patch file"""
         ...
 
-    def save_metadata(self, session_id: str, metadata: PatchMetadata) -> Path:
-        """Save metadata file"""
+    def save_session_metadata(self, session_id: str, metadata: PatchSessionMetadata) -> Path:
+        """Save session metadata file"""
         ...
 
     def get_session_dir(self, session_id: str) -> Path:
@@ -59,8 +70,14 @@ class PatchStorageProtocol(Protocol):
 class FileSystemPatchStorage:
     """File system based patch storage"""
 
-    def __init__(self, base_dir: Path):
-        self.base_dir = base_dir / ".devdox_ai_locust" / "patches"
+    def __init__(self, patches_dir: Path):
+        """
+        Initialize patch storage.
+
+        Args:
+            patches_dir: The patches directory (typically .devdox_ai_locust/patches/)
+        """
+        self.patches_dir = Path(patches_dir)
 
     def _ensure_dir(self, path: Path) -> Path:
         """Ensure directory exists"""
@@ -69,7 +86,7 @@ class FileSystemPatchStorage:
 
     def get_session_dir(self, session_id: str) -> Path:
         """Get the session directory path"""
-        return self._ensure_dir(self.base_dir / session_id)
+        return self._ensure_dir(self.patches_dir / session_id)
 
     def save_patch(self, session_id: str, patch_name: str, content: str) -> Path:
         """Save a patch file"""
@@ -79,24 +96,33 @@ class FileSystemPatchStorage:
         logger.debug(f"Saved patch: {patch_file}")
         return patch_file
 
-    def save_metadata(self, session_id: str, metadata: PatchMetadata) -> Path:
-        """Save metadata file"""
+    def save_session_metadata(self, session_id: str, metadata: PatchSessionMetadata) -> Path:
+        """Save session-specific metadata file (session.json)"""
         session_dir = self.get_session_dir(session_id)
-        metadata_file = session_dir / "metadata.json"
-        metadata_file.write_text(
+        session_file = session_dir / "session.json"
+        session_file.write_text(
             json.dumps(asdict(metadata), indent=2, default=str),
             encoding="utf-8"
         )
-        logger.debug(f"Saved metadata: {metadata_file}")
-        return metadata_file
+        logger.debug(f"Saved session metadata: {session_file}")
+        return session_file
 
 
 class PatchTracker:
     """
     Tracks code generation by creating unified diffs before/after AI operations.
 
+    Integrates with MetadataManager to store patches under .devdox_ai_locust/patches/
+    and register sessions with the central metadata.
+
     Usage:
+        # Standalone usage (creates its own patches directory)
         tracker = PatchTracker(output_dir)
+        tracker.start_session(api_info)
+
+        # Or integrated with MetadataManager
+        metadata_manager = MetadataManager(output_dir)
+        tracker = PatchTracker.from_metadata_manager(metadata_manager)
         tracker.start_session(api_info)
 
         # Before AI enhancement
@@ -113,14 +139,32 @@ class PatchTracker:
     def __init__(
         self,
         output_dir: Path,
-        storage: Optional[PatchStorageProtocol] = None
+        storage: Optional[PatchStorageProtocol] = None,
+        metadata_manager: Optional["MetadataManager"] = None
     ):
         self.output_dir = Path(output_dir)
-        self.storage = storage or FileSystemPatchStorage(self.output_dir)
+        self.metadata_manager = metadata_manager
+
+        # Determine patches directory
+        if metadata_manager:
+            patches_dir = metadata_manager.patches_dir
+        else:
+            patches_dir = self.output_dir / ".devdox_ai_locust" / "patches"
+            patches_dir.mkdir(parents=True, exist_ok=True)
+
+        self.storage = storage or FileSystemPatchStorage(patches_dir)
         self.session_id: Optional[str] = None
         self.pre_llm_files: Dict[str, str] = {}
         self.post_llm_files: Dict[str, str] = {}
         self._start_time: Optional[datetime] = None
+
+    @classmethod
+    def from_metadata_manager(cls, metadata_manager: "MetadataManager") -> "PatchTracker":
+        """Create a PatchTracker integrated with a MetadataManager"""
+        return cls(
+            output_dir=metadata_manager.output_dir,
+            metadata_manager=metadata_manager
+        )
 
     def _generate_session_id(self) -> str:
         """Generate PostgreSQL-style timestamped session ID"""
@@ -262,7 +306,7 @@ class PatchTracker:
         ai_model: Optional[str] = None,
         enhancements_applied: Optional[List[str]] = None,
         error: Optional[str] = None
-    ) -> PatchMetadata:
+    ) -> PatchSessionMetadata:
         """Finalize the session and save metadata"""
         if not self.session_id:
             raise RuntimeError("No active session.")
@@ -272,9 +316,13 @@ class PatchTracker:
         if self._start_time:
             generation_time = (datetime.now() - self._start_time).total_seconds()
 
-        # Build metadata
-        metadata = PatchMetadata(
-            timestamp=self.session_id,
+        # Calculate files changed
+        files_changed = self._count_changed_files()
+
+        # Build session metadata
+        metadata = PatchSessionMetadata(
+            session_id=self.session_id,
+            timestamp=datetime.now().isoformat(),
             api_title=api_info.get("title", "Unknown") if api_info else "Unknown",
             api_version=api_info.get("version", "Unknown") if api_info else "Unknown",
             endpoints_count=endpoints_count,
@@ -282,12 +330,19 @@ class PatchTracker:
             ai_model=ai_model,
             enhancements_applied=enhancements_applied or [],
             generation_time_seconds=generation_time,
+            pre_llm_files_count=len(self.pre_llm_files),
+            post_llm_files_count=len(self.post_llm_files),
+            files_changed=files_changed,
             error=error
         )
 
-        # Save patches and metadata
+        # Save patches and session metadata
         self.save_patches()
-        self.storage.save_metadata(self.session_id, metadata)
+        self.storage.save_session_metadata(self.session_id, metadata)
+
+        # Register with central metadata manager if available
+        if self.metadata_manager:
+            self.metadata_manager.register_patch_session(self.session_id)
 
         logger.info(f"Finalized patch session: {self.session_id}")
 
@@ -299,6 +354,17 @@ class PatchTracker:
         self._start_time = None
 
         return metadata
+
+    def _count_changed_files(self) -> int:
+        """Count number of files that were changed by LLM"""
+        changed = 0
+        all_files = set(self.pre_llm_files.keys()) | set(self.post_llm_files.keys())
+        for filename in all_files:
+            before = self.pre_llm_files.get(filename, "")
+            after = self.post_llm_files.get(filename, "")
+            if before != after:
+                changed += 1
+        return changed
 
     def get_session_path(self) -> Optional[Path]:
         """Get the current session's directory path"""
@@ -312,28 +378,40 @@ class PatchTrackerContext:
     Context manager for patch tracking.
 
     Usage:
+        # Standalone usage
         async with PatchTrackerContext(output_dir, api_info) as tracker:
             tracker.capture_pre_llm_state(base_files, workflow_files)
             enhanced_files = await enhance_with_ai(base_files)
             tracker.capture_post_llm_state(enhanced_files, enhanced_workflow_files)
+
+        # With MetadataManager integration
+        metadata_manager = MetadataManager(output_dir)
+        async with PatchTrackerContext(output_dir, api_info, metadata_manager=metadata_manager) as tracker:
+            ...
     """
 
     def __init__(
         self,
         output_dir: Path,
         api_info: Optional[Dict[str, Any]] = None,
-        enabled: bool = True
+        enabled: bool = True,
+        metadata_manager: Optional["MetadataManager"] = None
     ):
         self.output_dir = output_dir
         self.api_info = api_info
         self.enabled = enabled
+        self.metadata_manager = metadata_manager
         self.tracker: Optional[PatchTracker] = None
 
     async def __aenter__(self) -> Optional[PatchTracker]:
         if not self.enabled:
             return None
 
-        self.tracker = PatchTracker(self.output_dir)
+        if self.metadata_manager:
+            self.tracker = PatchTracker.from_metadata_manager(self.metadata_manager)
+        else:
+            self.tracker = PatchTracker(self.output_dir)
+
         self.tracker.start_session(self.api_info)
         return self.tracker
 
