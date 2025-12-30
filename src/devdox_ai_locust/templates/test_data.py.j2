@@ -73,6 +73,24 @@ class TestDataGenerator:
 
             if '$ref' in prop_schema:
                 result[prop_name] = self._handle_reference(prop_schema['$ref'])
+            else:
+                # Handle non-reference properties by recursing or generating based on type
+                prop_type = prop_schema.get('type', 'string')
+                if prop_type == 'object':
+                    result[prop_name] = self.generate_json_data(prop_schema)
+                elif prop_type == 'array':
+                    result[prop_name] = self._generate_array_data(prop_schema)
+                elif prop_type == 'string':
+                    result[prop_name] = self._generate_string_value(prop_schema, prop_name)
+                elif prop_type == 'integer':
+                    result[prop_name] = self._generate_integer_value(prop_schema)
+                elif prop_type == 'number':
+                    result[prop_name] = self._generate_number_value(prop_schema)
+                elif prop_type == 'boolean':
+                    result[prop_name] = self._generate_boolean_value(prop_schema)
+                else:
+                    # Fallback: use property name pattern matching
+                    result[prop_name] = self._generate_by_name_pattern(prop_name)
 
         return result
 
