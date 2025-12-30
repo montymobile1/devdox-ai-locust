@@ -9,7 +9,7 @@ import json
 import yaml
 import logging
 from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass
+from pydantic import BaseModel, Field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -18,17 +18,15 @@ application_json_type = "application/json"
 localhost_url = "http://localhost"
 
 
-class ParameterType(Enum):
+class ParameterType(str, Enum):
     QUERY = "query"
     PATH = "path"
     HEADER = "header"
     COOKIE = "cookie"
 
 
-@dataclass
-class Parameter:
+class Parameter(BaseModel):
     """Represents an OpenAPI parameter"""
-
     name: str
     location: ParameterType
     required: bool
@@ -40,41 +38,51 @@ class Parameter:
     format: Optional[str] = None
 
 
-@dataclass
-class RequestBody:
+class RequestBody(BaseModel):
     """Represents an OpenAPI request body"""
-
     content_type: str
-    schema: Dict[str, Any]
+    schema_: Dict[str, Any] = Field(alias="schema")
     required: bool = True
     description: Optional[str] = None
     examples: Optional[Dict[str, Any]] = None
 
+    class Config:
+        populate_by_name = True
 
-@dataclass
-class Response:
+    @property
+    def schema(self) -> Dict[str, Any]:
+        """Backwards compatible access to schema"""
+        return self.schema_
+
+
+class Response(BaseModel):
     """Represents an OpenAPI response"""
-
     status_code: str
     description: str
     content_type: Optional[str] = None
-    schema: Optional[Dict[str, Any]] = None
+    schema_: Optional[Dict[str, Any]] = Field(default=None, alias="schema")
     headers: Optional[Dict[str, Any]] = None
 
+    class Config:
+        populate_by_name = True
 
-@dataclass
-class Endpoint:
+    @property
+    def schema(self) -> Optional[Dict[str, Any]]:
+        """Backwards compatible access to schema"""
+        return self.schema_
+
+
+class Endpoint(BaseModel):
     """Represents a parsed API endpoint"""
-
     path: str
     method: str
-    operation_id: Optional[str]
-    summary: Optional[str]
-    description: Optional[str]
-    parameters: List[Parameter]
-    request_body: Optional[RequestBody]
-    responses: List[Response]
-    tags: List[str]
+    operation_id: Optional[str] = None
+    summary: Optional[str] = None
+    description: Optional[str] = None
+    parameters: List[Parameter] = Field(default_factory=list)
+    request_body: Optional[RequestBody] = None
+    responses: List[Response] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
     security: Optional[List[Dict[str, Any]]] = None
 
 

@@ -9,15 +9,18 @@ import ast
 import re
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Tuple, Set
+from typing import Dict, List, Any, Optional, Tuple, Set, Callable, Awaitable
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
-from dataclasses import dataclass
+from pydantic import BaseModel, Field
 import uuid
 import shutil
 
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
+from devdox_ai_locust.schemas.progress import (
+    ProgressCallback, ProgressStatus, ProgressPhase
+)
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
 from together import AsyncTogether
@@ -252,14 +255,16 @@ class SafeCodeMerger:
         return original_code + "\n\n# AI-enhanced additions\n" + new_methods
 
 
-@dataclass
-class ProtectedSymbol:
+class ProtectedSymbol(BaseModel):
     """A symbol that is protected because other files depend on it."""
     name: str
     symbol_type: str  # 'class', 'function', 'method', 'constant'
     defined_in: str  # file where it's defined
     used_by: List[str]  # files that import/use it
     reason: str  # why it's protected
+
+    class Config:
+        frozen = True
 
 
 class CodebaseAwareness:
@@ -482,19 +487,15 @@ class CodebaseAwareness:
         return "\n".join(context)
 
 
-@dataclass
-class ErrorClassification:
+class ErrorClassification(BaseModel):
     """Classification of an error for retry logic"""
-
     is_retryable: bool
     backoff_seconds: float
     error_type: str
 
 
-@dataclass
-class AIEnhancementConfig:
+class AIEnhancementConfig(BaseModel):
     """Configuration for AI enhancement"""
-
     model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
     max_tokens: int = 8000
     temperature: float = 0.3
@@ -506,16 +507,14 @@ class AIEnhancementConfig:
     update_main_locust: bool = True
 
 
-@dataclass
-class EnhancementResult:
+class EnhancementResult(BaseModel):
     """Result of AI enhancement"""
-
     success: bool
-    enhanced_files: Dict[str, str]
-    enhanced_directory_files: List[Dict[str, Any]]
-    enhancements_applied: List[str]
-    errors: List[str]
-    processing_time: float
+    enhanced_files: Dict[str, str] = Field(default_factory=dict)
+    enhanced_directory_files: List[Dict[str, Any]] = Field(default_factory=list)
+    enhancements_applied: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    processing_time: float = 0.0
 
 
 class EnhancementProcessor:
@@ -774,12 +773,14 @@ class HybridLocustGenerator:
         ai_config: Optional[AIEnhancementConfig] = None,
         test_config: Optional[TestDataConfig] = None,
         prompt_dir: str = "prompt",
+        progress_callback: Optional[ProgressCallback] = None,
     ):
         self.ai_client = ai_client
         self.ai_config = ai_config or AIEnhancementConfig()
         self.template_generator = LocustTestGenerator(test_config)
         self.prompt_dir = self._find_project_root() / prompt_dir
         self._api_semaphore = asyncio.Semaphore(5)
+        self._progress_callback = progress_callback
         self._setup_jinja_env()
         self.MAX_RETRIES = 3
         self.RATE_LIMIT_BACKOFF = 10
@@ -793,6 +794,27 @@ class HybridLocustGenerator:
             "invalid token",
         ]
         self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
+
+    async def _report_progress(
+        self,
+        phase: ProgressPhase,
+        message: str,
+        detail: Optional[str] = None,
+        current: int = 0,
+        total: int = 0,
+        is_ai_call: bool = False,
+    ) -> None:
+        """Report progress to callback if available"""
+        if self._progress_callback:
+            status = ProgressStatus(
+                phase=phase,
+                message=message,
+                detail=detail,
+                current=current,
+                total=total,
+                is_ai_call=is_ai_call,
+            )
+            await self._progress_callback(status)
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -869,6 +891,11 @@ class HybridLocustGenerator:
 
         try:
             # Step 1: Generate reliable base structure
+            await self._report_progress(
+                ProgressPhase.GENERATING_TEMPLATES,
+                "Generating base test structure",
+                detail=f"Processing {len(endpoints)} endpoints",
+            )
             logger.info("🔧 Generating base test structure with templates...")
             base_files, directory_files, grouped_enpoints = (
                 self.template_generator.generate_from_endpoints(
@@ -881,6 +908,7 @@ class HybridLocustGenerator:
             )
 
             base_files = self.template_generator.fix_indent(base_files)
+
             # Step 2: Enhance with AI if available
             if self.ai_client and self._should_enhance(endpoints, api_info):
                 logger.info("🤖 Enhancing tests with AI...")
@@ -895,6 +923,11 @@ class HybridLocustGenerator:
                     db_type,
                 )
                 if enhancement_result.success:
+                    await self._report_progress(
+                        ProgressPhase.COMPLETE,
+                        "AI enhancements applied successfully",
+                        detail=f"Applied: {', '.join(enhancement_result.enhancements_applied)}",
+                    )
                     logger.info(
                         f"✅ AI enhancements applied: {', '.join(enhancement_result.enhancements_applied)}"
                     )
@@ -903,10 +936,19 @@ class HybridLocustGenerator:
                         enhancement_result.enhanced_directory_files,
                     )
                 else:
+                    await self._report_progress(
+                        ProgressPhase.COMPLETE,
+                        "Using template base (AI enhancement failed)",
+                        detail=f"Errors: {', '.join(enhancement_result.errors)}",
+                    )
                     logger.warning(
                         f"⚠️ AI enhancement failed, using template base: {', '.join(enhancement_result.errors)}"
                     )
             else:
+                await self._report_progress(
+                    ProgressPhase.COMPLETE,
+                    "Template-based generation complete",
+                )
                 logger.info("📋 Using template-based generation only")
 
             processing_time = asyncio.get_event_loop().time() - start_time
@@ -915,6 +957,11 @@ class HybridLocustGenerator:
             return base_files, directory_files
 
         except Exception as e:
+            await self._report_progress(
+                ProgressPhase.FAILED,
+                "Generation failed",
+                detail=str(e),
+            )
             logger.error(f"Hybrid generation failed: {e}")
 
             return {}, []
@@ -1042,10 +1089,16 @@ class HybridLocustGenerator:
     ) -> EnhancementResult:
         """Process all enhancements using the enhancement processor"""
         # Analyze codebase to understand dependencies
+        await self._report_progress(
+            ProgressPhase.ANALYZING_CODEBASE,
+            "Analyzing codebase dependencies",
+            detail="Identifying protected symbols",
+        )
         awareness = CodebaseAwareness()
         awareness.analyze_codebase(base_files, directory_files)
 
         # Log the protected symbols for debugging
+        protected_count = sum(len(p) for p in awareness.protected.values())
         logger.info("📊 Codebase analysis complete:")
         for filename, protected in awareness.protected.items():
             if protected:
@@ -1057,32 +1110,49 @@ class HybridLocustGenerator:
         enhanced_directory_files = []
         enhancements_applied: List[str] = []
         errors = []
-        # Process each enhancement type
-        enhancement_tasks = [
-            processor.process_main_locust_enhancement(base_files, endpoints, api_info),
-            processor.process_domain_flows_enhancement(
-                endpoints, api_info, custom_requirement
-            ),
-            processor.process_test_data_enhancement(base_files, endpoints, db_type),
-            processor.process_validation_enhancement(base_files, endpoints),
+
+        # Process enhancements sequentially for better progress visibility
+        enhancement_steps = [
+            (ProgressPhase.ENHANCING_LOCUSTFILE, "Enhancing main locustfile",
+             lambda: processor.process_main_locust_enhancement(base_files, endpoints, api_info)),
+            (ProgressPhase.ENHANCING_DOMAIN_FLOWS, "Generating domain-specific flows",
+             lambda: processor.process_domain_flows_enhancement(endpoints, api_info, custom_requirement)),
+            (ProgressPhase.ENHANCING_TEST_DATA, "Enhancing test data generator",
+             lambda: processor.process_test_data_enhancement(base_files, endpoints, db_type)),
+            (ProgressPhase.ENHANCING_VALIDATION, "Enhancing validation utilities",
+             lambda: processor.process_validation_enhancement(base_files, endpoints)),
         ]
 
-        # Execute file-based enhancements concurrently
-        file_enhancement_results = await asyncio.gather(
-            *enhancement_tasks, return_exceptions=True
+        total_steps = len(enhancement_steps) + 1  # +1 for workflows
+        current_step = 0
+
+        for phase, message, task_fn in enhancement_steps:
+            current_step += 1
+            await self._report_progress(
+                phase, message,
+                detail="Calling AI model...",
+                current=current_step, total=total_steps,
+                is_ai_call=True,
+            )
+            try:
+                files, enhancements = await task_fn()
+                enhanced_files.update(files)
+                enhancements_applied.extend(enhancements)
+            except Exception as e:
+                errors.append(f"{message}: {str(e)}")
+                logger.warning(f"Enhancement step failed: {message} - {e}")
+
+        # Process workflow enhancements (the most time-consuming)
+        current_step += 1
+        await self._report_progress(
+            ProgressPhase.ENHANCING_WORKFLOWS,
+            "Enhancing workflow files",
+            detail=f"Processing {len(directory_files)} workflows...",
+            current=current_step, total=total_steps,
+            is_ai_call=True,
         )
 
-        # Process results from file-based enhancements
-        for result in file_enhancement_results:
-            if isinstance(result, BaseException):
-                errors.append(str(result))
-                continue
-
-            files, enhancements = result
-            enhanced_files.update(files)
-            enhancements_applied.extend(enhancements)
-
-        # Process workflow enhancements separately (more complex logic)
+        # Process workflow enhancements
         try:
             (
                 workflow_files,
@@ -1094,6 +1164,13 @@ class HybridLocustGenerator:
             enhancements_applied.extend(workflow_enhancements)
         except Exception as e:
             errors.append(f"Workflow enhancement error: {str(e)}")
+
+        # Report merging and validation
+        await self._report_progress(
+            ProgressPhase.VALIDATING_OUTPUT,
+            "Validating generated code",
+            detail=f"Applied {len(enhancements_applied)} enhancements",
+        )
 
         return EnhancementResult(
             success=len(errors) == 0,

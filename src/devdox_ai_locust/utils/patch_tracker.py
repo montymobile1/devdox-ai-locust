@@ -26,7 +26,7 @@ import difflib
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Protocol, TYPE_CHECKING
-from dataclasses import dataclass, asdict, field
+from pydantic import BaseModel, Field
 import asyncio
 
 if TYPE_CHECKING:
@@ -35,17 +35,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PatchSessionMetadata:
+class PatchSessionMetadata(BaseModel):
     """Metadata for a single patch session (stored in session.json)"""
     session_id: str
     timestamp: str
     api_title: str
     api_version: str
     endpoints_count: int
-    files_generated: List[str] = field(default_factory=list)
+    files_generated: List[str] = Field(default_factory=list)
     ai_model: Optional[str] = None
-    enhancements_applied: List[str] = field(default_factory=list)
+    enhancements_applied: List[str] = Field(default_factory=list)
     generation_time_seconds: float = 0.0
     pre_llm_files_count: int = 0
     post_llm_files_count: int = 0
@@ -103,7 +102,7 @@ class FileSystemPatchStorage:
         session_dir = self.get_session_dir(session_id)
         session_file = session_dir / "session.json"
         session_file.write_text(
-            json.dumps(asdict(metadata), indent=2, default=str),
+            json.dumps(metadata.model_dump(), indent=2, default=str),
             encoding="utf-8"
         )
         logger.debug(f"Saved session metadata: {session_file}")

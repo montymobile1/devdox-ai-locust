@@ -6,9 +6,13 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from together import AsyncTogether
 
 from .hybrid_loctus_generator import HybridLocustGenerator
+from .schemas.progress import ProgressStatus, ProgressPhase
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
@@ -209,6 +213,100 @@ async def _process_api_schema(
             sys.exit(1)
 
 
+class ProgressDisplay:
+    """Manages live progress display for generation"""
+
+    # Phase descriptions for display
+    PHASE_ICONS = {
+        ProgressPhase.INITIALIZING: "🔧",
+        ProgressPhase.PARSING_SCHEMA: "📖",
+        ProgressPhase.GENERATING_TEMPLATES: "📝",
+        ProgressPhase.ANALYZING_CODEBASE: "🔍",
+        ProgressPhase.ENHANCING_LOCUSTFILE: "🤖",
+        ProgressPhase.ENHANCING_TEST_DATA: "🤖",
+        ProgressPhase.ENHANCING_VALIDATION: "🤖",
+        ProgressPhase.ENHANCING_DOMAIN_FLOWS: "🤖",
+        ProgressPhase.ENHANCING_WORKFLOWS: "🤖",
+        ProgressPhase.MERGING_CODE: "🔀",
+        ProgressPhase.VALIDATING_OUTPUT: "✅",
+        ProgressPhase.WRITING_FILES: "💾",
+        ProgressPhase.FINALIZING: "📦",
+        ProgressPhase.COMPLETE: "🎉",
+        ProgressPhase.FAILED: "❌",
+    }
+
+    def __init__(self):
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=30),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("[dim]{task.fields[detail]}"),
+            console=console,
+            transient=False,
+        )
+        self.main_task: Optional[TaskID] = None
+        self.current_status = ""
+        self.completed_phases: List[str] = []
+
+    def start(self) -> None:
+        """Start the progress display"""
+        self.main_task = self.progress.add_task(
+            "Generating tests...",
+            total=100,
+            detail="Initializing..."
+        )
+        self.progress.start()
+
+    def stop(self) -> None:
+        """Stop the progress display"""
+        self.progress.stop()
+
+    async def update(self, status: ProgressStatus) -> None:
+        """Update the progress display with new status"""
+        if self.main_task is None:
+            return
+
+        icon = self.PHASE_ICONS.get(status.phase, "⏳")
+        message = f"{icon} {status.message}"
+
+        # Calculate overall progress based on phase
+        phase_progress = {
+            ProgressPhase.INITIALIZING: 5,
+            ProgressPhase.GENERATING_TEMPLATES: 15,
+            ProgressPhase.ANALYZING_CODEBASE: 20,
+            ProgressPhase.ENHANCING_LOCUSTFILE: 35,
+            ProgressPhase.ENHANCING_TEST_DATA: 50,
+            ProgressPhase.ENHANCING_VALIDATION: 60,
+            ProgressPhase.ENHANCING_DOMAIN_FLOWS: 70,
+            ProgressPhase.ENHANCING_WORKFLOWS: 85,
+            ProgressPhase.VALIDATING_OUTPUT: 90,
+            ProgressPhase.WRITING_FILES: 95,
+            ProgressPhase.COMPLETE: 100,
+            ProgressPhase.FAILED: 100,
+        }
+
+        progress_value = phase_progress.get(status.phase, 0)
+        detail = status.detail or ""
+
+        # Add AI indicator
+        if status.is_ai_call:
+            detail = f"[yellow]AI[/yellow] {detail}"
+
+        self.progress.update(
+            self.main_task,
+            completed=progress_value,
+            description=message,
+            detail=detail,
+        )
+
+        # Print completed phases
+        if status.phase not in [ProgressPhase.COMPLETE, ProgressPhase.FAILED]:
+            phase_str = f"{icon} {status.message}"
+            if phase_str not in self.completed_phases:
+                self.completed_phases.append(phase_str)
+
+
 async def _generate_and_create_tests(
     api_key: str,
     endpoints: List[Endpoint],
@@ -246,8 +344,21 @@ async def _generate_and_create_tests(
         patch_tracker = PatchTracker.from_metadata_manager(metadata_manager)
         patch_tracker.start_session(api_info)
 
-    with console.status("[bold green]Generating Locust tests with AI..."):
-        generator = HybridLocustGenerator(ai_client=together_client)
+    # Create progress display
+    progress_display = ProgressDisplay()
+
+    async def progress_callback(status: ProgressStatus) -> None:
+        """Callback to update progress display"""
+        await progress_display.update(status)
+
+    try:
+        progress_display.start()
+
+        # Create generator with progress callback
+        generator = HybridLocustGenerator(
+            ai_client=together_client,
+            progress_callback=progress_callback,
+        )
 
         # Update metadata with AI model
         metadata_manager.update_generation_config(
@@ -283,42 +394,52 @@ async def _generate_and_create_tests(
         if patch_tracker:
             patch_tracker.capture_post_llm_state(test_files, test_directories)
 
+        # Update progress for file writing
+        await progress_callback(ProgressStatus(
+            phase=ProgressPhase.WRITING_FILES,
+            message="Writing output files",
+            detail=f"Creating {len(test_files)} files...",
+        ))
+
+    finally:
+        progress_display.stop()
+
     # Create test files
-    with console.status("[bold green]Creating test files..."):
-        created_files = []
-        main_file_names = []
-        workflow_file_names = []
+    console.print("[green]✓[/green] AI enhancement complete, writing files...")
+    created_files = []
+    main_file_names = []
+    workflow_file_names = []
 
-        # Create workflow files
-        if test_directories:
-            workflows_dir = output_dir / "workflows"
-            workflows_dir.mkdir(exist_ok=True)
+    # Create workflow files
+    if test_directories:
+        workflows_dir = output_dir / "workflows"
+        workflows_dir.mkdir(exist_ok=True)
 
-            # Create __init__.py to make workflows a proper Python package
-            init_file = workflows_dir / "__init__.py"
-            init_file.write_text(
-                '"""Workflow modules for Locust load testing"""\n',
-                encoding="utf-8"
+        # Create __init__.py to make workflows a proper Python package
+        init_file = workflows_dir / "__init__.py"
+        init_file.write_text(
+            '"""Workflow modules for Locust load testing"""\n',
+            encoding="utf-8"
+        )
+        created_files.append({"filename": "workflows/__init__.py", "path": init_file})
+        workflow_file_names.append("workflows/__init__.py")
+
+        for file_workflow in test_directories:
+            workflow_files = await generator._create_test_files_safely(
+                file_workflow, workflows_dir
             )
-            created_files.append({"filename": "workflows/__init__.py", "path": init_file})
-            workflow_file_names.append("workflows/__init__.py")
+            created_files.extend(workflow_files)
+            for wf in workflow_files:
+                workflow_file_names.append(f"workflows/{wf.get('filename', '')}")
 
-            for file_workflow in test_directories:
-                workflow_files = await generator._create_test_files_safely(
-                    file_workflow, workflows_dir
-                )
-                created_files.extend(workflow_files)
-                for wf in workflow_files:
-                    workflow_file_names.append(f"workflows/{wf.get('filename', '')}")
-
-        # Create main test files
-        if test_files:
-            main_files = await generator._create_test_files_safely(
-                test_files, output_dir
-            )
-            created_files.extend(main_files)
-            for mf in main_files:
-                main_file_names.append(mf.get('filename', ''))
+    # Create main test files
+    if test_files:
+        main_files = await generator._create_test_files_safely(
+            test_files, output_dir
+        )
+        created_files.extend(main_files)
+        for mf in main_files:
+            main_file_names.append(mf.get('filename', ''))
 
     # Register files with metadata manager
     metadata_manager.register_files(
@@ -334,7 +455,7 @@ async def _generate_and_create_tests(
             ai_model=generator.ai_config.model if generator.ai_config else None,
             enhancements_applied=[]  # Could be populated from enhancement result
         )
-        console.print("[blue]📋 Patch tracking saved to: .devdox_ai_locust/patches/[/blue]")
+        console.print("[blue]📋 Patch tracking saved to: .devdox_ai_locust/ai_enhancement/patches/[/blue]")
 
     # Finalize metadata
     metadata_manager.finalize_session()

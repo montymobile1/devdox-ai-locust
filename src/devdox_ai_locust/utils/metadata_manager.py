@@ -40,7 +40,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Protocol, Set
-from dataclasses import dataclass, asdict, field
+from pydantic import BaseModel, Field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -61,8 +61,7 @@ class SubDirectory(str, Enum):
     LOGS = "logs"
 
 
-@dataclass
-class APIMetadata:
+class APIMetadata(BaseModel):
     """Metadata about the API being tested"""
     title: str = "Unknown"
     version: str = "Unknown"
@@ -73,8 +72,7 @@ class APIMetadata:
     source_type: str = ""  # "url" or "file"
 
 
-@dataclass
-class GenerationMetadata:
+class GenerationMetadata(BaseModel):
     """Metadata about the generation session"""
     session_id: str = ""
     created_at: str = ""
@@ -84,21 +82,19 @@ class GenerationMetadata:
     custom_requirement: str = ""
     processing_time_seconds: float = 0.0
     ai_model: str = ""
-    enhancements_applied: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
+    enhancements_applied: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
 
 
-@dataclass
-class OutputMetadata:
+class OutputMetadata(BaseModel):
     """Metadata about generated output files"""
     directory: str = ""
-    main_files: List[str] = field(default_factory=list)
-    workflow_files: List[str] = field(default_factory=list)
+    main_files: List[str] = Field(default_factory=list)
+    workflow_files: List[str] = Field(default_factory=list)
     total_files: int = 0
 
 
-@dataclass
-class PatchSessionInfo:
+class PatchSessionInfo(BaseModel):
     """Information about a patch session"""
     session_id: str
     created_at: str
@@ -109,32 +105,28 @@ class PatchSessionInfo:
     files_removed: int = 0
 
 
-@dataclass
-class AIEnhancementMetadata:
+class AIEnhancementMetadata(BaseModel):
     """Metadata for AI enhancement feature"""
     enabled: bool = True
     total_sessions: int = 0
     latest_session: str = ""
-    sessions: List[str] = field(default_factory=list)
+    sessions: List[str] = Field(default_factory=list)
 
 
-@dataclass
-class CodebaseAnalysisMetadata:
+class CodebaseAnalysisMetadata(BaseModel):
     """Metadata for codebase analysis feature"""
     enabled: bool = True
     latest_session: str = ""
     total_protected_symbols: int = 0
 
 
-@dataclass
-class FeaturesMetadata:
+class FeaturesMetadata(BaseModel):
     """Container for all extensible features"""
-    ai_enhancement: AIEnhancementMetadata = field(default_factory=AIEnhancementMetadata)
-    codebase_analysis: CodebaseAnalysisMetadata = field(default_factory=CodebaseAnalysisMetadata)
+    ai_enhancement: AIEnhancementMetadata = Field(default_factory=AIEnhancementMetadata)
+    codebase_analysis: CodebaseAnalysisMetadata = Field(default_factory=CodebaseAnalysisMetadata)
 
 
-@dataclass
-class CentralMetadata:
+class CentralMetadata(BaseModel):
     """
     Central metadata structure for DevDox AI Locust.
 
@@ -144,10 +136,10 @@ class CentralMetadata:
     version: str = METADATA_VERSION
     created_at: str = ""
     updated_at: str = ""
-    api: APIMetadata = field(default_factory=APIMetadata)
-    generation: GenerationMetadata = field(default_factory=GenerationMetadata)
-    output: OutputMetadata = field(default_factory=OutputMetadata)
-    features: FeaturesMetadata = field(default_factory=FeaturesMetadata)
+    api: APIMetadata = Field(default_factory=APIMetadata)
+    generation: GenerationMetadata = Field(default_factory=GenerationMetadata)
+    output: OutputMetadata = Field(default_factory=OutputMetadata)
+    features: FeaturesMetadata = Field(default_factory=FeaturesMetadata)
 
 
 class MetadataStorageProtocol(Protocol):
@@ -224,7 +216,7 @@ class FileSystemMetadataStorage:
 
     def _metadata_to_dict(self, metadata: CentralMetadata) -> Dict[str, Any]:
         """Convert CentralMetadata to dictionary"""
-        return asdict(metadata)
+        return metadata.model_dump()
 
     def _dict_to_metadata(self, data: Dict[str, Any]) -> CentralMetadata:
         """Convert dictionary to CentralMetadata"""
@@ -695,7 +687,7 @@ class MetadataManager:
 
     def to_dict(self) -> Dict[str, Any]:
         """Export metadata as dictionary"""
-        return asdict(self.metadata)
+        return self.metadata.model_dump()
 
     # =========================================================================
     # Directory Structure Info
