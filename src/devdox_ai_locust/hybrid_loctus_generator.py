@@ -1386,7 +1386,14 @@ class HybridLocustGenerator:
             {"role": "user", "content": prompt},
         ]
 
-    async def _make_api_call(self, messages: list[dict]) -> Optional[str]:
+    async def _make_api_call(
+        self,
+        messages: list[dict],
+        *,
+        parse_context: str | None = None,
+        expect_tags: bool = True,
+        require_tags: bool = False,
+    ) -> Optional[str]:
         """Make API call - ONE job"""
         async with self._api_semaphore:
             api_call = self.ai_client.chat.completions.create(
@@ -1408,7 +1415,12 @@ class HybridLocustGenerator:
                 content = response.choices[0].message.content.strip()
                 # Clean up the response
                 content = self._clean_ai_response(
-                    self.extract_code_from_response(content)
+                    self.extract_code_from_response(
+                        content,
+                        parse_context=parse_context,
+                        expect_tags=expect_tags,
+                        require_tags=require_tags,
+                    )
                 )
                 return content
 
@@ -1420,7 +1432,10 @@ class HybridLocustGenerator:
 
         for attempt in range(self.MAX_RETRIES):  # Retry logic
             try:
-                content = await self._make_api_call(messages)
+                content = await self._make_api_call(
+                    messages,
+                    parse_context=f"call_ai_service attempt={attempt + 1}",
+                )
                 if content:
                     return content
 
@@ -1443,7 +1458,14 @@ class HybridLocustGenerator:
 
         return ""
 
-    def extract_code_from_response(self, response_text: str) -> str:
+    def extract_code_from_response(
+        self,
+        response_text: str,
+        *,
+        parse_context: str | None = None,
+        expect_tags: bool = True,
+        require_tags: bool = False,
+    ) -> str:
         """
         Extract code from AI response, supporting multiple tag formats.
 
@@ -1456,10 +1478,18 @@ class HybridLocustGenerator:
         new_methods_pattern = r"<new_methods>(.*?)</new_methods>"
         new_methods_matches = re.findall(new_methods_pattern, response_text, re.DOTALL)
 
+        context_suffix = f" context={parse_context}" if parse_context else ""
+        tags_found = False
+
         if new_methods_matches:
             content = max(new_methods_matches, key=len).strip()
             if content and len(content) > 10:
-                logger.debug(f"Extracted {len(content)} chars from <new_methods> tags")
+                tags_found = True
+                logger.debug(
+                    "AI_PARSE tag=new_methods extracted_chars=%d%s",
+                    len(content),
+                    context_suffix,
+                )
                 return content
 
         # Then try <code> tags
@@ -1469,7 +1499,12 @@ class HybridLocustGenerator:
         if code_matches:
             content = max(code_matches, key=len).strip()
             if content and len(content) > 10:
-                logger.debug(f"Extracted {len(content)} chars from <code> tags")
+                tags_found = True
+                logger.debug(
+                    "AI_PARSE tag=code extracted_chars=%d%s",
+                    len(content),
+                    context_suffix,
+                )
                 return content
 
         # No valid tags found
@@ -1477,7 +1512,26 @@ class HybridLocustGenerator:
         # instead of the expected tagged blocks from our prompt templates.
         # We fall back to the entire response so downstream merging can still
         # attempt to salvage useful code fragments.
-        logger.debug("No valid <new_methods> or <code> tags found, using full response")
+        if require_tags:
+            logger.warning(
+                "AI_PARSE tag=none require_tags=True dropping response raw_chars=%d%s",
+                len(response_text.strip()),
+                context_suffix,
+            )
+            return ""
+
+        if expect_tags:
+            logger.debug(
+                "AI_PARSE tag=none fallback=raw raw_chars=%d%s",
+                len(response_text.strip()),
+                context_suffix,
+            )
+        else:
+            logger.debug(
+                "AI_PARSE tag=none skip_fallback expect_tags=False cleaned_chars=%d%s",
+                len(response_text.strip()),
+                context_suffix,
+            )
         return response_text.strip()
 
     def _clean_ai_response(self, content: str) -> str:

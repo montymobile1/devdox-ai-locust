@@ -1060,6 +1060,10 @@ def test_create_item(self):
             response.failure(f"Expected 201, got {{response.status_code}}")
 
 Return ONLY the Python method code, no class definition. Maintain consistent 4-space indentation.
+Output format (MANDATORY):
+<new_methods>
+...ONLY the method code here...
+</new_methods>
 {f'''
 Additional Requirements from Developer:
 {self.custom_requirement}
@@ -1099,6 +1103,10 @@ def test_missing_required_fields(self):
             response.failure(f"Expected 400/422, got {{response.status_code}}")
 
 Return ONLY the Python method code, no class definition. Maintain consistent 4-space indentation.
+Output format (MANDATORY):
+<new_methods>
+...ONLY the method code here...
+</new_methods>
 {f'''
 Additional Requirements from Developer:
 {self.custom_requirement}
@@ -1147,6 +1155,10 @@ def test_special_characters(self):
             response.failure(f"Unexpected status {{response.status_code}}")
 
 Return ONLY the Python method code, no class definition. Each test must be a separate method. Maintain consistent 4-space indentation.
+Output format (MANDATORY):
+<new_methods>
+...ONLY the method code here...
+</new_methods>
 {f'''
 Additional Requirements from Developer:
 {self.custom_requirement}
@@ -1177,12 +1189,15 @@ Additional Requirements from Developer:
         for attempt in range(max_attempts):
             try:
                 messages = self._ai_generator._build_messages(prompt)
-                response = await self._ai_generator._make_api_call(messages)
+                response = await self._ai_generator._make_api_call(
+                    messages,
+                    parse_context="modular_generator raw",
+                    require_tags=True,
+                )
                 if not response:
                     continue
 
-                extracted = self._ai_generator.extract_code_from_response(response)
-                cleaned = self._ai_generator._clean_ai_response(extracted)
+                cleaned = self._ai_generator._clean_ai_response(response)
                 # Strip XML/HTML tags that LLMs sometimes add
                 cleaned = self._strip_xml_tags(cleaned)
                 # Normalize indentation for consistent template insertion
