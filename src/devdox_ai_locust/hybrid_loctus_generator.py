@@ -34,7 +34,12 @@ workflow_jinja_path = "workflow.j2"
 # If these are missing, the AI has corrupted the file and we must use the original
 CRITICAL_CLASSES = {
     "test_data.py": ["TestDataGenerator"],
-    "utils.py": ["ResponseValidator", "RequestLogger", "PerformanceMonitor", "DataManager"],
+    "utils.py": [
+        "ResponseValidator",
+        "RequestLogger",
+        "PerformanceMonitor",
+        "DataManager",
+    ],
 }
 
 # Critical functions that MUST exist in each file
@@ -140,18 +145,22 @@ class SafeCodeMerger:
                             method_names.add(f"{node.name}.{item.name}")
                 elif isinstance(node, ast.FunctionDef):
                     # Top-level function
-                    if not any(isinstance(parent, ast.ClassDef) for parent in ast.walk(tree)):
+                    if not any(
+                        isinstance(parent, ast.ClassDef) for parent in ast.walk(tree)
+                    ):
                         function_names.add(node.name)
         except SyntaxError:
             logger.warning("Failed to parse code with AST, falling back to regex")
             # Fallback to regex
-            class_names = set(re.findall(r'class\s+(\w+)\s*[:\(]', code))
-            function_names = set(re.findall(r'^def\s+(\w+)\s*\(', code, re.MULTILINE))
+            class_names = set(re.findall(r"class\s+(\w+)\s*[:\(]", code))
+            function_names = set(re.findall(r"^def\s+(\w+)\s*\(", code, re.MULTILINE))
 
         return class_names, method_names, function_names
 
     @staticmethod
-    def extract_new_methods_only(original_code: str, ai_code: str, target_class: str = None) -> str:
+    def extract_new_methods_only(
+        original_code: str, ai_code: str, target_class: str = None
+    ) -> str:
         """
         Extract ONLY new methods from AI code that don't exist in original.
 
@@ -169,7 +178,9 @@ class SafeCodeMerger:
         if not ai_code or not ai_code.strip():
             return ""
 
-        orig_classes, orig_methods, orig_functions = SafeCodeMerger.get_existing_names(original_code)
+        orig_classes, orig_methods, orig_functions = SafeCodeMerger.get_existing_names(
+            original_code
+        )
 
         # Get imported classes to prevent redefining them
         imported_classes = SafeCodeMerger.get_imported_classes(original_code)
@@ -187,7 +198,9 @@ class SafeCodeMerger:
         try:
             ai_tree = ast.parse(ai_code)
         except SyntaxError:
-            logger.warning("AI code has syntax errors, trying to extract methods via regex")
+            logger.warning(
+                "AI code has syntax errors, trying to extract methods via regex"
+            )
             # Fallback: extract method definitions via regex
             return SafeCodeMerger._extract_methods_regex(ai_code, existing_method_names)
 
@@ -204,11 +217,17 @@ class SafeCodeMerger:
                         if isinstance(item, ast.FunctionDef):
                             if item.name not in existing_method_names:
                                 try:
-                                    method_source = ast.get_source_segment(ai_code, item)
+                                    method_source = ast.get_source_segment(
+                                        ai_code, item
+                                    )
                                     if method_source:
                                         # Ensure proper indentation for class method
-                                        indented = SafeCodeMerger._indent_code(method_source, 4)
-                                        new_methods.append(f"    # AI-added method\n{indented}")
+                                        indented = SafeCodeMerger._indent_code(
+                                            method_source, 4
+                                        )
+                                        new_methods.append(
+                                            f"    # AI-added method\n{indented}"
+                                        )
                                 except Exception:
                                     pass
                     # Don't add the class itself, just the methods
@@ -263,7 +282,7 @@ class SafeCodeMerger:
     def _extract_methods_regex(ai_code: str, existing_methods: Set[str]) -> str:
         """Fallback method extraction using regex when AST fails."""
         # Match method definitions
-        pattern = r'(def\s+(\w+)\s*\([^)]*\).*?(?=\ndef\s|\Z))'
+        pattern = r"(def\s+(\w+)\s*\([^)]*\).*?(?=\ndef\s|\Z))"
         matches = re.findall(pattern, ai_code, re.DOTALL)
 
         new_methods = []
@@ -275,7 +294,9 @@ class SafeCodeMerger:
         return "\n\n".join(new_methods)
 
     @staticmethod
-    def safe_merge(original_code: str, ai_additions: str, target_class: str = None) -> str:
+    def safe_merge(
+        original_code: str, ai_additions: str, target_class: str = None
+    ) -> str:
         """
         Safely merge AI additions into original code.
 
@@ -309,12 +330,12 @@ class SafeCodeMerger:
         if target_class:
             # Find the class definition and locate the end of the class
             # Look for the class and find where it ends
-            lines = original_code.split('\n')
+            lines = original_code.split("\n")
             class_start = -1
             class_indent = 0
 
             for i, line in enumerate(lines):
-                if re.match(rf'\s*class\s+{target_class}\s*[\(:]', line):
+                if re.match(rf"\s*class\s+{target_class}\s*[\(:]", line):
                     class_start = i
                     class_indent = len(line) - len(line.lstrip())
                     break
@@ -324,11 +345,16 @@ class SafeCodeMerger:
                 class_end = len(lines)
                 for i in range(class_start + 1, len(lines)):
                     line = lines[i]
-                    if line.strip() and not line.strip().startswith('#'):
+                    if line.strip() and not line.strip().startswith("#"):
                         current_indent = len(line) - len(line.lstrip())
-                        if current_indent <= class_indent and not line.strip().startswith('def '):
+                        if (
+                            current_indent <= class_indent
+                            and not line.strip().startswith("def ")
+                        ):
                             # Check if this is a new class or module-level code
-                            if re.match(r'\s*(class\s|def\s|if\s+__name__|@|[A-Z_]+\s*=)', line):
+                            if re.match(
+                                r"\s*(class\s|def\s|if\s+__name__|@|[A-Z_]+\s*=)", line
+                            ):
                                 class_end = i
                                 break
 
@@ -338,7 +364,7 @@ class SafeCodeMerger:
                 new_lines.append(new_methods)
                 new_lines.extend(lines[class_end:])
 
-                merged = '\n'.join(new_lines)
+                merged = "\n".join(new_lines)
                 logger.info(f"Added new methods to {target_class}")
                 return merged
 
@@ -350,6 +376,7 @@ class SafeCodeMerger:
 @dataclass
 class ProtectedSymbol:
     """A symbol that is protected because other files depend on it."""
+
     name: str
     symbol_type: str  # 'class', 'function', 'method', 'constant'
     defined_in: str  # file where it's defined
@@ -415,9 +442,7 @@ class CodebaseAwareness:
         self.protected: Dict[str, List[ProtectedSymbol]] = {}  # filename -> protected symbols
 
     def analyze_codebase(
-        self,
-        base_files: Dict[str, str],
-        directory_files: List[Dict[str, Any]]
+        self, base_files: Dict[str, str], directory_files: List[Dict[str, Any]]
     ) -> None:
         """
         Analyze all generated files to build the dependency map.
@@ -460,7 +485,9 @@ class CodebaseAwareness:
                     exports.add(node.name)
                     # Also add methods as ClassName.method_name
                     for item in node.body:
-                        if isinstance(item, ast.FunctionDef) and not item.name.startswith('_'):
+                        if isinstance(
+                            item, ast.FunctionDef
+                        ) and not item.name.startswith("_"):
                             exports.add(f"{node.name}.{item.name}")
                 elif isinstance(node, ast.FunctionDef):
                     exports.add(node.name)
@@ -471,9 +498,9 @@ class CodebaseAwareness:
                             exports.add(target.id)
         except SyntaxError:
             # Fallback to regex
-            exports.update(re.findall(r'^class\s+(\w+)', content, re.MULTILINE))
-            exports.update(re.findall(r'^def\s+(\w+)', content, re.MULTILINE))
-            exports.update(re.findall(r'^([A-Z_]+)\s*=', content, re.MULTILINE))
+            exports.update(re.findall(r"^class\s+(\w+)", content, re.MULTILINE))
+            exports.update(re.findall(r"^def\s+(\w+)", content, re.MULTILINE))
+            exports.update(re.findall(r"^([A-Z_]+)\s*=", content, re.MULTILINE))
 
         return exports
 
@@ -486,25 +513,25 @@ class CodebaseAwareness:
         # from utils import ResponseValidator, RequestLogger
         # from workflows.base_workflow import BaseWorkflow
         patterns = [
-            r'from\s+(\w+)\s+import\s+([^#\n]+)',
-            r'from\s+workflows\.(\w+)\s+import\s+([^#\n]+)',
+            r"from\s+(\w+)\s+import\s+([^#\n]+)",
+            r"from\s+workflows\.(\w+)\s+import\s+([^#\n]+)",
         ]
 
         for pattern in patterns:
             for match in re.finditer(pattern, content):
                 source_file = match.group(1)
-                if not source_file.endswith('.py'):
-                    source_file += '.py'
+                if not source_file.endswith(".py"):
+                    source_file += ".py"
                 imported_symbols = match.group(2)
 
                 # Parse the imported symbols
                 symbols = set()
-                for sym in imported_symbols.split(','):
+                for sym in imported_symbols.split(","):
                     sym = sym.strip()
                     # Handle 'as' aliases
-                    if ' as ' in sym:
-                        sym = sym.split(' as ')[0].strip()
-                    if sym and sym != '*':
+                    if " as " in sym:
+                        sym = sym.split(" as ")[0].strip()
+                    if sym and sym != "*":
                         symbols.add(sym)
 
                 if source_file not in imports:
@@ -530,27 +557,27 @@ class CodebaseAwareness:
 
                     # Check if this file imports from our file
                     for source, symbols in other_imports.items():
-                        if source == filename or source.replace('.py', '') in filename:
-                            if symbol in symbols or symbol.split('.')[-1] in symbols:
+                        if source == filename or source.replace(".py", "") in filename:
+                            if symbol in symbols or symbol.split(".")[-1] in symbols:
                                 used_by.append(other_file)
 
                 if used_by:
                     # Determine symbol type
-                    if '.' in symbol:
-                        symbol_type = 'method'
+                    if "." in symbol:
+                        symbol_type = "method"
                     elif symbol.isupper():
-                        symbol_type = 'constant'
+                        symbol_type = "constant"
                     elif symbol[0].isupper():
-                        symbol_type = 'class'
+                        symbol_type = "class"
                     else:
-                        symbol_type = 'function'
+                        symbol_type = "function"
 
                     protected_symbol = ProtectedSymbol(
                         name=symbol,
                         symbol_type=symbol_type,
                         defined_in=filename,
                         used_by=used_by,
-                        reason=f"Imported by: {', '.join(used_by)}"
+                        reason=f"Imported by: {', '.join(used_by)}",
                     )
                     self.protected[filename].append(protected_symbol)
 
@@ -568,7 +595,9 @@ class CodebaseAwareness:
             return "No external dependencies. You can freely modify this file."
 
         constraints = []
-        constraints.append("🔒 PROTECTED SYMBOLS (DO NOT REMOVE - used by other files):")
+        constraints.append(
+            "🔒 PROTECTED SYMBOLS (DO NOT REMOVE - used by other files):"
+        )
         constraints.append("")
 
         # Group by type
@@ -767,7 +796,9 @@ class EnhancementProcessor:
                 enhanced_directory_files.append(result["files"])
             else:
                 # Enhancement failed, preserve original base_workflow.py
-                enhanced_directory_files.append({base_workflow_path: base_workflow_content})
+                enhanced_directory_files.append(
+                    {base_workflow_path: base_workflow_content}
+                )
         elif base_workflow_content:
             # include_auth is False but base_workflow.py exists - preserve it
             enhanced_directory_files.append({base_workflow_path: base_workflow_content})
@@ -812,7 +843,7 @@ class EnhancementProcessor:
                 base_content=value,
                 test_data_content=base_files.get(test_data_file_path, ""),
                 base_workflow=base_workflow_files,
-                grouped_enpoints=workflow_endpoints_dict,
+                grouped_endpoints=workflow_endpoints_dict,
                 auth_endpoints=auth_endpoints,
                 db_type=db_type,
                 template_path=template_path,
@@ -876,7 +907,7 @@ class EnhancementProcessor:
         if self.awareness:
             constraints = self.awareness.get_constraints_for_file("utils.py")
             if constraints:
-                logger.info(f"📋 Applying constraints to utils.py")
+                logger.info("📋 Applying constraints to utils.py")
 
         if self.ai_config and self.ai_config.enhance_validation and original_content:
             enhanced_validation = await self.locust_generator._enhance_validation(
@@ -1275,7 +1306,7 @@ class HybridLocustGenerator:
         base_content: str,
         test_data_content: str,
         base_workflow: str,
-        grouped_enpoints: Dict[str, List[Endpoint]],
+        grouped_endpoints: Dict[str, List[Endpoint]],
         auth_endpoints: List[Endpoint],
         db_type: str = "",
         template_path: str = workflow_jinja_path,
@@ -1289,7 +1320,7 @@ class HybridLocustGenerator:
 
             # Render enhanced content
             prompt = template.render(
-                grouped_enpoints=grouped_enpoints,
+                grouped_endpoints=grouped_endpoints,
                 test_data_content=test_data_content,
                 base_workflow=base_workflow,
                 auth_endpoints=formatted_auth_endpoints,
@@ -1565,7 +1596,7 @@ class HybridLocustGenerator:
         for i, line in enumerate(lines):
             stripped = line.strip()
             # Look for start of actual Python code
-            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@")):
+            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@", "import ", "from ")):
                 start_idx = i
                 break
 
@@ -1988,7 +2019,7 @@ class HybridLocustGenerator:
         merged_content = SafeCodeMerger.safe_merge(
             original_code=original_content,
             ai_additions=enhanced_content,
-            target_class=target_class
+            target_class=target_class,
         )
 
         # Final validation: ensure critical elements still exist
@@ -1998,12 +2029,16 @@ class HybridLocustGenerator:
 
         if not is_valid:
             # This should never happen with SafeCodeMerger, but just in case
-            logger.error(f"SafeCodeMerger produced invalid output for {filename}, using original")
+            logger.error(
+                f"SafeCodeMerger produced invalid output for {filename}, using original"
+            )
             return original_content
 
         # Verify syntax of merged content
         if not self._validate_python_code(final_content):
-            logger.error(f"Merged content has syntax errors for {filename}, using original")
+            logger.error(
+                f"Merged content has syntax errors for {filename}, using original"
+            )
             return original_content
 
         return final_content
