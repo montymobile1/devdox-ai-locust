@@ -1420,10 +1420,9 @@ class HybridLocustGenerator:
 
         for attempt in range(self.MAX_RETRIES):  # Retry logic
             try:
-                async with self._api_semaphore:
-                    content = await self._make_api_call(messages)
-                    if content:
-                        return content
+                content = await self._make_api_call(messages)
+                if content:
+                    return content
 
             except asyncio.TimeoutError:
                 logger.warning(f"AI service timeout on attempt {attempt + 1}")
