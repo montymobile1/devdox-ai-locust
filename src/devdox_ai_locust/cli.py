@@ -272,7 +272,6 @@ def _show_run_instructions(
     output_dir: Path, users: int, spawn_rate: float, run_time: str, host: Optional[str]
 ) -> None:
     """Display instructions for running the generated tests"""
-    from rich.panel import Panel
 
     default_host = host or "http://localhost:8000"
     locustfile = output_dir / "locustfile.py"
@@ -283,20 +282,39 @@ def _show_run_instructions(
         py_files = list(output_dir.glob("*.py"))
         main_file = py_files[0].name if py_files else "generated_test.py"
 
-    instructions = f"""[bold cyan]1. Install dependencies:[/bold cyan]
-   cd {output_dir}
-   pip install -r requirements.txt
+    console.print()
+    console.print("[bold green]🚀 Next Steps[/bold green]")
+    console.print("──────────────────────────────────────────────────")
+    console.print("\n[cyan]1) Prepare your environment[/cyan]")
+    console.print(f"  • cd {output_dir}")
+    console.print(f"  • pip install -r requirements.txt")
 
-[bold cyan]2. Run load tests:[/bold cyan]
-   locust -f {main_file} --users {users} --spawn-rate {spawn_rate} --run-time {run_time} --host {default_host}
-
-[bold cyan]3. Or use the CLI command:[/bold cyan]
-   devdox_ai_locust run {output_dir}/{main_file} --host {default_host}
-
-[dim]💡 Tip: Copy .env.example to .env and configure your API credentials[/dim]"""
+    console.print("\n[cyan]2) Choose how you want to run[/cyan]")
+    console.print("  Option A — Launch with Locust web UI")
+    console.print(
+        "    • "
+        + (
+            "locust -f {main_file} --users {users} --spawn-rate {spawn_rate} "
+            "--run-time {run_time} --host {default_host}"
+        ).format(
+            main_file=main_file,
+            users=users,
+            spawn_rate=spawn_rate,
+            run_time=run_time,
+            default_host=default_host,
+        )
+    )
 
     console.print()
-    console.print(Panel(instructions, title="[bold]🚀 Next Steps[/bold]", border_style="green"))
+    console.print("  Option B — Run headless via devdox CLI")
+    console.print(
+        f"    • devdox_ai_locust run {output_dir}/{main_file} --host {default_host}"
+    )
+
+    console.print("\n[bold red]Heads up[/bold red]")
+    console.print(
+        "  [yellow]Copy .env.example to .env and configure your API credentials before running tests[/yellow]"
+    )
 
 
 def _is_url(source: str) -> bool:
@@ -387,7 +405,6 @@ async def _generate_modular_tests(
     This generator produces focused, single-responsibility files
     that are easier to maintain and enhance.
     """
-    from rich.panel import Panel
     from rich.text import Text
     from rich.table import Table
     import time as time_module
@@ -469,17 +486,20 @@ async def _generate_modular_tests(
             # Force immediate display on Windows (buffering can delay output)
             sys.stdout.flush()
 
-    # Print initial configuration in a nice table
+    # Print initial configuration using a simple, dash-separated section (no boxes)
     console.print()
-    config_table = Table(show_header=False, box=None, padding=(0, 2))
-    config_table.add_column("Icon", style="cyan", width=3)
-    config_table.add_column("Setting", style="bold")
-    config_table.add_column("Value", style="green")
-    config_table.add_row("📁", "Output", str(output_dir))
-    config_table.add_row("🌐", "Host", host or "http://localhost")
-    config_table.add_row("📡", "Endpoints", str(len(endpoints)))
+    console.print("[bold cyan]⚙️ Configuration[/bold cyan]")
+    console.print("[dim]" + "─" * 50 + "[/dim]")
+
+    def _conf_line(label: str, value: str, icon: str = "") -> None:
+        padded = label.ljust(12)
+        console.print(f"{icon} [bold]{padded}[/bold] {value}")
+
+    _conf_line("Output", str(output_dir), "📁")
+    _conf_line("Host", host or "http://localhost", "🌐")
+    _conf_line("Endpoints", str(len(endpoints)), "📡")
     if db_type:
-        config_table.add_row("🗄️", "Database", db_type)
+        _conf_line("Database", db_type, "🗄️")
 
     # Get security information from OpenAPI spec
     global_security = api_info.get("global_security", [])
@@ -494,15 +514,13 @@ async def _generate_modular_tests(
         else:
             public_endpoints.append(ep.path)
 
-    # Add security info to config table
+    # Add security info to config section
     if security_schemes:
         scheme_names = ", ".join(security_schemes.keys())
-        config_table.add_row("🔐", "Security", scheme_names)
-    config_table.add_row("🔒", "Secured", f"{len(secured_endpoints)} endpoints")
-    config_table.add_row("🔓", "Public", f"{len(public_endpoints)} endpoints")
+        _conf_line("Security", scheme_names, "🔐")
+    _conf_line("Secured", f"{len(secured_endpoints)} endpoints", "🔒")
+    _conf_line("Public", f"{len(public_endpoints)} endpoints", "🔓")
 
-    # Print configuration panel
-    console.print(Panel(config_table, title="[bold cyan]⚙️ Configuration[/bold cyan]", border_style="cyan"))
     console.print()
 
     # For backwards compatibility, pass secured endpoint paths as auth_endpoints
