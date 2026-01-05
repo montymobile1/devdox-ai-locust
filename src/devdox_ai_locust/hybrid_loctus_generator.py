@@ -179,7 +179,9 @@ class EnhancementProcessor:
 
         # Enhance all other workflow files
         for workflow_item in directory_files:
-            if workflow_item.get("file_name") == base_workflow_path:
+            # workflow_item is a dict like {"filename.py": "content"}
+            # Skip base_workflow.py as it's already handled above
+            if base_workflow_path in workflow_item:
                 continue
 
             result = await self._process_workflow_item(
@@ -203,7 +205,7 @@ class EnhancementProcessor:
         base_workflow_files: str,
         grouped_endpoints: Dict[str, List[Endpoint]],
         db_type: str = "",
-        template_path: str =workflow_jinja_path,
+        template_path: str = workflow_jinja_path,
     ) -> Dict[str, Any] | None:
         """Enhance a single workflow file"""
         for key, value in workflow_item.items():
@@ -416,7 +418,7 @@ class HybridLocustGenerator:
             return base_files, directory_files
 
         except Exception as e:
-            logger.error(f"Hybrid generation failed line 267 : {e}")
+            logger.error(f"Hybrid generation failed: {e}")
 
             return {}, []
 

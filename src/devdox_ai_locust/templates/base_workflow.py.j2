@@ -54,10 +54,8 @@ class BaseTaskMethods:
 
     def on_stop(self):
         """Cleanup when user stops"""
-        if hasattr(self, 'request_count'):
-            logger.info(f"TaskSet {self.__class__.__name__} stopped after {self.request_count} requests")
-        else:
-            logger.info(f"TaskSet {self.__class__.__name__} stopped after {self.request_count} requests")
+        request_count = getattr(self, 'request_count', 0)
+        logger.info(f"TaskSet {self.__class__.__name__} stopped after {request_count} requests")
 
     def _setup_authentication(self):
         """Setup authentication (override in subclasses if needed)"""

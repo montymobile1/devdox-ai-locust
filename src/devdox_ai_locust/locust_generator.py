@@ -324,8 +324,6 @@ class LocustTestGenerator:
         template = self.jinja_env.get_template("fallback_locust.py.j2")
         return template.render(api_info=api_info)
 
-    from typing import Dict, Any
-
     def _build_locustfile_template(
         self, api_info: Dict[str, Any], task_methods_content: str, groups: List[str]
     ) -> str:
@@ -345,7 +343,7 @@ class LocustTestGenerator:
             "task_methods_content": task_methods_content,
             "tasks_str": tasks_str,
             "api_info": api_info,
-            "generated_task_classes": self._generate_user_classes(),
+            "generated_task_classes": self._generate_user_classes(tasks),
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -653,13 +651,20 @@ class LocustTestGenerator:
 
         return "\n".join(methods)
 
-    def _generate_user_classes(self) -> str:
+    def _generate_user_classes(self, tasks: List[str]) -> str:
         """
-        **FIXED: Generate user classes with proper structure**
-        """
+        Generate user classes with proper structure.
 
+        Args:
+            tasks: List of TaskSet class names to assign to user classes
+
+        Returns:
+            Rendered user classes code string
+        """
+        # Format tasks list as Python list literal: [Class1, Class2, ...]
+        tasks_list = "[" + ", ".join(tasks) + "]"
         template = self.jinja_env.get_template("user_classes.py.j2")
-        return template.render()
+        return template.render(tasks_list=tasks_list)
 
     def _generate_test_data_file(self, db_type: str = "") -> str:
         """Generate test_data.py file content"""
