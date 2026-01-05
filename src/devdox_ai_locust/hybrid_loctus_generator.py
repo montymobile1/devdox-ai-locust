@@ -176,6 +176,14 @@ class EnhancementProcessor:
             if result:
                 base_workflow_content = result["files"].get(base_workflow_path, "")
                 enhancements.extend(result["enhancements"])
+                # Add enhanced base_workflow.py to output
+                enhanced_directory_files.append(result["files"])
+            else:
+                # Enhancement failed, preserve original base_workflow.py
+                enhanced_directory_files.append({base_workflow_path: base_workflow_content})
+        elif base_workflow_content:
+            # include_auth is False but base_workflow.py exists - preserve it
+            enhanced_directory_files.append({base_workflow_path: base_workflow_content})
 
         # Enhance all other workflow files
         for workflow_item in directory_files:
