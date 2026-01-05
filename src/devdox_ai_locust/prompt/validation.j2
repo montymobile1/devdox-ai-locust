@@ -1,17 +1,36 @@
-Enhance this utils file with smarter response validation:
+🚨 **CRITICAL PRESERVATION REQUIREMENT** 🚨
+You MUST preserve ALL existing classes, methods, and functionality from the current file.
+DO NOT delete, remove, or replace any existing code. Only ADD new functionality.
+The following classes MUST remain intact:
+- ResponseValidator
+- RequestLogger
+- PerformanceMonitor
+- DataManager
 
-Current File:
+**EXISTING CODE TO PRESERVE (DO NOT DELETE ANY OF THIS)**:
+```python
 {{base_content}}
+```
+
+⚠️ WARNING: If you delete any of the classes listed above, your output will be rejected.
 
 Validation Patterns Needed:
 {{ validation_patterns }}
 
-Enhance by:
-1. Adding endpoint-specific validation rules
-2. Creating schema-based response validation
-3. Adding business logic validation
-4. Implementing response data integrity checks
-5. Adding performance threshold validation
+**ENHANCEMENT INSTRUCTIONS** (ADD to existing code, do NOT replace):
+1. ADD endpoint-specific validation rules to ResponseValidator
+2. ADD schema-based response validation methods
+3. ADD business logic validation helpers
+4. ADD response data integrity checks
+5. ADD performance threshold validation to PerformanceMonitor
 
-Keep existing utility functions but add smarter validation logic.
-Output: Complete enhanced Python file content.
+⚠️ **VALIDATION CHECK**: Your output MUST contain:
+1. `class ResponseValidator` - The response validation class
+2. `class RequestLogger` - The request logging class
+3. `class PerformanceMonitor` - The performance monitoring class
+4. `class DataManager` - The data management class
+5. ALL existing methods from each class
+
+Return the COMPLETE enhanced Python file with ALL existing classes preserved and enhanced.
+
+**Format**: Return ONLY the complete Python code wrapped in <code></code> tags with NO explanations outside the tags.
