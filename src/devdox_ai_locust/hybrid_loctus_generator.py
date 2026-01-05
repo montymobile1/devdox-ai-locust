@@ -253,6 +253,236 @@ class SafeCodeMerger:
 
 
 @dataclass
+class ProtectedSymbol:
+    """A symbol that is protected because other files depend on it."""
+    name: str
+    symbol_type: str  # 'class', 'function', 'method', 'constant'
+    defined_in: str  # file where it's defined
+    used_by: List[str]  # files that import/use it
+    reason: str  # why it's protected
+
+
+class CodebaseAwareness:
+    """
+    Analyzes the generated codebase to understand dependencies between files.
+
+    This creates a "sandbox" for AI enhancement by identifying:
+    1. What symbols (classes, functions) each file exports
+    2. What each file imports from other files
+    3. Which symbols are "protected" (used by other files)
+    4. Which symbols are "free" (can be modified/removed)
+
+    The AI is then given this context so it knows what it MUST preserve.
+    """
+
+    def __init__(self):
+        self.files: Dict[str, str] = {}  # filename -> content
+        self.exports: Dict[str, Set[str]] = {}  # filename -> exported symbols
+        self.imports: Dict[str, Dict[str, Set[str]]] = {}  # filename -> {source_file: symbols}
+        self.protected: Dict[str, List[ProtectedSymbol]] = {}  # filename -> protected symbols
+
+    def analyze_codebase(
+        self,
+        base_files: Dict[str, str],
+        directory_files: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Analyze all generated files to build the dependency map.
+
+        Args:
+            base_files: Main files like locustfile.py, test_data.py, utils.py
+            directory_files: Workflow files in subdirectories
+        """
+        # Collect all files
+        self.files = base_files.copy()
+        for file_dict in directory_files:
+            self.files.update(file_dict)
+
+        # Analyze each file
+        for filename, content in self.files.items():
+            self._analyze_file(filename, content)
+
+        # Build protected symbols map
+        self._build_protected_map()
+
+    def _analyze_file(self, filename: str, content: str) -> None:
+        """Analyze a single file for exports and imports."""
+        if not content:
+            return
+
+        # Extract exports (classes, functions, constants defined in this file)
+        self.exports[filename] = self._extract_exports(content)
+
+        # Extract imports from other local files
+        self.imports[filename] = self._extract_local_imports(content)
+
+    def _extract_exports(self, content: str) -> Set[str]:
+        """Extract all symbols defined in this file."""
+        exports = set()
+
+        try:
+            tree = ast.parse(content)
+            for node in ast.iter_child_nodes(tree):
+                if isinstance(node, ast.ClassDef):
+                    exports.add(node.name)
+                    # Also add methods as ClassName.method_name
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef) and not item.name.startswith('_'):
+                            exports.add(f"{node.name}.{item.name}")
+                elif isinstance(node, ast.FunctionDef):
+                    exports.add(node.name)
+                elif isinstance(node, ast.Assign):
+                    # Constants like SOME_VALUE = ...
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id.isupper():
+                            exports.add(target.id)
+        except SyntaxError:
+            # Fallback to regex
+            exports.update(re.findall(r'^class\s+(\w+)', content, re.MULTILINE))
+            exports.update(re.findall(r'^def\s+(\w+)', content, re.MULTILINE))
+            exports.update(re.findall(r'^([A-Z_]+)\s*=', content, re.MULTILINE))
+
+        return exports
+
+    def _extract_local_imports(self, content: str) -> Dict[str, Set[str]]:
+        """Extract imports from other local files."""
+        imports: Dict[str, Set[str]] = {}
+
+        # Match patterns like:
+        # from test_data import TestDataGenerator
+        # from utils import ResponseValidator, RequestLogger
+        # from workflows.base_workflow import BaseWorkflow
+        patterns = [
+            r'from\s+(\w+)\s+import\s+([^#\n]+)',
+            r'from\s+workflows\.(\w+)\s+import\s+([^#\n]+)',
+        ]
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, content):
+                source_file = match.group(1)
+                if not source_file.endswith('.py'):
+                    source_file += '.py'
+                imported_symbols = match.group(2)
+
+                # Parse the imported symbols
+                symbols = set()
+                for sym in imported_symbols.split(','):
+                    sym = sym.strip()
+                    # Handle 'as' aliases
+                    if ' as ' in sym:
+                        sym = sym.split(' as ')[0].strip()
+                    if sym and sym != '*':
+                        symbols.add(sym)
+
+                if source_file not in imports:
+                    imports[source_file] = set()
+                imports[source_file].update(symbols)
+
+        return imports
+
+    def _build_protected_map(self) -> None:
+        """Build the map of protected symbols for each file."""
+        for filename in self.files:
+            self.protected[filename] = []
+
+        # For each file, find which of its exports are used by other files
+        for filename, exports in self.exports.items():
+            for symbol in exports:
+                used_by = []
+
+                # Check which other files import this symbol
+                for other_file, other_imports in self.imports.items():
+                    if other_file == filename:
+                        continue
+
+                    # Check if this file imports from our file
+                    for source, symbols in other_imports.items():
+                        if source == filename or source.replace('.py', '') in filename:
+                            if symbol in symbols or symbol.split('.')[-1] in symbols:
+                                used_by.append(other_file)
+
+                if used_by:
+                    # Determine symbol type
+                    if '.' in symbol:
+                        symbol_type = 'method'
+                    elif symbol.isupper():
+                        symbol_type = 'constant'
+                    elif symbol[0].isupper():
+                        symbol_type = 'class'
+                    else:
+                        symbol_type = 'function'
+
+                    protected_symbol = ProtectedSymbol(
+                        name=symbol,
+                        symbol_type=symbol_type,
+                        defined_in=filename,
+                        used_by=used_by,
+                        reason=f"Imported by: {', '.join(used_by)}"
+                    )
+                    self.protected[filename].append(protected_symbol)
+
+    def get_constraints_for_file(self, filename: str) -> str:
+        """
+        Generate AI constraints for a specific file.
+
+        Returns a formatted string that tells the AI what it MUST preserve.
+        """
+        if filename not in self.protected:
+            return ""
+
+        protected_symbols = self.protected[filename]
+        if not protected_symbols:
+            return "No external dependencies. You can freely modify this file."
+
+        constraints = []
+        constraints.append("🔒 PROTECTED SYMBOLS (DO NOT REMOVE - used by other files):")
+        constraints.append("")
+
+        # Group by type
+        by_type: Dict[str, List[ProtectedSymbol]] = {}
+        for sym in protected_symbols:
+            if sym.symbol_type not in by_type:
+                by_type[sym.symbol_type] = []
+            by_type[sym.symbol_type].append(sym)
+
+        for sym_type, symbols in by_type.items():
+            constraints.append(f"  {sym_type.upper()}ES:")
+            for sym in symbols:
+                constraints.append(f"    - {sym.name}")
+                constraints.append(f"      Reason: {sym.reason}")
+            constraints.append("")
+
+        constraints.append("✅ You MAY:")
+        constraints.append("  - ADD new methods to existing classes")
+        constraints.append("  - ADD new helper functions")
+        constraints.append("  - MODIFY method implementations (keep signatures)")
+        constraints.append("  - ADD new classes")
+        constraints.append("")
+        constraints.append("❌ You MUST NOT:")
+        constraints.append("  - DELETE or RENAME any protected symbol above")
+        constraints.append("  - CHANGE the signature of protected methods")
+        constraints.append("  - REMOVE imports that other files depend on")
+
+        return "\n".join(constraints)
+
+    def get_full_context(self) -> str:
+        """Get a summary of the entire codebase structure for AI context."""
+        context = []
+        context.append("📁 CODEBASE STRUCTURE:")
+        context.append("")
+
+        for filename, exports in self.exports.items():
+            context.append(f"  {filename}:")
+            if exports:
+                context.append(f"    Exports: {', '.join(sorted(exports)[:10])}")
+                if len(exports) > 10:
+                    context.append(f"    ... and {len(exports) - 10} more")
+            context.append("")
+
+        return "\n".join(context)
+
+
+@dataclass
 class ErrorClassification:
     """Classification of an error for retry logic"""
 
@@ -295,9 +525,11 @@ class EnhancementProcessor:
         self,
         ai_config: Optional[AIEnhancementConfig],
         locust_generator: "HybridLocustGenerator",
+        awareness: Optional[CodebaseAwareness] = None,
     ) -> None:
         self.ai_config = ai_config
         self.locust_generator = locust_generator
+        self.awareness = awareness
 
     async def process_main_locust_enhancement(
         self,
@@ -468,6 +700,13 @@ class EnhancementProcessor:
         enhancements = []
         original_content = base_files.get(test_data_file_path, "")
 
+        # Get constraints from codebase awareness
+        constraints = ""
+        if self.awareness:
+            constraints = self.awareness.get_constraints_for_file(test_data_file_path)
+            if constraints:
+                logger.info(f"📋 Applying constraints to {test_data_file_path}")
+
         if self.ai_config and self.ai_config.enhance_test_data and original_content:
             enhanced_test_data = await self.locust_generator.enhance_test_data_file(
                 original_content,
@@ -476,6 +715,7 @@ class EnhancementProcessor:
                 base_files.get(data_provider_path, ""),
                 base_files.get("db_config.py", ""),
                 data_provider_path,
+                constraints=constraints,  # Pass constraints to AI
             )
             # Use safe enhancement with validation and fallback
             validated_content = self.locust_generator._safe_enhance_file(
@@ -498,9 +738,16 @@ class EnhancementProcessor:
         enhancements = []
         original_content = base_files.get("utils.py", "")
 
+        # Get constraints from codebase awareness
+        constraints = ""
+        if self.awareness:
+            constraints = self.awareness.get_constraints_for_file("utils.py")
+            if constraints:
+                logger.info(f"📋 Applying constraints to utils.py")
+
         if self.ai_config and self.ai_config.enhance_validation and original_content:
             enhanced_validation = await self.locust_generator._enhance_validation(
-                original_content, endpoints
+                original_content, endpoints, constraints=constraints
             )
             # Use safe enhancement with validation and fallback
             validated_content = self.locust_generator._safe_enhance_file(
@@ -794,7 +1041,17 @@ class HybridLocustGenerator:
         db_type: str = "",
     ) -> EnhancementResult:
         """Process all enhancements using the enhancement processor"""
-        processor = EnhancementProcessor(self.ai_config, self)
+        # Analyze codebase to understand dependencies
+        awareness = CodebaseAwareness()
+        awareness.analyze_codebase(base_files, directory_files)
+
+        # Log the protected symbols for debugging
+        logger.info("📊 Codebase analysis complete:")
+        for filename, protected in awareness.protected.items():
+            if protected:
+                logger.info(f"  {filename}: {len(protected)} protected symbols")
+
+        processor = EnhancementProcessor(self.ai_config, self, awareness)
 
         enhanced_files = base_files.copy()
         enhanced_directory_files = []
@@ -918,6 +1175,7 @@ class HybridLocustGenerator:
         data_provider: str = "",
         db_config: str = "",
         data_provider_path: str = "",
+        constraints: str = "",
     ) -> Optional[str]:
         """Enhance test data generation with domain knowledge"""
 
@@ -936,6 +1194,7 @@ class HybridLocustGenerator:
                 "data_provider_content": data_provider,
                 "db_config": db_config,
                 "data_provider_path": data_provider_path,
+                "constraints": constraints,  # Pass constraints to template
             }
 
             # Render enhanced content
@@ -949,7 +1208,7 @@ class HybridLocustGenerator:
         return ""
 
     async def _enhance_validation(
-        self, base_content: str, endpoints: List[Endpoint]
+        self, base_content: str, endpoints: List[Endpoint], constraints: str = ""
     ) -> Optional[str]:
         """Enhance response validation with endpoint-specific checks"""
 
@@ -959,7 +1218,9 @@ class HybridLocustGenerator:
 
             # Render enhanced content
             prompt = template.render(
-                base_content=base_content, validation_patterns=validation_patterns
+                base_content=base_content,
+                validation_patterns=validation_patterns,
+                constraints=constraints,  # Pass constraints to template
             )
             enhanced_content = await self._call_ai_service(prompt)
             if enhanced_content:
