@@ -1,6 +1,36 @@
 CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
+
+**CRITICAL: catch_response=True REQUIRES with-block**
+When using `catch_response=True`, you MUST use a `with` statement. The `response.success()` and `response.failure()` methods are ONLY valid inside the context manager.
+
+CORRECT PATTERN:
+```python
+with self.client.post("/endpoint", json=data, catch_response=True) as response:
+    if response.status_code == 200:
+        response.success()  # Valid - inside with-block
+    else:
+        response.failure("Error message")  # Valid - inside with-block
+```
+
+WRONG PATTERN (CAUSES RUNTIME ERROR):
+```python
+# WRONG - will cause LocustError: "Tried to set status on a request that has not yet been made"
+response = self.client.post("/endpoint", json=data, catch_response=True)
+if response.status_code == 200:
+    response.success()  # RUNTIME ERROR - outside with-block!
+else:
+    response.failure("Error message")  # RUNTIME ERROR - outside with-block!
+```
+
 {% if auth_endpoints %}
 **CRITICAL: Authentication Method Implementation**
+
+**CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS!**
+- ONLY implement login_and_get_token() if a login endpoint EXISTS in auth_endpoints below
+- ONLY implement logout_session() if a logout endpoint EXISTS in auth_endpoints below
+- If auth_endpoints is empty or has no login/logout endpoints, DO NOT create these methods
+- Use the EXACT endpoint path from auth_endpoints, never invent paths like "/api/v1/login" or "/api/v1/logout"
+- If no authentication endpoints exist, skip authentication entirely and use config.api_key for authorization
 
 IMPORTANT: `login_and_get_token` and `logout_session` are NOT defined in parent classes (BaseTaskMethods or SequentialTaskSet).
 These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
@@ -29,11 +59,24 @@ def on_stop(self):
     super().on_stop()
 ```
 
-WRONG PATTERN (DO NOT USE):
+WRONG PATTERNS (DO NOT USE):
 ```python
-# WRONG - login_and_get_token does not exist in parent classes
+# WRONG #1 - login_and_get_token does not exist in parent classes
 if hasattr(super(), 'login_and_get_token'):
     super().login_and_get_token()
+
+# WRONG #2 - catch_response without with-block causes runtime error!
+def login_and_get_token(self):
+    response = self.client.post("/login", json=data, catch_response=True)
+    if response.status_code == 200:
+        response.success()  # RUNTIME ERROR - must be inside 'with' block!
+    else:
+        response.failure("Failed")  # RUNTIME ERROR - must be inside 'with' block!
+
+# WRONG #3 - inventing endpoints that don't exist in OpenAPI spec!
+def login_and_get_token(self):
+    # DO NOT use endpoints unless they exist in auth_endpoints!
+    with self.client.post("/api/v1/login", ...)  # WRONG if not in spec!
 ```
 {% endif %}
 TASK: Enhance this Locust workflow file with COMPREHENSIVE test scenarios and LOGICAL TASK ORDERING.
@@ -120,6 +163,11 @@ STRICT REQUIREMENTS:
        - Expect 422 Validation Error scenarios (weight: 3)
 
     7. AUTHENTICATION INTEGRATION STRATEGY:
+
+           **CRITICAL: Only implement authentication if actual login/logout endpoints exist in auth_endpoints!**
+           - Do NOT invent authentication endpoints like "/api/v1/login" or "/login"
+           - If auth_endpoints is empty, use config.api_key for authorization instead
+           - Always use `with` block when using catch_response=True
 
            Since base_workflow.py is provided, implement smart authentication handling to setup_authentication method to send headers with valid credentials and in  case returning 401 to login with new credentials:
 
