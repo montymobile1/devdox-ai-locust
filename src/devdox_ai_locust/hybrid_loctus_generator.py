@@ -1595,8 +1595,16 @@ class HybridLocustGenerator:
 
         for i, line in enumerate(lines):
             stripped = line.strip()
+
+            # Skip import statements when we're looking for the first real code block.
+            # The enhanced prompts are expected to return method bodies only, so any
+            # leading imports are typically boilerplate that we don't want to merge
+            # back into the target file.
+            if stripped.startswith(("import ", "from ")):
+                continue
+
             # Look for start of actual Python code
-            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@", "import ", "from ")):
+            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@")):
                 start_idx = i
                 break
 
