@@ -85,6 +85,12 @@ class CodeValidator:
         if has_conflicts:
             result.add_issue(f"Classes both imported and defined: {conflicts}")
 
+        # Enforce Locust context manager usage with catch_response=True
+        missing_catch = self.find_missing_catch_response(code)
+        if missing_catch:
+            for issue in missing_catch:
+                result.add_issue(issue)
+
         # Check Locust structure
         proper_structure, structure_issues = self.has_proper_locust_structure(code)
         if not proper_structure:
@@ -210,6 +216,32 @@ class CodeValidator:
             1 for c in classes
             if any(kw in c.lower() for kw in CodeValidator.AUTH_KEYWORDS)
         )
+
+    @staticmethod
+    def find_missing_catch_response(code: str) -> List[str]:
+        """
+        Find Locust context managers that omit catch_response=True.
+
+        Using a ResponseContextManager without catch_response=True raises
+        LocustError at runtime, so we treat this as a validation error.
+        """
+
+        # Regex captures method name and argument list within the with-block
+        pattern = re.compile(
+            r"with\s+self\.client\.(\w+)\(([^)]*)\)\s+as\s+\w+:",
+            re.DOTALL,
+        )
+
+        issues: List[str] = []
+        for match in pattern.finditer(code):
+            method = match.group(1)
+            args = match.group(2)
+            if "catch_response" not in args:
+                issues.append(
+                    f"Missing catch_response=True in with self.client.{method}() context manager"
+                )
+
+        return issues
 
     def validate_method_code(self, code: str) -> ValidationResult:
         """
