@@ -6,9 +6,8 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
-from together import AsyncTogether
 
-from .hybrid_loctus_generator import HybridLocustGenerator
+from .modular_generator import ModularGenerator
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
@@ -137,15 +136,30 @@ def _show_run_instructions(
     )
 
 
+def _is_url(source: str) -> bool:
+    """Check if the source is a URL or a file path"""
+    source = source.strip()
+    return source.startswith(('http://', 'https://'))
+
+
 async def _process_api_schema(
-    swagger_url: str, verbose: bool
+    swagger_source: str, verbose: bool
 ) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
-    """Fetch and parse API schema"""
-    source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
+    """Fetch and parse API schema from URL or file path"""
+
+    # Determine if source is URL or file path
+    is_url = _is_url(swagger_source)
+
+    # Create appropriate request based on source type
+    if is_url:
+        source_request = SwaggerProcessingRequest(swagger_url=swagger_source)
+        source_type = "URL"
+    else:
+        source_request = SwaggerProcessingRequest(swagger_path=swagger_source)
+        source_type = "file"
+
     api_schema = None
-    with console.status(
-        f"[bold green]Fetching API schema from {'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'}..."
-    ):
+    with console.status(f"[bold green]Fetching API schema from {source_type}..."):
         try:
             async with asyncio.timeout(30):
                 api_schema = await get_api_schema(source_request)
@@ -156,6 +170,9 @@ async def _process_api_schema(
 
         except asyncio.TimeoutError:
             console.print("[red]✗[/red] Timeout while fetching API schema")
+            sys.exit(1)
+        except FileNotFoundError as e:
+            console.print(f"[red]✗[/red] File not found: {e}")
             sys.exit(1)
         except Exception as e:
             console.print(f"[red]✗[/red] Error fetching API schema: {e}")
@@ -189,59 +206,99 @@ async def _process_api_schema(
             sys.exit(1)
 
 
-async def _generate_and_create_tests(
+async def _generate_modular_tests(
     api_key: str,
     endpoints: List[Endpoint],
+    schemas: Dict[str, Any],
     api_info: Dict[str, Any],
     output_dir: Path,
-    custom_requirement: Optional[str] = "",
-    host: Optional[str] = "0.0.0.0",
-    auth: bool = False,
+    host: Optional[str] = "http://localhost",
+    auth: bool = True,
     db_type: str = "",
+    retry_on_invalid: int = 0,
 ) -> List[Dict[Any, Any]]:
-    """Generate tests using AI and create test files"""
-    together_client = AsyncTogether(api_key=api_key)
+    """Generate tests using the SOLID-based modular generator"""
 
-    with console.status("[bold green]Generating Locust tests with AI..."):
-        generator = HybridLocustGenerator(ai_client=together_client)
-        test_files, test_directories = await generator.generate_from_endpoints(
-            endpoints=endpoints,
-            api_info=api_info,
-            custom_requirement=custom_requirement,
-            target_host=host,
-            include_auth=auth,
+    console.print(f"[dim]Output directory: {output_dir}[/dim]")
+    console.print(f"[dim]Target host: {host}[/dim]")
+    console.print(f"[dim]Endpoints: {len(endpoints)}[/dim]")
+    console.print(f"[dim]DB type: {db_type or 'none'}[/dim]")
+
+    # Get security information from OpenAPI spec
+    global_security = api_info.get("global_security", [])
+    security_schemes = api_info.get("security_schemes", {})
+
+    # Find secured endpoints using OpenAPI security specification
+    secured_endpoints = []
+    public_endpoints = []
+    for ep in endpoints:
+        if ep.requires_auth(global_security):
+            secured_endpoints.append(ep.path)
+        else:
+            public_endpoints.append(ep.path)
+
+    # Display security information
+    if security_schemes:
+        scheme_names = list(security_schemes.keys())
+        console.print(f"[dim]Security schemes defined: {scheme_names}[/dim]")
+
+    if global_security:
+        console.print(f"[dim]Global security: {global_security}[/dim]")
+
+    console.print(f"[dim]Secured endpoints: {len(secured_endpoints)}[/dim]")
+    console.print(f"[dim]Public endpoints: {len(public_endpoints)}[/dim]")
+
+    # For backwards compatibility, pass secured endpoint paths as auth_endpoints
+    auth_endpoints = secured_endpoints
+
+    # Create modular generator
+    console.print("[cyan]⚙ Initializing ModularGenerator...[/cyan]")
+    try:
+        generator = ModularGenerator(
+            output_dir=str(output_dir),
+            api_key=api_key,
+            target_host=host or "http://localhost",
+            auth_enabled=auth,
             db_type=db_type,
+            retry_on_invalid=retry_on_invalid,
         )
+        console.print("[green]✓[/green] ModularGenerator initialized")
+    except Exception as e:
+        console.print(f"[red]✗ Failed to initialize ModularGenerator: {e}[/red]")
+        raise
 
-    # Create test files
-    with console.status("[bold green]Creating test files..."):
-        created_files = []
+    console.print("[cyan]⚙ Generating SOLID-structured test files...[/cyan]")
 
-        # Create workflow files
-        if test_directories:
-            workflows_dir = output_dir / "workflows"
-            workflows_dir.mkdir(exist_ok=True)
+    # Generate all modular files
+    try:
+        generated_files = await generator.generate(
+            endpoints=endpoints,
+            schemas=schemas,
+            api_info=api_info,
+            auth_endpoints=auth_endpoints if auth else None,
+        )
+        console.print(f"[green]✓[/green] Generator returned {len(generated_files)} files")
+    except Exception as e:
+        console.print(f"[red]✗ Generation failed: {e}[/red]")
+        import traceback
+        console.print(f"[red]{traceback.format_exc()}[/red]")
+        raise
 
-            # Create __init__.py to make workflows a proper Python package
-            init_file = workflows_dir / "__init__.py"
-            init_file.write_text(
-                '"""Workflow modules for Locust load testing"""\n',
-                encoding="utf-8"
-            )
-            created_files.append({"filename": "workflows/__init__.py", "path": init_file})
+    if not generated_files:
+        console.print("[yellow]⚠ Warning: No files were generated![/yellow]")
 
-            for file_workflow in test_directories:
-                workflow_files = await generator._create_test_files_safely(
-                    file_workflow, workflows_dir
-                )
-                created_files.extend(workflow_files)
+    # Convert to format expected by _show_results
+    created_files = []
+    for file_path, content in generated_files.items():
+        full_path = output_dir / file_path
+        created_files.append({
+            "path": str(full_path),
+            "content": content,
+            "type": "modular",
+        })
+        console.print(f"[green]✓[/green] Created: {file_path}")
 
-        # Create main test files
-        if test_files:
-            main_files = await generator._create_test_files_safely(
-                test_files, output_dir
-            )
-            created_files.extend(main_files)
+    console.print(f"[green]✓[/green] Generated {len(created_files)} modular files")
 
     return created_files
 
@@ -249,14 +306,27 @@ async def _generate_and_create_tests(
 @click.group()
 @click.version_option(version="0.1.9")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
+@click.option("--debug", "-d", is_flag=True, help="Enable debug logging")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
+def cli(ctx: click.Context, verbose: bool, debug: bool) -> None:
     """DevDox AI LoadTest - Generate Locust tests from API documentation"""
+    import logging
+
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    ctx.obj["debug"] = debug
 
     if verbose:
         console.print("[green]Verbose mode enabled[/green]")
+
+    if debug:
+        # Enable debug logging for ModularGenerator and related modules
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logging.getLogger("devdox_ai_locust").setLevel(logging.DEBUG)
+        console.print("[yellow]Debug logging enabled - see detailed output[/yellow]")
 
 
 @cli.command()
@@ -297,6 +367,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     envvar="TOGETHER_API_KEY",
     help="Together AI API key (can also be set via TOGETHER_API_KEY env var)",
 )
+@click.option(
+    "--retry-on-invalid",
+    type=int,
+    default=0,
+    help="Number of retries if AI generates invalid code (default: 0, no retry)",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -311,6 +387,7 @@ def generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
+    retry_on_invalid: int,
 ) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
 
@@ -330,6 +407,7 @@ def generate(
                 dry_run,
                 custom_requirement,
                 together_api_key,
+                retry_on_invalid,
             )
         )
     except Exception as e:
@@ -354,6 +432,7 @@ async def _async_generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
+    retry_on_invalid: int = 0,
 ) -> None:
     """Async function to handle the generation process"""
 
@@ -376,19 +455,21 @@ async def _async_generate(
                 dry_run,
             )
 
-        _, endpoints, api_info = await _process_api_schema(
+        schemas, endpoints, api_info = await _process_api_schema(
             swagger_url, ctx.obj["verbose"]
         )
 
-        created_files = await _generate_and_create_tests(
-            api_key,
-            endpoints,
-            api_info,
-            output_dir,
-            custom_requirement,
-            host,
-            auth,
-            db_type,
+        # Use SOLID-based modular generator for reliable output
+        created_files = await _generate_modular_tests(
+            api_key=api_key,
+            endpoints=endpoints,
+            schemas=schemas,
+            api_info=api_info,
+            output_dir=output_dir,
+            host=host,
+            auth=auth,
+            db_type=db_type,
+            retry_on_invalid=retry_on_invalid,
         )
 
         # Show results

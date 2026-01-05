@@ -1,0 +1,56 @@
+"""Valid test data generators - produces data that should succeed."""
+from typing import Any, Dict, List, Optional
+
+from .base_generator import BaseDataGenerator
+
+
+class ValidDataGenerator(BaseDataGenerator):
+    """Generates valid test data for positive test scenarios."""
+
+    def complete_data(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate complete valid data with all fields populated.
+
+        Args:
+            schema_name: Name of the schema to generate data for
+
+        Returns:
+            Dictionary with all valid fields
+        """
+        # Fallback for unknown schemas
+        return {
+            "id": self.generate_id(),
+            "name": self.fake.name(),
+            "email": self.generate_email(),
+            "created_at": self.fake.iso8601(),
+        }
+
+    def minimal_data(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate minimal valid data with only required fields.
+
+        Args:
+            schema_name: Name of the schema to generate data for
+
+        Returns:
+            Dictionary with only required fields
+        """
+        return {"name": self.fake.name()}
+
+    def boundary_data(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate valid data at boundary limits.
+
+        Args:
+            schema_name: Name of the schema to generate data for
+
+        Returns:
+            Dictionary with boundary values
+        """
+        return {
+            "name": "A",  # Minimum length
+            "count": 1,   # Minimum value
+        }
+
+    # AI-generated methods below
+{{ ai_generated_methods | indent(4, first=True) }}

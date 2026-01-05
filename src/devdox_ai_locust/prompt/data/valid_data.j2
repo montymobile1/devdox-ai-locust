@@ -1,0 +1,39 @@
+Generate ONLY valid test data methods for the ValidDataGenerator class.
+
+## API Endpoints
+{{ endpoints_summary }}
+
+## Schemas
+{{ schemas_info }}
+
+## YOUR TASK
+
+Generate methods that produce VALID data matching the API schemas.
+Each method should return a dictionary with correctly typed, valid values.
+
+### RULES
+
+1. Methods must use `self.fake` (Faker) or `self.generate_*` helpers
+2. Return dictionaries matching schema field names
+3. All values must be VALID (correct types, formats, ranges)
+4. Name methods: `{schema_name}_complete()`, `{schema_name}_minimal()`
+
+### OUTPUT FORMAT
+
+Return ONLY method definitions in `<new_methods>` tags:
+
+<new_methods>
+    def user_complete(self) -> Dict[str, Any]:
+        """Generate complete valid user data."""
+        return {
+            "name": self.fake.name(),
+            "email": self.generate_email(),
+            "age": self.generate_int(18, 99),
+        }
+
+    def user_minimal(self) -> Dict[str, Any]:
+        """Generate minimal valid user data."""
+        return {"name": self.fake.name()}
+</new_methods>
+
+Generate methods for the schemas above. Return ONLY methods, no class definition.

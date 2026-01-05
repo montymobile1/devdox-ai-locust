@@ -1,0 +1,56 @@
+"""Security test scenarios - tasks testing for vulnerabilities."""
+import logging
+from locust import task
+
+from .base_scenario import BaseScenario
+
+logger = logging.getLogger(__name__)
+
+
+class SecurityTasks(BaseScenario):
+    """
+    Security test scenarios with attack payloads.
+
+    Weight distribution: ~10% of total load
+    """
+
+    @task(1)
+    def test_sql_injection(self):
+        """Test SQL injection resistance."""
+        data = self.security_data.sql_injection()
+        # Expecting 400/422 (rejected) or safe handling
+        # 500 would indicate potential vulnerability
+        self.expect_error(
+            "POST",
+            "{{ primary_endpoint }}",
+            data=data,
+            expected_statuses=(400, 422, 200),  # 200 if safely sanitized
+            name="security:sql_injection",
+        )
+
+    @task(1)
+    def test_xss_payload(self):
+        """Test XSS resistance."""
+        data = self.security_data.xss_payload()
+        self.expect_error(
+            "POST",
+            "{{ primary_endpoint }}",
+            data=data,
+            expected_statuses=(400, 422, 200),
+            name="security:xss",
+        )
+
+    @task(1)
+    def test_command_injection(self):
+        """Test command injection resistance."""
+        data = self.security_data.command_injection()
+        self.expect_error(
+            "POST",
+            "{{ primary_endpoint }}",
+            data=data,
+            expected_statuses=(400, 422, 200),
+            name="security:command_injection",
+        )
+
+    # AI-generated tasks below
+{{ ai_generated_tasks | indent(4, first=True) }}

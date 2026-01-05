@@ -1,0 +1,50 @@
+"""Base data generator with shared utilities."""
+import random
+import string
+import uuid
+from typing import Any, Dict, List, Optional
+
+from faker import Faker
+
+
+class BaseDataGenerator:
+    """Base class for all data generators with shared utilities."""
+
+    def __init__(self, locale: str = "en_US"):
+        self.fake = Faker(locale)
+
+    def generate_id(self) -> str:
+        """Generate a unique ID."""
+        return str(uuid.uuid4())
+
+    def generate_string(self, length: int = 10) -> str:
+        """Generate a random string."""
+        return "".join(random.choices(string.ascii_letters, k=length))
+
+    def generate_email(self) -> str:
+        """Generate a random email."""
+        return self.fake.email()
+
+    def generate_phone(self) -> str:
+        """Generate a random phone number."""
+        return self.fake.phone_number()
+
+    def generate_int(self, min_val: int = 1, max_val: int = 1000) -> int:
+        """Generate a random integer."""
+        return random.randint(min_val, max_val)
+
+    def generate_float(self, min_val: float = 0.0, max_val: float = 1000.0) -> float:
+        """Generate a random float."""
+        return round(random.uniform(min_val, max_val), 2)
+
+    def generate_boolean(self) -> bool:
+        """Generate a random boolean."""
+        return random.choice([True, False])
+
+    def generate_list(self, generator_func, count: int = 3) -> List[Any]:
+        """Generate a list using the provided generator function."""
+        return [generator_func() for _ in range(count)]
+
+    def pick_random(self, choices: List[Any]) -> Any:
+        """Pick a random item from a list."""
+        return random.choice(choices) if choices else None

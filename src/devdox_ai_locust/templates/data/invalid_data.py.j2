@@ -1,0 +1,92 @@
+"""Invalid test data generators - produces data that should fail validation."""
+from typing import Any, Dict, List, Optional
+
+from .base_generator import BaseDataGenerator
+
+
+class InvalidDataGenerator(BaseDataGenerator):
+    """Generates invalid test data for negative test scenarios."""
+
+    def missing_required(self, schema_name: str, field: str) -> Dict[str, Any]:
+        """
+        Generate data missing a required field.
+
+        Args:
+            schema_name: Name of the schema
+            field: Required field to omit
+
+        Returns:
+            Dictionary missing the specified required field
+        """
+        data = {"description": self.fake.text()}
+        # Intentionally missing the required field
+        return data
+
+    def invalid_types(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate data with wrong types.
+
+        Args:
+            schema_name: Name of the schema
+
+        Returns:
+            Dictionary with type mismatches
+        """
+        return {
+            "name": 12345,          # Should be string
+            "count": "not_a_number", # Should be integer
+            "active": "yes",         # Should be boolean
+        }
+
+    def invalid_format(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate data with invalid formats.
+
+        Args:
+            schema_name: Name of the schema
+
+        Returns:
+            Dictionary with format violations
+        """
+        return {
+            "email": "not-an-email",
+            "phone": "abc-def-ghij",
+            "url": "not-a-url",
+            "date": "not-a-date",
+        }
+
+    def out_of_range(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate data with out-of-range values.
+
+        Args:
+            schema_name: Name of the schema
+
+        Returns:
+            Dictionary with out-of-range values
+        """
+        return {
+            "count": -999,              # Negative when positive expected
+            "age": 999999,              # Too large
+            "percentage": 150,          # Over 100
+            "name": "x" * 10000,        # Too long
+        }
+
+    def null_values(self, schema_name: str) -> Dict[str, Any]:
+        """
+        Generate data with null values where not allowed.
+
+        Args:
+            schema_name: Name of the schema
+
+        Returns:
+            Dictionary with null values
+        """
+        return {
+            "name": None,
+            "email": None,
+            "count": None,
+        }
+
+    # AI-generated methods below
+{{ ai_generated_methods | indent(4, first=True) }}

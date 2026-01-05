@@ -1,0 +1,70 @@
+"""Edge case test scenarios - boundary and unusual inputs."""
+import logging
+from locust import task
+
+from .base_scenario import BaseScenario
+
+logger = logging.getLogger(__name__)
+
+
+class EdgeCaseTasks(BaseScenario):
+    """
+    Edge case test scenarios with boundary values.
+
+    Weight distribution: ~5% of total load
+    """
+
+    @task(2)
+    def test_empty_request(self):
+        """Test with empty request body."""
+        self.expect_error(
+            "POST",
+            "{{ primary_endpoint }}",
+            data={},
+            expected_statuses=(400, 422),
+            name="edge:empty_body",
+        )
+
+    @task(2)
+    def test_null_values(self):
+        """Test with null values."""
+        data = self.invalid_data.null_values("{{ primary_schema }}")
+        self.expect_error(
+            "POST",
+            "{{ primary_endpoint }}",
+            data=data,
+            expected_statuses=(400, 422),
+            name="edge:null_values",
+        )
+
+    @task(2)
+    def test_boundary_values(self):
+        """Test with boundary values."""
+        data = self.valid_data.boundary_data("{{ primary_schema }}")
+        # Boundary values should still be valid
+        self.make_request(
+            "POST",
+            "{{ primary_endpoint }}",
+            data=data,
+            expected_status=201,
+            name="edge:boundary_values",
+        )
+
+    @task(1)
+    def test_unicode_characters(self):
+        """Test with unicode and special characters."""
+        data = {
+            "name": "测试 🚀 тест",
+            "description": "Ñoño señor 日本語",
+        }
+        # Unicode should be accepted
+        self.make_request(
+            "POST",
+            "{{ primary_endpoint }}",
+            data=data,
+            expected_status=201,
+            name="edge:unicode",
+        )
+
+    # AI-generated tasks below
+{{ ai_generated_tasks | indent(4, first=True) }}

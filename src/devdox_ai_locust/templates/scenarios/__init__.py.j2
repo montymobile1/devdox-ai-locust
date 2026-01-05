@@ -1,0 +1,17 @@
+"""Test scenarios for load testing.
+
+This module provides:
+- BaseScenario: Base class for all scenario types
+- CommonSecurityTasks: Shared authentication and security tests
+- Per-API-group scenarios (generated dynamically)
+"""
+from .base_scenario import BaseScenario
+from .common_security import CommonSecurityTasks
+
+# Per-API-group scenarios are imported dynamically based on API structure
+# Example: from .git_tokens import GitTokensPositiveTasks, GitTokensNegativeTasks
+
+__all__ = [
+    "BaseScenario",
+    "CommonSecurityTasks",
+]

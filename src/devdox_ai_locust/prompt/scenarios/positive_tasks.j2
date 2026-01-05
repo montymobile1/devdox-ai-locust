@@ -1,0 +1,61 @@
+Generate ONLY positive test @task methods for the PositiveTasks class.
+
+## API Endpoints
+{{ endpoints_summary }}
+
+## Available Data Methods
+- `self.valid_data.{schema}_complete()` - Complete valid data
+- `self.valid_data.{schema}_minimal()` - Minimal valid data
+- `self.valid_data.boundary_data(schema)` - Boundary valid data
+
+## Available Helpers
+- `self.make_request(method, path, data, expected_status, name)` - Makes request
+- `self.store_id(key, value)` - Stores ID for later use
+- `self.get_id(key)` - Retrieves stored ID
+
+## CRITICAL: catch_response Pattern
+
+ALWAYS use `with` block when using catch_response=True:
+```python
+with self.client.post("/path", json=data, catch_response=True) as response:
+    if response.status_code == 201:
+        response.success()
+    else:
+        response.failure(f"Error: {response.status_code}")
+```
+
+## YOUR TASK
+
+Generate @task methods for SUCCESS scenarios (expect 200/201/204).
+
+### RULES
+
+1. Each @task tests ONE endpoint with VALID data
+2. Use weights: @task(10) for critical paths, @task(5) for secondary
+3. Store IDs from POST responses for use in GET/PUT/DELETE
+4. Name tasks: `{action}_{resource}_valid()` or `{action}_{resource}_complete()`
+
+### OUTPUT FORMAT
+
+<new_methods>
+    @task(10)
+    def create_user_complete(self):
+        """Create user with complete valid data."""
+        data = self.valid_data.user_complete()
+        result = self.make_request(
+            "POST", "/users", data=data, expected_status=201, name="user:create"
+        )
+        if result:
+            self.store_id("user_id", result.get("id"))
+
+    @task(8)
+    def get_user_by_id(self):
+        """Get user by stored ID."""
+        user_id = self.get_id("user_id")
+        if user_id:
+            self.make_request(
+                "GET", f"/users/{user_id}", expected_status=200, name="user:get"
+            )
+</new_methods>
+
+Generate @task methods for the endpoints above. Return ONLY methods.

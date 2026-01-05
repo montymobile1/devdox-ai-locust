@@ -1,0 +1,123 @@
+"""Authentication handler for API requests."""
+import logging
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class Authenticator:
+    """Handles authentication for load testing."""
+
+    def __init__(self, client):
+        """
+        Initialize authenticator.
+
+        Args:
+            client: Locust HTTP client
+        """
+        self.client = client
+        self.token: Optional[str] = None
+        self.headers: Dict[str, str] = {}
+
+{% if auth_endpoints %}
+    def login(self) -> bool:
+        """
+        Authenticate and store token.
+
+        Returns:
+            True if login successful, False otherwise
+        """
+        login_data = {
+{% for field, value in auth_credentials.items() %}
+            "{{ field }}": "{{ value }}",
+{% endfor %}
+        }
+
+        with self.client.post(
+            "{{ auth_login_endpoint }}",
+            json=login_data,
+            catch_response=True,
+        ) as response:
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    self.token = (
+                        data.get("access_token")
+                        or data.get("token")
+                        or data.get("data", {}).get("token")
+                    )
+                    if self.token:
+                        self.headers["Authorization"] = f"Bearer {self.token}"
+                        self.client.headers.update(self.headers)
+                        response.success()
+                        logger.info("Authentication successful")
+                        return True
+                except Exception as e:
+                    response.failure(f"Failed to parse token: {e}")
+                    return False
+            else:
+                response.failure(f"Login failed: {response.status_code}")
+                return False
+
+        return False
+
+    def logout(self) -> bool:
+        """
+        End session and clear token.
+
+        Returns:
+            True if logout successful, False otherwise
+        """
+        if not self.token:
+            return True
+
+{% if auth_logout_endpoint %}
+        with self.client.post(
+            "{{ auth_logout_endpoint }}",
+            catch_response=True,
+        ) as response:
+            if response.status_code in (200, 204):
+                response.success()
+            else:
+                response.failure(f"Logout failed: {response.status_code}")
+{% endif %}
+
+        self.token = None
+        if "Authorization" in self.client.headers:
+            del self.client.headers["Authorization"]
+        logger.info("Logged out")
+        return True
+
+    def refresh_token(self) -> bool:
+        """
+        Refresh authentication token.
+
+        Returns:
+            True if refresh successful, False otherwise
+        """
+        # Re-login to refresh
+        return self.login()
+{% else %}
+    def login(self) -> bool:
+        """No authentication endpoints configured."""
+        logger.info("No authentication configured - using API key if available")
+        return True
+
+    def logout(self) -> bool:
+        """No authentication endpoints configured."""
+        return True
+
+    def refresh_token(self) -> bool:
+        """No authentication endpoints configured."""
+        return True
+{% endif %}
+
+    def handle_401(self) -> bool:
+        """
+        Handle 401 Unauthorized response.
+
+        Returns:
+            True if re-authentication successful
+        """
+        logger.warning("Received 401 - attempting re-authentication")
+        return self.refresh_token()

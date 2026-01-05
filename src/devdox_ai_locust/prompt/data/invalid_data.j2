@@ -1,0 +1,45 @@
+Generate ONLY invalid test data methods for the InvalidDataGenerator class.
+
+## API Endpoints
+{{ endpoints_summary }}
+
+## Schemas (with required fields and types)
+{{ schemas_info }}
+
+## YOUR TASK
+
+Generate methods that produce INVALID data to trigger validation errors.
+Each method should return data that violates schema constraints.
+
+### RULES
+
+1. Target specific validation failures (missing fields, wrong types, bad formats)
+2. Name methods: `{schema_name}_missing_{field}()`, `{schema_name}_invalid_type()`
+3. Return dictionaries that SHOULD fail validation
+
+### OUTPUT FORMAT
+
+Return ONLY method definitions in `<new_methods>` tags:
+
+<new_methods>
+    def user_missing_email(self) -> Dict[str, Any]:
+        """User data missing required email field."""
+        return {"name": self.fake.name()}  # Missing email
+
+    def user_invalid_email_format(self) -> Dict[str, Any]:
+        """User data with invalid email format."""
+        return {
+            "name": self.fake.name(),
+            "email": "not-an-email",
+        }
+
+    def user_wrong_type_age(self) -> Dict[str, Any]:
+        """User data with wrong type for age."""
+        return {
+            "name": self.fake.name(),
+            "email": self.generate_email(),
+            "age": "not-a-number",
+        }
+</new_methods>
+
+Generate methods for the schemas above. Return ONLY methods, no class definition.

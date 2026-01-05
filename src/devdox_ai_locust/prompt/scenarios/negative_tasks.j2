@@ -1,0 +1,60 @@
+Generate ONLY negative test @task methods for the NegativeTasks class.
+
+## API Endpoints
+{{ endpoints_summary }}
+
+## Available Data Methods
+- `self.invalid_data.missing_required(schema, field)` - Missing required field
+- `self.invalid_data.invalid_types(schema)` - Wrong data types
+- `self.invalid_data.invalid_format(schema)` - Bad formats
+- `self.invalid_data.out_of_range(schema)` - Out of range values
+- `self.invalid_data.null_values(schema)` - Null where not allowed
+
+## Available Helpers
+- `self.expect_error(method, path, data, expected_statuses, name)` - Expects error
+
+## YOUR TASK
+
+Generate @task methods for ERROR scenarios (expect 400/422/404).
+
+### RULES
+
+1. Each @task tests ONE validation failure
+2. Use weights: @task(3) for common errors, @task(1) for edge cases
+3. Use `expect_error()` helper - it handles error assertions
+4. Name tasks: `{action}_{resource}_{error_type}()`
+
+### OUTPUT FORMAT
+
+<new_methods>
+    @task(3)
+    def create_user_missing_email(self):
+        """Create user without required email - expect 400."""
+        data = self.invalid_data.missing_required("user", "email")
+        self.expect_error(
+            "POST", "/users", data=data,
+            expected_statuses=(400, 422),
+            name="user:create:missing_email"
+        )
+
+    @task(3)
+    def create_user_invalid_email_format(self):
+        """Create user with invalid email format - expect 422."""
+        data = self.invalid_data.invalid_format("user")
+        self.expect_error(
+            "POST", "/users", data=data,
+            expected_statuses=(400, 422),
+            name="user:create:invalid_format"
+        )
+
+    @task(2)
+    def get_user_not_found(self):
+        """Get non-existent user - expect 404."""
+        self.expect_error(
+            "GET", "/users/non-existent-id",
+            expected_statuses=(404,),
+            name="user:get:not_found"
+        )
+</new_methods>
+
+Generate @task methods for the endpoints above. Return ONLY methods.
