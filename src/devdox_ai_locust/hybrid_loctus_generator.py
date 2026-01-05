@@ -53,7 +53,69 @@ class SafeCodeMerger:
     2. Only ADDS new methods/classes from AI output
     3. Never replaces or modifies existing code
     4. Uses AST parsing for safety
+    5. Prevents duplicate class definitions (including auth classes)
+    6. Prevents redefining classes that are already imported
     """
+
+    # Classes that should never be duplicated - if they exist anywhere, don't add again
+    SINGLETON_CLASSES = {
+        "TestDataGenerator",
+        "ResponseValidator",
+        "RequestLogger",
+        "PerformanceMonitor",
+        "DataManager",
+        "LoadTestConfig",
+    }
+
+    # Keywords that indicate auth-related classes - only one auth class should exist
+    AUTH_CLASS_KEYWORDS = {"auth", "login", "logout", "token", "session", "credential"}
+
+    @staticmethod
+    def get_imported_classes(code: str) -> Set[str]:
+        """
+        Extract class names that are imported from other modules.
+
+        Returns:
+            Set of class names that are imported
+        """
+        imported_classes: Set[str] = set()
+
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    for alias in node.names:
+                        # Check if it looks like a class (starts with uppercase)
+                        name = alias.asname if alias.asname else alias.name
+                        if name and name[0].isupper():
+                            imported_classes.add(name)
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        name = alias.asname if alias.asname else alias.name
+                        if name and name[0].isupper():
+                            imported_classes.add(name)
+        except SyntaxError:
+            # Fallback to regex for imports
+            # Match: from module import ClassName
+            from_imports = re.findall(r"from\s+\S+\s+import\s+([A-Z]\w+)", code)
+            imported_classes.update(from_imports)
+            # Match: from module import ClassName as Alias
+            aliased_imports = re.findall(r"from\s+\S+\s+import\s+\w+\s+as\s+([A-Z]\w+)", code)
+            imported_classes.update(aliased_imports)
+
+        return imported_classes
+
+    @staticmethod
+    def is_auth_related_class(class_name: str) -> bool:
+        """Check if a class name indicates it's authentication-related."""
+        lower_name = class_name.lower()
+        return any(keyword in lower_name for keyword in SafeCodeMerger.AUTH_CLASS_KEYWORDS)
+
+    @staticmethod
+    def has_auth_class(code: str) -> bool:
+        """Check if code already contains an auth-related class."""
+        class_names, _, _ = SafeCodeMerger.get_existing_names(code)
+        return any(SafeCodeMerger.is_auth_related_class(name) for name in class_names)
 
     @staticmethod
     def get_existing_names(code: str) -> Tuple[Set[str], Set[str], Set[str]]:
@@ -97,6 +159,8 @@ class SafeCodeMerger:
         1. Identifies methods in AI output
         2. Filters out any that already exist in original
         3. Returns only the truly new additions
+        4. Prevents duplicate class definitions (auth classes, imported classes)
+        5. Prevents redefining classes that are imported
 
         Handles both:
         - Full class definitions from AI
@@ -106,6 +170,12 @@ class SafeCodeMerger:
             return ""
 
         orig_classes, orig_methods, orig_functions = SafeCodeMerger.get_existing_names(original_code)
+
+        # Get imported classes to prevent redefining them
+        imported_classes = SafeCodeMerger.get_imported_classes(original_code)
+
+        # Check if original already has auth-related classes
+        original_has_auth = SafeCodeMerger.has_auth_class(original_code)
 
         # Get all existing method names (without class prefix) for comparison
         existing_method_names = set()
@@ -125,9 +195,11 @@ class SafeCodeMerger:
 
         for node in ast.iter_child_nodes(ai_tree):
             if isinstance(node, ast.ClassDef):
+                class_name = node.name
+
                 # Check if this is an existing class we should add methods to
-                if node.name in orig_classes:
-                    # Extract only new methods from this class
+                if class_name in orig_classes:
+                    # Extract only new methods from this class (even for singleton classes)
                     for item in node.body:
                         if isinstance(item, ast.FunctionDef):
                             if item.name not in existing_method_names:
@@ -139,6 +211,29 @@ class SafeCodeMerger:
                                         new_methods.append(f"    # AI-added method\n{indented}")
                                 except Exception:
                                     pass
+                    # Don't add the class itself, just the methods
+                    continue
+
+                # For NEW classes (not in orig_classes), apply deduplication rules:
+
+                # Skip classes that are already imported (Bug #3 fix)
+                if class_name in imported_classes:
+                    logger.info(f"Skipping class '{class_name}' - already imported")
+                    continue
+
+                # Skip singleton classes that shouldn't be duplicated
+                if class_name in SafeCodeMerger.SINGLETON_CLASSES:
+                    logger.info(f"Skipping singleton class '{class_name}' - would create duplicate")
+                    continue
+
+                # Skip auth-related classes if original already has auth (Bug #1 fix)
+                if SafeCodeMerger.is_auth_related_class(class_name) and original_has_auth:
+                    logger.info(f"Skipping auth class '{class_name}' - original already has auth")
+                    continue
+
+                # This is a genuinely new class - but we only extract methods, not full classes
+                # to prevent adding duplicate class definitions
+                logger.debug(f"Skipping new class '{class_name}' - only methods are extracted")
 
             elif isinstance(node, ast.FunctionDef):
                 # Standalone method definition (AI returned methods only)
@@ -260,6 +355,44 @@ class ProtectedSymbol:
     defined_in: str  # file where it's defined
     used_by: List[str]  # files that import/use it
     reason: str  # why it's protected
+
+
+def format_auth_endpoints_for_prompt(auth_endpoints: List["Endpoint"]) -> str:
+    """
+    Format auth_endpoints as human-readable text for AI prompts.
+
+    Instead of rendering Python object repr like:
+        [Endpoint(path='/api/v1/auth/login', method='POST', ...)]
+
+    This produces readable text like:
+        Available authentication endpoints:
+        - POST /api/v1/auth/login (login_api_v1_auth_login_post)
+        - POST /api/v1/auth/logout (logout_api_v1_auth_logout_post)
+
+    This prevents the AI from copying Python code into the generated output.
+    """
+    if not auth_endpoints:
+        return "No authentication endpoints available. Use config.api_key for authorization if needed."
+
+    lines = ["Available authentication endpoints:"]
+    for endpoint in auth_endpoints:
+        method = getattr(endpoint, 'method', 'UNKNOWN')
+        path = getattr(endpoint, 'path', '/unknown')
+        operation_id = getattr(endpoint, 'operation_id', '')
+        summary = getattr(endpoint, 'summary', '')
+
+        line = f"  - {method} {path}"
+        if operation_id:
+            line += f" (operation_id: {operation_id})"
+        if summary:
+            line += f" - {summary}"
+        lines.append(line)
+
+    lines.append("")
+    lines.append("Use these EXACT paths in your authentication methods.")
+    lines.append("DO NOT invent or hardcode endpoint paths - use only what's listed above.")
+
+    return "\n".join(lines)
 
 
 class CodebaseAwareness:
@@ -1150,12 +1283,16 @@ class HybridLocustGenerator:
         try:
             template = self.jinja_env.get_template(template_path)
 
+            # Format auth_endpoints as human-readable text to prevent
+            # AI from copying Python object repr into generated code (Bug #2 fix)
+            formatted_auth_endpoints = format_auth_endpoints_for_prompt(auth_endpoints)
+
             # Render enhanced content
             prompt = template.render(
                 grouped_enpoints=grouped_enpoints,
                 test_data_content=test_data_content,
                 base_workflow=base_workflow,
-                auth_endpoints=auth_endpoints,
+                auth_endpoints=formatted_auth_endpoints,
                 base_content=base_content,
                 db_type=db_type,
             )
