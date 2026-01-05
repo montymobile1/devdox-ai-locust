@@ -77,6 +77,59 @@ class Endpoint:
     tags: List[str]
     security: Optional[List[Dict[str, Any]]] = None
 
+    def requires_auth(self, global_security: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """
+        Determine if this endpoint requires authentication based on OpenAPI security spec.
+
+        OpenAPI security rules:
+        - If endpoint has `security: []` (empty array), it's explicitly public
+        - If endpoint has `security: null` or missing, it inherits global security
+        - If endpoint has non-empty security array, it requires that auth
+
+        Args:
+            global_security: The global security requirements from the API spec root
+
+        Returns:
+            True if the endpoint requires authentication, False if it's public
+        """
+        # If endpoint has explicit security defined
+        if self.security is not None:
+            # Empty array means explicitly public (no auth required)
+            if len(self.security) == 0:
+                return False
+            # Non-empty array means auth is required
+            return True
+
+        # Endpoint doesn't have security defined, inherit from global
+        if global_security:
+            # Global security exists and is non-empty
+            return len(global_security) > 0
+
+        # No security defined anywhere - endpoint is public
+        return False
+
+    def get_security_schemes(
+        self, global_security: Optional[List[Dict[str, Any]]] = None
+    ) -> List[str]:
+        """
+        Get the security scheme names required by this endpoint.
+
+        Args:
+            global_security: The global security requirements from the API spec root
+
+        Returns:
+            List of security scheme names (e.g., ["bearerAuth", "apiKey"])
+        """
+        security_requirements = self.security
+        if security_requirements is None:
+            security_requirements = global_security or []
+
+        scheme_names = []
+        for req in security_requirements:
+            if isinstance(req, dict):
+                scheme_names.extend(req.keys())
+        return scheme_names
+
 
 class OpenAPIParser:
     """Parser for OpenAPI 3.x specifications"""
@@ -406,7 +459,26 @@ class OpenAPIParser:
             "description": info.get("description", ""),
             "base_url": self._extract_base_url(),
             "security_schemes": self._extract_security_schemes(),
+            "global_security": self._extract_global_security(),
         }
+
+    def _extract_global_security(self) -> List[Dict[str, Any]]:
+        """
+        Extract global security requirements from the root of the OpenAPI spec.
+
+        Global security applies to all operations unless overridden at the operation level.
+        An empty array [] at the operation level means the endpoint is public.
+
+        Returns:
+            List of security requirement objects
+        """
+        if not isinstance(self.spec_data, dict):
+            return []
+
+        security = self.spec_data.get("security", [])
+        if isinstance(security, list):
+            return security
+        return []
 
     def _extract_base_url(self) -> str:
         """Extract base URL from servers section"""

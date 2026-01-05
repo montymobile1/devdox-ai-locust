@@ -18,6 +18,13 @@ from datetime import datetime
 
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint, Parameter
+from devdox_ai_locust.utils.naming import (
+    to_workflow_module,
+    to_workflow_filename,
+    to_task_methods_class,
+    to_api_user_class,
+    to_param_var,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,13 +158,19 @@ class LocustTestGenerator:
         Args:
             endpoints: List of parsed Endpoint objects
             api_info: API information dictionary
-            output_dir: Output directory for generated files
+            include_auth: Whether to include authentication handling
+            target_host: Target host URL for generated tests
+            db_type: Database type for data generation
 
         Returns:
-            Dictionary of filename -> file content
+            Tuple of (generated files dict, workflow files list, grouped endpoints dict)
         """
         try:
-            grouped_enpoint = self._group_endpoints_by_tag(endpoints, include_auth)
+            # Extract global security from api_info for proper security detection
+            global_security = api_info.get("global_security", [])
+            grouped_enpoint = self._group_endpoints_by_tag(
+                endpoints, include_auth, global_security
+            )
 
             workflows_files = self.generate_workflows(grouped_enpoint, api_info)
 
@@ -219,10 +232,18 @@ class LocustTestGenerator:
                 indented_task_methods = self._indent_methods(
                     task_methods, indent_level=1
                 )
+                # Use centralized naming strategy for consistent naming
+                task_methods_class_name = to_task_methods_class(group)
+                api_user_class_name = to_api_user_class(group)
                 file_content = self._build_endpoint_template(
-                    api_info, indented_task_methods, group
+                    api_info,
+                    indented_task_methods,
+                    group,
+                    task_methods_class_name,
+                    api_user_class_name,
                 )
-                file_name = f"{group}_workflow.py".replace("-", "_")
+                # Use centralized naming for filename
+                file_name = to_workflow_filename(group)
 
                 workflows.append({file_name: file_content})
 
@@ -238,11 +259,20 @@ class LocustTestGenerator:
             return []
 
     def _build_endpoint_template(
-        self, api_info: Dict[str, Any], task_methods_content: str, group: str
+        self,
+        api_info: Dict[str, Any],
+        task_methods_content: str,
+        group: str,
+        task_methods_class_name: str,
+        api_user_class_name: str,
     ) -> str:
         template = self.jinja_env.get_template("endpoint_template.py.j2")
         return template.render(
-            api_info=api_info, group=group, task_methods_content=task_methods_content
+            api_info=api_info,
+            group=group,
+            task_methods_content=task_methods_content,
+            task_methods_class_name=task_methods_class_name,
+            api_user_class_name=api_user_class_name,
         )
 
     def _generate_main_locustfile(
@@ -279,7 +309,7 @@ class LocustTestGenerator:
 
             # Properly indent task methods for class inclusion
             indented_task_methods = self._indent_methods(task_methods, indent_level=1)
-            indented_task_methods = ""
+
             # Generate the complete file content
             return self._build_locustfile_template(
                 api_info=api_info,
@@ -330,11 +360,14 @@ class LocustTestGenerator:
         import_group_tasks = ""
         tasks = []
         for group in groups:
-            file_name = group.lower().replace("-", "_")
-            class_name = group.capitalize().replace("-", "")
-            import_group_tasks += f"""from workflows.{file_name}_workflow import {class_name}TaskMethods\n"""
-            tasks.append(f"{class_name}TaskMethods")
-        tasks_str = "[" + ",".join(tasks) + "]"
+            # Use centralized naming for consistent imports
+            module_name = to_workflow_module(group)
+            class_name = to_task_methods_class(group)
+            import_group_tasks += (
+                f"""from workflows.{module_name}_workflow import {class_name}\n"""
+            )
+            tasks.append(class_name)
+        tasks_str = "[" + ", ".join(tasks) + "]"
         template = self.jinja_env.get_template("locust.py.j2")
 
         # Prepare template context
@@ -437,18 +470,20 @@ class LocustTestGenerator:
         return name if name else f"{endpoint.method.lower()}_endpoint"
 
     def _generate_path_with_params(self, endpoint: Endpoint) -> str:
-        """Generate path with parameter placeholders"""
+        """Generate path with sanitized parameter placeholders for valid Python f-strings"""
         path = endpoint.path
 
-        # Replace path parameters with f-string format
+        # Replace path parameters with sanitized f-string format
         for param in endpoint.parameters:
             if param.location.value == "path":
-                path = path.replace(f"{{{param.name}}}", f"{{{param.name}}}")
+                # Use sanitized variable name for valid Python identifier
+                safe_name = to_param_var(param.name)
+                path = path.replace(f"{{{param.name}}}", f"{{{safe_name}}}")
 
         return path
 
     def _generate_path_params_code(self, endpoint: Endpoint) -> str:
-        """Generate code for path parameters"""
+        """Generate code for path parameters with sanitized variable names"""
         path_params = [p for p in endpoint.parameters if p.location.value == "path"]
 
         if not path_params:
@@ -456,19 +491,18 @@ class LocustTestGenerator:
 
         code_lines = []
         for param in path_params:
+            # Use sanitized variable name for valid Python identifier
+            safe_name = to_param_var(param.name)
             if param.type.startswith("integer"):
-                code_lines.append(f"{param.name} = data_generator.generate_integer()")
+                code_lines.append(f"{safe_name} = data_generator.generate_integer()")
             elif param.type == "string":
                 if "id" in param.name.lower():
-                    code_lines.append(f"{param.name} = data_generator.generate_id()")
+                    code_lines.append(f"{safe_name} = data_generator.generate_id()")
                 else:
-                    code_lines.append(
-                        f"{param.name} = data_generator.generate_string()"
-                    )
-
+                    code_lines.append(f"{safe_name} = data_generator.generate_string()")
             else:
                 code_lines.append(
-                    f'{param.name} = data_generator.generate_value("{param.type}")'
+                    f'{safe_name} = data_generator.generate_value("{param.type}")'
                 )
 
         return "\n".join(code_lines)
@@ -591,56 +625,78 @@ class LocustTestGenerator:
         self,
         endpoints: List[Endpoint],
         include_auth_endpoints: bool = True,
+        global_security: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, List[Endpoint]]:
-        """Group endpoints by their tags"""
-        grouped: Dict[str, List[Endpoint]] = {}
-        # Define authentication-related keywords to check for in paths
-        auth_keywords = [
-            "login",
-            "signin",
-            "sign-in",
-            "sign_in",
-            "logout",
-            "signout",
-            "sign-out",
-            "sign_out",
-            "auth",
-            "authenticate",
-            "authorization",
-            "token",
-            "refresh",
-            "verify",
-            "password",
-            "reset",
-            "forgot",
-            "register",
-            "signup",
-            "sign-up",
-            "sign_up",
-            "session",
-            "oauth",
-            "sso",
-        ]
+        """
+        Group endpoints by their tags.
 
-        def is_auth_endpoint(endpoint_path: str) -> bool:
-            """Check if endpoint path contains authentication-related keywords"""
-            path_lower = endpoint_path.lower()
-            return any(keyword in path_lower for keyword in auth_keywords)
+        Uses OpenAPI security specification to determine which endpoints require
+        authentication, rather than keyword-based path matching.
+
+        Args:
+            endpoints: List of parsed Endpoint objects
+            include_auth_endpoints: Whether to create a separate Authentication group
+            global_security: Global security requirements from the OpenAPI spec root
+
+        Returns:
+            Dictionary mapping tag names to lists of endpoints
+        """
+        grouped: Dict[str, List[Endpoint]] = {}
+
+        def endpoint_key(ep: Endpoint) -> str:
+            """Create unique key for endpoint deduplication"""
+            return f"{ep.method}:{ep.path}"
 
         for endpoint in endpoints:
-            tags = endpoint.tags if endpoint.tags else ["default"]
-            if is_auth_endpoint(endpoint.path) and include_auth_endpoints:
-                # Add to authentication group regardless of tags
-                if "Authentication" not in grouped:
-                    grouped["Authentication"] = []
-                grouped["Authentication"].append(endpoint)
+            ep_key = endpoint_key(endpoint)
 
+            # Group by tags (all endpoints go to their tag groups)
+            tags = endpoint.tags if endpoint.tags else ["default"]
             for tag in tags:
                 if tag not in grouped:
                     grouped[tag] = []
-                grouped[tag].append(endpoint)
+                # Deduplicate within each tag group
+                existing_keys = {endpoint_key(e) for e in grouped[tag]}
+                if ep_key not in existing_keys:
+                    grouped[tag].append(endpoint)
 
         return grouped
+
+    def get_secured_endpoints(
+        self,
+        endpoints: List[Endpoint],
+        global_security: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Endpoint]:
+        """
+        Get endpoints that require authentication based on OpenAPI security spec.
+
+        This uses the proper OpenAPI security field rather than keyword matching.
+
+        Args:
+            endpoints: List of parsed Endpoint objects
+            global_security: Global security requirements from the OpenAPI spec root
+
+        Returns:
+            List of endpoints that require authentication
+        """
+        return [ep for ep in endpoints if ep.requires_auth(global_security)]
+
+    def get_public_endpoints(
+        self,
+        endpoints: List[Endpoint],
+        global_security: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Endpoint]:
+        """
+        Get endpoints that are public (no authentication required).
+
+        Args:
+            endpoints: List of parsed Endpoint objects
+            global_security: Global security requirements from the OpenAPI spec root
+
+        Returns:
+            List of endpoints that don't require authentication
+        """
+        return [ep for ep in endpoints if not ep.requires_auth(global_security)]
 
     def _generate_all_task_methods_string(self, endpoints: List[Endpoint]) -> str:
         """Generate all task methods as a properly indented string"""
