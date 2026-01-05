@@ -7,6 +7,7 @@ from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
+from rich.status import Status
 
 from .modular_generator import ModularGenerator
 from .schemas.progress import ProgressStatus, ProgressPhase
@@ -416,13 +417,26 @@ async def _generate_modular_tests(
         "last_printed_phase": "",
     }
 
+    status: Optional[Status] = None
+
     def progress_callback(phase: str, message: str, detail: str, pct: int) -> None:
         """Callback for ModularGenerator progress updates - prints to console."""
+        nonlocal status
         progress_state["phase"] = phase
         progress_state["message"] = message
         progress_state["detail"] = detail
         progress_state["progress"] = pct
         icon, _, color = PHASE_INFO.get(phase, ("⏳", "", "white"))
+
+        if status is None:
+            status = console.status("[cyan]Preparing generation...[/cyan]", spinner="dots")
+            status.start()
+
+        if status:
+            status_text = f"[{color}]{message}[/]"
+            if detail:
+                status_text += f" [dim]→ {detail}[/dim]"
+            status.update(status=status_text)
 
         # Track AI calls and file writes
         if phase == "AI":
@@ -541,6 +555,8 @@ async def _generate_modular_tests(
             custom_requirement=custom_requirement,
         )
     except Exception as e:
+        if status:
+            status.stop()
         console.print(f"[red]✗ Failed to initialize ModularGenerator: {e}[/red]")
         raise
 
@@ -557,6 +573,9 @@ async def _generate_modular_tests(
         )
     except Exception as e:
         generation_error = e
+    finally:
+        if status:
+            status.stop()
 
     # Print separator and final summary
     console.print("[dim]─" * 50 + "[/dim]")

@@ -1474,7 +1474,11 @@ class HybridLocustGenerator:
                 return content
 
         # No valid tags found
-        logger.warning("No valid <new_methods> or <code> tags found, using full response")
+        # This happens when the LLM returns plain prose or another format
+        # instead of the expected tagged blocks from our prompt templates.
+        # We fall back to the entire response so downstream merging can still
+        # attempt to salvage useful code fragments.
+        logger.debug("No valid <new_methods> or <code> tags found, using full response")
         return response_text.strip()
 
     def _clean_ai_response(self, content: str) -> str:
