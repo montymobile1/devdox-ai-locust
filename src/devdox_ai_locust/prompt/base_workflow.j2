@@ -2,9 +2,10 @@ CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification
 
 **CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS**
 - ONLY use authentication endpoints that are EXPLICITLY listed in the auth_endpoints variable below
-- If auth_endpoints is empty or contains no login/logout endpoints, DO NOT generate login_and_get_token() or logout_session() methods
-- NEVER invent endpoints like "/api/v1/login", "/login", "/auth/login", "/api/v1/logout" unless they appear in the OpenAPI spec
-- If no authentication endpoints exist, skip authentication entirely and use config.api_key for authorization
+- If auth_endpoints is empty, DO NOT generate login_and_get_token() or logout_session() methods
+- Authentication endpoints may have various names (e.g., /auth/token, /oauth/authorize, /session, /authenticate, etc.) - use whatever is in auth_endpoints
+- NEVER invent endpoint paths - use the EXACT paths from auth_endpoints
+- If no authentication endpoints exist, skip endpoint-based authentication and use config.api_key for authorization instead
 
 **CRITICAL: catch_response=True REQUIRES with-block**
 When using `catch_response=True`, you MUST use a `with` statement. The `response.success()` and `response.failure()` methods are ONLY valid inside the context manager.
@@ -46,18 +47,18 @@ STRICT REQUIREMENTS:
    Check Authentication Endpoints: {{ auth_endpoints }}
 
    **CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS!**
-   - ONLY implement login_and_get_token() if a login endpoint EXISTS in auth_endpoints above
-   - ONLY implement logout_session() if a logout endpoint EXISTS in auth_endpoints above
-   - If auth_endpoints is empty or has no login/logout endpoints, DO NOT create these methods
-   - Use the EXACT endpoint path from auth_endpoints, never invent paths like "/api/v1/login"
+   - ONLY implement authentication methods if auth_endpoints contains endpoints
+   - If auth_endpoints is empty, DO NOT create login_and_get_token() or logout_session() methods
+   - Use the EXACT endpoint paths from auth_endpoints (could be /auth/token, /oauth/authorize, /session, etc.)
+   - NEVER invent paths - use whatever authentication endpoints are provided in auth_endpoints
 
    **CRITICAL: `login_and_get_token` and `logout_session` are NOT defined in parent classes.**
    These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
 
    **Step 1: Check if workflow class needs authentication methods**
-   - FIRST: Check if auth_endpoints contains actual login/logout endpoints
-   - If NO login endpoint exists in auth_endpoints: DO NOT create login_and_get_token()
-   - If NO logout endpoint exists in auth_endpoints: DO NOT create logout_session()
+   - FIRST: Check if auth_endpoints contains any authentication endpoints
+   - If auth_endpoints is empty: DO NOT create login_and_get_token() or logout_session()
+   - If auth_endpoints has endpoints: Use them for authentication (regardless of their names)
    - If auth endpoints exist AND the workflow class doesn't have auth methods, ADD them
 
    **Step 2: Correct Implementation Pattern (ONLY if auth endpoints exist):**
@@ -80,18 +81,19 @@ STRICT REQUIREMENTS:
                self.logout_session()  # Call via self - defined in THIS class
            super().on_stop()
 
-       # ONLY define this method if a login endpoint EXISTS in auth_endpoints
+       # ONLY define this method if auth_endpoints contains authentication endpoints
        def login_and_get_token(self):
-           """Login and store JWT/Bearer token for API requests"""
+           """Authenticate and store token for API requests"""
            # Use the EXACT endpoint from auth_endpoints - DO NOT invent endpoints!
-           login_endpoint = "/actual/endpoint/from/auth_endpoints"  # Replace with real endpoint
+           # Could be /auth/token, /oauth/authorize, /session, /authenticate, etc.
+           auth_endpoint = "/actual/endpoint/from/auth_endpoints"  # Replace with real endpoint from auth_endpoints
            login_data = {
                "email": "test@example.com",
                "password": "test_password"
                # Use actual login schema from auth endpoints
            }
            # CRITICAL: Must use 'with' block when using catch_response=True
-           with self.client.post(login_endpoint, json=login_data, catch_response=True) as response:
+           with self.client.post(auth_endpoint, json=login_data, catch_response=True) as response:
                if response.status_code == 200:
                    response_data = response.json()
                    # Extract token from response (adapt to actual response structure)
@@ -112,14 +114,15 @@ STRICT REQUIREMENTS:
                else:
                    response.failure(f"Login failed: {response.status_code}")
 
-       # ONLY define this method if a logout endpoint EXISTS in auth_endpoints
+       # ONLY define this method if auth_endpoints contains a session termination endpoint
        def logout_session(self):
-           """Logout and clear authentication token"""
+           """End session and clear authentication token"""
            # Use the EXACT endpoint from auth_endpoints - DO NOT invent endpoints!
-           logout_endpoint = "/actual/endpoint/from/auth_endpoints"  # Replace with real endpoint
+           # Could be /auth/revoke, /session, /logout, /oauth/revoke, etc.
+           session_end_endpoint = "/actual/endpoint/from/auth_endpoints"  # Replace with real endpoint from auth_endpoints
            if hasattr(self, 'auth_token') and self.auth_token:
                # CRITICAL: Must use 'with' block when using catch_response=True
-               with self.client.post(logout_endpoint, catch_response=True) as response:
+               with self.client.post(session_end_endpoint, catch_response=True) as response:
                    if response.status_code in [200, 204]:
                        self.auth_token = None
                        # Remove auth header
@@ -148,8 +151,9 @@ STRICT REQUIREMENTS:
 
    # WRONG #3 - inventing endpoints that don't exist in OpenAPI spec!
    def login_and_get_token(self):
-       # DO NOT use endpoints unless they exist in auth_endpoints!
-       with self.client.post("/api/v1/login", ...)  # WRONG if not in spec!
+       # DO NOT invent endpoints - use ONLY what's in auth_endpoints!
+       # If auth_endpoints has "/auth/token", use that exact path
+       with self.client.post("/api/v1/login", ...)  # WRONG if this path isn't in auth_endpoints!
 ```
 
 4. TASK METHOD ENHANCEMENT PATTERN:

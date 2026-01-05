@@ -26,11 +26,10 @@ else:
 **CRITICAL: Authentication Method Implementation**
 
 **CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS!**
-- ONLY implement login_and_get_token() if a login endpoint EXISTS in auth_endpoints below
-- ONLY implement logout_session() if a logout endpoint EXISTS in auth_endpoints below
-- If auth_endpoints is empty or has no login/logout endpoints, DO NOT create these methods
-- Use the EXACT endpoint path from auth_endpoints, never invent paths like "/api/v1/login" or "/api/v1/logout"
-- If no authentication endpoints exist, skip authentication entirely and use config.api_key for authorization
+- ONLY use authentication endpoints that are EXPLICITLY listed in auth_endpoints below
+- Use the EXACT endpoint paths from auth_endpoints (e.g., /auth/token, /oauth/authorize, /session, /authenticate, etc.)
+- Authentication endpoints may have various names - use whatever is in auth_endpoints, not just "/login" or "/logout"
+- If auth_endpoints is empty, skip endpoint-based authentication and use config.api_key for authorization instead
 
 IMPORTANT: `login_and_get_token` and `logout_session` are NOT defined in parent classes (BaseTaskMethods or SequentialTaskSet).
 These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
@@ -75,8 +74,9 @@ def login_and_get_token(self):
 
 # WRONG #3 - inventing endpoints that don't exist in OpenAPI spec!
 def login_and_get_token(self):
-    # DO NOT use endpoints unless they exist in auth_endpoints!
-    with self.client.post("/api/v1/login", ...)  # WRONG if not in spec!
+    # DO NOT invent endpoints - use ONLY what's in auth_endpoints!
+    # If auth_endpoints has "/auth/token", use that, not "/api/v1/login"
+    with self.client.post("/api/v1/login", ...)  # WRONG if this path isn't in auth_endpoints!
 ```
 {% endif %}
 TASK: Enhance this Locust workflow file with COMPREHENSIVE test scenarios and LOGICAL TASK ORDERING.
