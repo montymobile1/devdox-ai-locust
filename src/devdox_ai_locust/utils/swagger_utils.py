@@ -2,6 +2,8 @@ import httpx
 import os
 import re
 import uuid
+import aiofiles
+from pathlib import Path
 from typing import Optional
 from devdox_ai_locust.schemas.processing_result import SwaggerProcessingRequest
 import logging
@@ -11,18 +13,10 @@ logger = logging.getLogger(__name__)
 
 async def get_api_schema(source: SwaggerProcessingRequest) -> Optional[str]:
     """
-    Get API schema content from URL or file path based on source dictionary.
+    Get API schema content from URL or file path.
 
     Args:
-        source (dict): Dictionary containing swagger_source ("url" or "file") and swagger_url/swagger_path
-
-
-    Expected source structure:
-        {
-            "swagger_source": "url",  # or "file"
-            "swagger_url": "https://api.example.com/swagger.json",  # if source is "url"
-            "swagger_path": "/path/to/swagger.json"  # if source is "file"
-        }
+        source: SwaggerProcessingRequest containing either swagger_url or swagger_path
 
     Returns:
         Optional[str]: Schema content as string, or None if failed
@@ -33,20 +27,58 @@ async def get_api_schema(source: SwaggerProcessingRequest) -> Optional[str]:
         httpx.HTTPError: If URL request fails
         Exception: For other unexpected errors
     """
-
     try:
-        if not source.swagger_url:
-            raise ValueError("Missing or empty 'swagger_url'")
-        swagger_url = source.swagger_url.strip()
-        if not swagger_url:
-            raise ValueError("Missing 'swagger_url' for url source")
-        return await _fetch_from_url(swagger_url)
+        if source.is_url_source:
+            logger.info(f"Fetching schema from URL: {source.swagger_url}")
+            return await _fetch_from_url(source.swagger_url.strip())
+        elif source.is_file_source:
+            logger.info(f"Reading schema from file: {source.swagger_path}")
+            return await _read_from_file(source.swagger_path.strip())
+        else:
+            raise ValueError("No valid source provided (neither URL nor file path)")
 
     except Exception as e:
-        source_info = getattr(source, "swagger_url", "unknown")
-
-        logger.error(f"Failed to get API schema from  source '{source_info}': {str(e)}")
+        source_info = (
+            source.source_location if hasattr(source, "source_location") else "unknown"
+        )
+        logger.error(f"Failed to get API schema from source '{source_info}': {str(e)}")
         raise
+
+
+async def _read_from_file(file_path: str) -> str:
+    """Read schema content from a local file."""
+    path = Path(file_path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Schema file not found: {file_path}")
+
+    if not path.is_file():
+        raise ValueError(f"Path is not a file: {file_path}")
+
+    # Check file extension for content type hints
+    suffix = path.suffix.lower()
+    if suffix not in {".json", ".yaml", ".yml"}:
+        logger.warning(
+            f"File extension '{suffix}' is not a standard OpenAPI format. "
+            "Expected .json, .yaml, or .yml"
+        )
+
+    try:
+        async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
+            content = await f.read()
+
+        if not content or not content.strip():
+            raise ValueError(f"Empty file: {file_path}")
+
+        logger.info(
+            f"Successfully read schema file: {file_path} ({len(content)} bytes)"
+        )
+        return content.strip()
+
+    except UnicodeDecodeError as e:
+        raise ValueError(f"File encoding error (expected UTF-8): {file_path}") from e
+    except PermissionError as e:
+        raise PermissionError(f"Permission denied reading file: {file_path}") from e
 
 
 async def _fetch_from_url(url: str) -> str:

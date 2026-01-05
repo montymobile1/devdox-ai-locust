@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for devdox-ai-locust tests
+Pytest configuration and shared fixtures for unit tests.
 """
 
 import asyncio
@@ -318,32 +318,6 @@ def sample_endpoints():
 
 
 @pytest.fixture
-def sample_base_files():
-    """Sample base files for testing."""
-    return {
-        "locustfile.py": "# Main locust file",
-        "test_data.py": "# Test data content",
-        "utils.py": "# Utility functions",
-    }
-
-
-@pytest.fixture()
-def sample_grouped_endpoints():
-    users_endpoint = Mock(spec=Endpoint)
-    users_endpoint.path = "/users"
-    users_endpoint.method = "GET"
-
-    auth_endpoint = Mock(spec=Endpoint)
-    auth_endpoint.path = "/auth/login"
-    auth_endpoint.method = "POST"
-
-    return {
-        "users": [users_endpoint],
-        "Authentication": [auth_endpoint],
-    }
-
-
-@pytest.fixture
 def sample_api_info():
     """Sample API info for testing."""
     return {
@@ -363,14 +337,13 @@ def mock_together_client():
     mock_choice = Mock()
     mock_message = Mock()
 
-    # Configure the mock response
     mock_message.content = """<code>
 import locust
 from locust import HttpUser, task, between
 
 class TestUser(HttpUser):
     wait_time = between(1, 3)
-    
+
     @task
     def test_endpoint(self):
         response = self.client.get("/test")
@@ -381,32 +354,12 @@ class TestUser(HttpUser):
     mock_response.choices = [mock_choice]
 
     async def mock_create(*args, **kwargs):
-        """Async mock that returns the mock response"""
-        # Simulate some async work
         await asyncio.sleep(0.01)
         return mock_response
 
-    # Set up the mock chain
     mock_client.chat = Mock()
     mock_client.chat.completions = Mock()
     mock_client.chat.completions.create = AsyncMock(side_effect=mock_create)
-
-    return mock_client
-
-
-@pytest.fixture
-def mock_httpx_client():
-    """Mock httpx async client for HTTP requests."""
-    mock_client = AsyncMock()
-    mock_response = Mock()
-    mock_response.status_code = 200
-    mock_response.text = '{"openapi": "3.0.0", "info": {"title": "Test API"}}'
-    mock_response.headers = {"content-type": "application/json"}
-    mock_response.raise_for_status.return_value = None
-
-    mock_client.get.return_value = mock_response
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
 
     return mock_client
 
@@ -417,121 +370,9 @@ def swagger_processing_request():
     return SwaggerProcessingRequest(swagger_url="https://api.example.com/swagger.json")
 
 
-@pytest.fixture
-def sample_generated_files():
-    """Sample generated files for testing."""
-    return {
-        "locustfile.py": """
-import locust
-from locust import HttpUser, task, between
-
-class APIUser(HttpUser):
-    wait_time = between(1, 3)
-    
-    @task
-    def test_users(self):
-        self.client.get("/users")
-        """,
-        "test_data.py": """
-class TestDataGenerator:
-    def generate_user_data(self):
-        return {"username": "testuser", "email": "test@example.com"}
-        """,
-        "config.py": """
-API_BASE_URL = "https://api.example.com"
-        """,
-        "requirements.txt": """
-locust>=2.0.0
-requests>=2.28.0
-        """,
-    }
-
-
-@pytest.fixture
-def mock_file_system(temp_dir):
-    """Mock file system operations for testing."""
-
-    def mock_write_file(path: Path, content: str):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-
-    def mock_read_file(path: Path) -> str:
-        return path.read_text()
-
-    return {
-        "write_file": mock_write_file,
-        "read_file": mock_read_file,
-        "temp_dir": temp_dir,
-    }
-
-
-@pytest.fixture
-def mock_jinja_template():
-    """Mock Jinja2 template for testing."""
-    mock_template = Mock()
-    mock_template.render.return_value = "Generated content from template"
-    return mock_template
-
-
-@pytest.fixture
-def mock_jinja_env(mock_jinja_template):
-    """Mock Jinja2 environment for testing."""
-    mock_env = Mock()
-    mock_env.get_template.return_value = mock_jinja_template
-    return mock_env
-
-
 @pytest.fixture(autouse=True)
 def setup_logging():
     """Setup logging for tests."""
     import logging
 
     logging.basicConfig(level=logging.DEBUG)
-
-
-@pytest.fixture
-def sample_yaml_schema():
-    """Sample OpenAPI schema in YAML format."""
-    return """
-openapi: 3.0.0
-info:
-  title: Test API
-  version: 1.0.0
-  description: A test API for load testing
-servers:
-  - url: https://api.example.com/v1
-paths:
-  /health:
-    get:
-      operationId: healthCheck
-      summary: Health check
-      responses:
-        '200':
-          description: Service is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
-"""
-
-
-@pytest.fixture
-def ai_enhancement_config():
-    """Sample AI enhancement configuration."""
-    from devdox_ai_locust.hybrid_loctus_generator import AIEnhancementConfig
-
-    return AIEnhancementConfig(
-        model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        max_tokens=4000,
-        temperature=0.3,
-        timeout=30,
-        enhance_workflows=True,
-        enhance_test_data=True,
-        enhance_validation=True,
-        create_domain_flows=True,
-        update_main_locust=True,
-    )

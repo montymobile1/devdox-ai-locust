@@ -44,7 +44,9 @@ dependencies = [
     "together==1.5.17",
     "jinja2>=3.0.0",
     "black==25.1.0",
-    "pydantic-settings==2.10.1"
+    "pydantic-settings==2.10.1",
+    "aiofiles>=25.1.0",
+    "pytest-asyncio>=1.3.0",
 ]
 
 # Optional dependencies for different features
@@ -101,7 +103,21 @@ exclude = ["tests*"]
 
 
 [tool.setuptools.package-data]
-devdox_ai_locust = ["schemas/*.json", "templates/*.j2","templates/mongo/*","prompt/*.j2", "py.typed","*.j2"]
+devdox_ai_locust = [
+    "schemas/*.json",
+    "templates/*.j2",
+    "templates/mongo/*",
+    "templates/modular/*.j2",
+    "templates/data/*.j2",
+    "templates/scenarios/*.j2",
+    "templates/auth/*.j2",
+    "templates/workflows/*.j2",
+    "prompt/*.j2",
+    "prompt/data/*.j2",
+    "prompt/scenarios/*.j2",
+    "py.typed",
+    "*.j2"
+]
 
 # flake8 configuration (legacy - remove if using ruff)
 [tool.flake8]
@@ -169,7 +185,7 @@ ignore_missing_imports = true
 # Pytest configuration
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --strict-markers --strict-config"
+addopts = "-ra -q --strict-markers --strict-config --ignore=tests/live"
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
