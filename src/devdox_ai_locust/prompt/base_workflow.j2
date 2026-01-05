@@ -17,32 +17,29 @@ STRICT REQUIREMENTS:
 3. AUTHENTICATION INTEGRATION STRATEGY:
    Check Authentication Endpoints: {{ auth_endpoints }}
 
-   **Step 1: Analyze base_workflow.py for existing authentication:**
-   - Parse base_workflow content for existing login/logout/auth methods
-   - Check if BaseTaskMethods or BaseAPIUser already handle authentication
-   - Identify existing token management patterns
+   **CRITICAL: `login_and_get_token` and `logout_session` are NOT defined in parent classes.**
+   These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
 
-   **Step 2: Authentication Decision Logic:**
+   **Step 1: Check if workflow class needs authentication methods**
+   - If auth endpoints exist and the workflow class doesn't have auth methods, ADD them
+   - Define login_and_get_token() and logout_session() in the workflow class
+   - Call them via `self` in on_start/on_stop
 
-   **IF base_workflow.py contains authentication methods:**
+   **Step 2: Correct Implementation Pattern:**
+
 ```python
-   # INHERIT authentication from base classes
-   class YourWorkflowTaskMethods(BaseTaskMethods, SequentialTaskSet):
+   class YourWorkflowTaskMethods(SequentialTaskSet, BaseTaskMethods):
+       """Task methods with authentication support"""
+
        def on_start(self):
-           super().on_start()  # Uses base auth
-           logger.info("Using inherited authentication from base workflow")
+           """Initialize session and authenticate"""
+           super().on_start()  # Calls BaseTaskMethods.on_start() for setup
+           self.login_and_get_token()  # Call via self - defined in THIS class
 
        def on_stop(self):
-           super().on_stop()  # Uses base cleanup
-```
-
-   **IF base_workflow.py lacks authentication AND auth endpoints exist:**
-```python
-   # ADD authentication to workflow-specific class (NOT BaseTaskMethods)
-   class YourWorkflowTaskMethods(BaseTaskMethods, SequentialTaskSet):
-       def on_start(self):
-           super().on_start()  # Keep base functionality
-           self.login_and_get_token()  # Add auth for this workflow
+           """Cleanup session"""
+           self.logout_session()  # Call via self - defined in THIS class
+           super().on_stop()
 
        def login_and_get_token(self):
            """Login and store JWT/Bearer token for API requests"""
@@ -52,7 +49,7 @@ STRICT REQUIREMENTS:
                # Use actual login schema from auth endpoints
            }
            with self.client.post("/login", json=login_data, catch_response=True) as response:
-               #use actual endpoint from login endpoint
+               # Use actual endpoint from login endpoint
                if response.status_code == 200:
                    response_data = response.json()
                    # Extract token from response (adapt to actual response structure)
@@ -77,7 +74,7 @@ STRICT REQUIREMENTS:
            """Logout and clear authentication token"""
            if hasattr(self, 'auth_token') and self.auth_token:
                with self.client.post("/logout", catch_response=True) as response:
-                   #use actual endpoint from logout endpoint
+                   # Use actual endpoint from logout endpoint
                    if response.status_code in [200, 204]:
                        self.auth_token = None
                        # Remove auth header
@@ -86,21 +83,15 @@ STRICT REQUIREMENTS:
                        response.success()
                    else:
                        response.failure(f"Logout failed: {response.status_code}")
+```
 
-       def handle_401_retry(self, method, path, **kwargs):
-           """Handle 401 responses with automatic re-authentication"""
-           response = self.make_request(method, path, **kwargs)
-
-           # Check if response indicates auth failure
-           if (hasattr(response, 'status_code') and response.status_code == 401) or \
-              (isinstance(response, dict) and response.get('status_code') == 401):
-               logger.warning(f"401 Unauthorized - re-authenticating and retrying {method} {path}")
-               # Re-authenticate
-               self.login_and_get_token()
-               # Retry original request
-               response = self.make_request(method, path, **kwargs)
-
-           return response
+   **WRONG PATTERN - DO NOT USE:**
+```python
+   # WRONG - these methods don't exist in parent classes!
+   def on_start(self):
+       super().on_start()
+       if hasattr(super(), 'login_and_get_token'):  # WRONG
+           super().login_and_get_token()  # WRONG - will cause IDE error
 ```
 
 4. TASK METHOD ENHANCEMENT PATTERN:

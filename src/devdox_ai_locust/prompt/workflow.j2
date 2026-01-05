@@ -1,20 +1,41 @@
 CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
-{if auth_endpoints}
-**CRITICAL: Authentication Method Reuse**
+{% if auth_endpoints %}
+**CRITICAL: Authentication Method Implementation**
 
-Before generating ANY authentication methods:
+IMPORTANT: `login_and_get_token` and `logout_session` are NOT defined in parent classes (BaseTaskMethods or SequentialTaskSet).
+These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
 
-1. **Check base_workflow.py content** to detect existing auth methods to import and call them instead of generating new ones of endpoints
+Before generating authentication methods:
 
-2. **IF base_workflow has auth methods and the sent file is not base_workflow.py **:
-   - **DO NOT** generate new login/logout methods
-   - **INHERIT** from base workflow class
-   - **CALL** super().method_name() in on_start/on_stop
+1. **Check if the current workflow file already defines login/logout methods**
 
-3. **IF base_workflow lacks auth methods AND auth endpoints exist**:
-   - **ONLY THEN** generate new auth methods
-"""
-{endif}
+2. **IF the workflow class already defines auth methods**:
+   - Use `self.login_and_get_token()` in on_start()
+   - Use `self.logout_session()` in on_stop()
+   - NEVER call `super().login_and_get_token()` - this method does not exist in parent classes
+
+3. **IF the workflow class lacks auth methods AND auth endpoints exist**:
+   - ADD login_and_get_token() and logout_session() methods to the workflow class
+   - Call them via `self` in on_start/on_stop
+
+CORRECT PATTERN:
+```python
+def on_start(self):
+    super().on_start()  # Only calls BaseTaskMethods.on_start()
+    self.login_and_get_token()  # Call via self, NOT super()
+
+def on_stop(self):
+    self.logout_session()  # Call via self, NOT super()
+    super().on_stop()
+```
+
+WRONG PATTERN (DO NOT USE):
+```python
+# WRONG - login_and_get_token does not exist in parent classes
+if hasattr(super(), 'login_and_get_token'):
+    super().login_and_get_token()
+```
+{% endif %}
 TASK: Enhance this Locust workflow file with COMPREHENSIVE test scenarios and LOGICAL TASK ORDERING.
 STRICT REQUIREMENTS:
         1. ONLY use these exact API endpoints from OpenAPI spec:
@@ -22,17 +43,17 @@ STRICT REQUIREMENTS:
 
          2. Authentication Management:
         {{ auth_endpoints }}
-        Since BASE WORKFLOW: {{base_workflow}} with path base_workflow.py is provided, use existing authentication methods from base_workflow:
 
-            - Check if base_workflow contains login/authentication methods and USE those instead of creating new ones
+        IMPORTANT: BaseTaskMethods (from base_workflow.py) does NOT define login_and_get_token or logout_session.
+        These methods must be defined in each workflow class that needs authentication.
 
-            - If auth endpoints exist but no base_workflow auth methods, then ADD login task at beginning
+            - If auth endpoints exist, define login_and_get_token() and logout_session() in the workflow class
 
-            - Implement 401 retry logic using base_workflow authentication methods when available
+            - Call these methods via `self` (e.g., self.login_and_get_token()), NOT via super()
 
-            - If base_workflow has logout methods, use those; otherwise ADD logout task if logout endpoints exist
+            - Use handle_401_retry() from BaseTaskMethods for automatic re-authentication on 401 responses
 
-            - AVOID creating redundant authentication tasks if base_workflow already handles auth
+            - NEVER call super().login_and_get_token() - this method does not exist in parent classes
         3. PRESERVE EXISTING STRUCTURE:
            - Keep ALL existing @task methods, classes, and functions
            - DO NOT remove any existing functionality
@@ -498,12 +519,13 @@ STRICT REQUIREMENTS:
     19. **BASE WORKFLOW INTEGRATION**:
 
         Since base_workflow.py is provided, maximize reuse and avoid duplication:
-        **A. Authentication Reuse:**
+        **A. Authentication Implementation:**
 
-        - Inspect base_workflow for existing login/authenticate/logout methods
-        - Use base_workflow auth methods in on_start() if available
-        - Only create new auth tasks if base_workflow lacks auth and endpoints exist
-        - Inherit authentication headers/tokens from base_workflow methods
+        IMPORTANT: BaseTaskMethods does NOT define login_and_get_token or logout_session.
+        - Define login_and_get_token() and logout_session() in YOUR workflow class
+        - Call via self.login_and_get_token(), NOT super().login_and_get_token()
+        - Use handle_401_retry() from BaseTaskMethods for 401 retry logic
+        - Store auth tokens in self.auth_token and update self.default_headers
 
 
 
@@ -532,17 +554,14 @@ STRICT REQUIREMENTS:
            - Store document IDs for API operations
     {% endif %}
 
-    **Authentication Phase(using base_workflow methods when available):**
+    **Authentication Phase:**
+    NOTE: login_and_get_token() and logout_session() must be defined in the workflow class itself.
+    Call via self.login_and_get_token() in on_start(), NOT super().login_and_get_token().
 
-    - Use existing base_workflow.login() method if available (weight: 10)
-
-    - If no base_workflow auth, then add_login_valid_credentials (weight: 10)
-
-    - login_invalid_credentials (weight: 3) - expect 401 (only if creating new auth)
-
-    - login_malformed_request (weight: 2) - expect 400 (only if creating new auth)
-
-    Note: Method names will be dynamically extracted from base_workflow.py content using regex patterns
+    - Define login_and_get_token() method in workflow class
+    - Call self.login_and_get_token() in on_start() (weight: 10)
+    - login_invalid_credentials (weight: 3) - expect 401
+    - login_malformed_request (weight: 2) - expect 400
     **Creation Phase:**
     - add_reseller_valid_complete_data (weight: 10) → store reseller_id
     - add_reseller_minimal_data (weight: 8) → store reseller_id
@@ -585,10 +604,13 @@ STRICT REQUIREMENTS:
             - Verify database consistency after all operations
     {% endif %}
 
-    **Logout Phase (using base_workflow methods when available):**
-    - Use existing base_workflow.logout() method if available (weight: 5)
-    - If no base_workflow logout, then add logout_valid_session (weight: 5)
-    - logout_expired_session (weight: 2) - expect 401 (only if creating new logout)
+    **Logout Phase:**
+    NOTE: logout_session() must be defined in the workflow class itself.
+    Call via self.logout_session() in on_stop(), NOT super().logout_session().
+
+    - Define logout_session() method in workflow class
+    - Call self.logout_session() in on_stop() (weight: 5)
+    - logout_expired_session (weight: 2) - expect 401
 
     VALIDATION RULES:
         - Every @task method must correspond to an actual OpenAPI endpoint
