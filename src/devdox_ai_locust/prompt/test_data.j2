@@ -4,12 +4,12 @@ You are enhancing a TestDataGenerator class for Locust load testing.
 {{ constraints }}
 {% endif %}
 
-**EXISTING CODE**:
+**EXISTING TestDataGenerator CLASS** (for reference only - DO NOT reproduce this):
 ```python
 {{base_content}}
 ```
 
-API Context:
+**API Context**:
 - Endpoints: [{% for ep in endpoints -%}
 "{{ ep.method }} {{ ep.path }}"{% if not loop.last %}, {% endif %}{% endfor -%}]
 - Schemas: {{ schemas_info }}
@@ -20,11 +20,69 @@ API Context:
 - mongo_data_provider.get_multiple_documents(collection, count, query)
 {% endif %}
 
-**YOUR TASK**:
-Enhance this file by ADDING new domain-specific methods. You may:
-- ADD new methods for generating test data specific to these endpoints
-- ADD MongoDB integration methods if MongoDB is available
-- IMPROVE existing method implementations (keep their signatures!)
+---
 
-Output the COMPLETE enhanced Python file wrapped in <code></code> tags.
-Remember: Protected symbols MUST remain in the output with unchanged signatures.
+## YOUR TASK: Generate ONLY NEW METHODS
+
+Return **ONLY** the new methods to ADD to TestDataGenerator. Do NOT return the full class.
+
+### CRITICAL OUTPUT RULES:
+
+1. **OUTPUT FORMAT**: Wrap your response in `<new_methods>` tags:
+   ```
+   <new_methods>
+   def generate_user_data(self):
+       """Generate realistic user data for testing."""
+       return {"name": self.fake.name(), "email": self.fake.email()}
+
+   def generate_order_data(self):
+       """Generate order data with valid product references."""
+       return {"product_id": self.generate_id(), "quantity": random.randint(1, 10)}
+   </new_methods>
+   ```
+
+2. **ONLY INCLUDE**:
+   - New method definitions (def method_name(self, ...):)
+   - Docstrings for each method
+   - Method body with implementation
+
+3. **DO NOT INCLUDE**:
+   ❌ Class definitions (no `class TestDataGenerator:`)
+   ❌ Import statements (no `import` or `from`)
+   ❌ Existing methods that are already in the class
+   ❌ Comments outside of methods
+   ❌ Any code that already exists above
+   ❌ Explanatory text outside the tags
+
+4. **METHOD REQUIREMENTS**:
+   - Each method must be properly indented (4 spaces)
+   - Use `self.fake` for Faker data (already available)
+   - Use `self.generate_id()`, `self.generate_string()` etc. (already exist)
+   - Return dictionaries or appropriate data types
+
+### EXAMPLE OUTPUT:
+
+<new_methods>
+    def generate_product_data(self):
+        """Generate realistic product data for API testing."""
+        return {
+            "name": self.fake.catch_phrase(),
+            "price": round(random.uniform(9.99, 999.99), 2),
+            "sku": self.generate_string(10),
+            "category": random.choice(["electronics", "clothing", "food"])
+        }
+
+    def generate_address_data(self):
+        """Generate address data for shipping/billing."""
+        return {
+            "street": self.fake.street_address(),
+            "city": self.fake.city(),
+            "zip": self.fake.postcode(),
+            "country": self.fake.country_code()
+        }
+</new_methods>
+
+---
+
+Now generate new methods based on the API endpoints and schemas provided above.
+Return ONLY the new methods in <new_methods> tags. Nothing else.

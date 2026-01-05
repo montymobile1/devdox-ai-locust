@@ -1371,9 +1371,17 @@ class HybridLocustGenerator:
         return [
             {
                 "role": "system",
-                "content": "You are an expert Python developer specializing in Locust load testing. Generate clean, production-ready code with proper error handling. "
-                "Always return your code wrapped in <code></code> tags with no explanations outside the tags and DO NOT TRUNCATE THE CODE. "
-                "Format: <code>your_python_code_here</code>",
+                "content": (
+                    "You are an expert Python developer specializing in Locust load testing. "
+                    "Follow the output format instructions EXACTLY as specified in the prompt. "
+                    "CRITICAL RULES:\n"
+                    "1. Return ONLY what is requested - no extra code, no explanations\n"
+                    "2. Use the exact tag format specified (e.g., <new_methods> or <code>)\n"
+                    "3. DO NOT include import statements unless explicitly requested\n"
+                    "4. DO NOT include class definitions unless explicitly requested\n"
+                    "5. DO NOT add code that already exists in the provided context\n"
+                    "6. Keep output focused and minimal - quality over quantity"
+                ),
             },
             {"role": "user", "content": prompt},
         ]
@@ -1437,59 +1445,160 @@ class HybridLocustGenerator:
         return ""
 
     def extract_code_from_response(self, response_text: str) -> str:
-        # Extract content between <code> tags
-        pattern = r"<code>(.*?)</code>"
-        matches = re.findall(pattern, response_text, re.DOTALL)
+        """
+        Extract code from AI response, supporting multiple tag formats.
 
-        if not matches:
-            logger.warning("No <code> tags found, using full response")
-            return response_text.strip()
+        Priority:
+        1. <new_methods> tags (for methods-only output)
+        2. <code> tags (for full code output)
+        3. Fall back to full response if no tags found
+        """
+        # First try <new_methods> tags (preferred for enhancement prompts)
+        new_methods_pattern = r"<new_methods>(.*?)</new_methods>"
+        new_methods_matches = re.findall(new_methods_pattern, response_text, re.DOTALL)
 
-        content = max(matches, key=len).strip()
+        if new_methods_matches:
+            content = max(new_methods_matches, key=len).strip()
+            if content and len(content) > 10:
+                logger.debug(f"Extracted {len(content)} chars from <new_methods> tags")
+                return content
 
-        # Content too short - use full response
-        if not content or len(content) <= 10:
-            logger.warning(
-                f"Code in tags too short ({len(content)} chars), using full response"
-            )
-            return response_text.strip()
+        # Then try <code> tags
+        code_pattern = r"<code>(.*?)</code>"
+        code_matches = re.findall(code_pattern, response_text, re.DOTALL)
 
-        logger.debug(f"Extracted {len(content)} chars from <code> tags")
-        return str(content)
+        if code_matches:
+            content = max(code_matches, key=len).strip()
+            if content and len(content) > 10:
+                logger.debug(f"Extracted {len(content)} chars from <code> tags")
+                return content
+
+        # No valid tags found
+        logger.warning("No valid <new_methods> or <code> tags found, using full response")
+        return response_text.strip()
 
     def _clean_ai_response(self, content: str) -> str:
-        """Clean and validate AI response"""
-        # Remove markdown code blocks if present
-        if content.startswith("```python") and content.endswith("```"):
-            content = content[9:-3].strip()
-        elif content.startswith("```") and content.endswith("```"):
-            content = content[3:-3].strip()
+        """
+        Clean and validate AI response.
 
-        # Remove any explanatory text before/after code
+        With the new methods-only prompt format, we expect cleaner output.
+        This function:
+        - Removes markdown code blocks
+        - Strips obvious non-code text
+        - Removes unwanted class definitions that snuck through
+        """
+        if not content:
+            return ""
+
+        # Remove markdown code blocks if present
+        if content.startswith("```python"):
+            content = content[9:]
+        elif content.startswith("```"):
+            content = content[3:]
+
+        if content.endswith("```"):
+            content = content[:-3]
+
+        content = content.strip()
+
+        # Remove any explanatory text before code starts
         lines = content.split("\n")
         start_idx = 0
-        end_idx = len(lines)
 
-        # Find actual Python code start
         for i, line in enumerate(lines):
-            if line.strip().startswith(
-                ("import ", "from ", "class ", "def ", '"""', "'''")
-            ):
+            stripped = line.strip()
+            # Look for start of actual Python code
+            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@")):
                 start_idx = i
                 break
 
-        # Find actual Python code end (remove trailing explanations)
+        # Remove trailing non-code text
+        end_idx = len(lines)
         for i in range(len(lines) - 1, -1, -1):
             line = lines[i].strip()
-            if (
-                line
-                and not line.startswith("#")
-                and not line.lower().startswith(("note:", "this", "the "))
-            ):
+            if line:
+                # Stop if we find actual code
+                if line.startswith(("return", "pass", "raise", ")", "]", "}")) or \
+                   "=" in line or "(" in line or line.startswith("#"):
+                    end_idx = i + 1
+                    break
+                # Skip obvious non-code endings
+                if line.lower().startswith(("note:", "this ", "the ", "---")):
+                    continue
                 end_idx = i + 1
                 break
 
-        return "\n".join(lines[start_idx:end_idx])
+        cleaned = "\n".join(lines[start_idx:end_idx])
+
+        # Remove unwanted class definitions that AI might have included despite instructions
+        cleaned = self._remove_unwanted_class_definitions(cleaned)
+
+        return cleaned
+
+    def _remove_unwanted_class_definitions(self, content: str) -> str:
+        """
+        Remove class definitions that shouldn't be in methods-only output.
+
+        When using methods-only prompts, the AI shouldn't return class definitions.
+        But if it does, this removes them while preserving methods.
+        """
+        if "class " not in content:
+            return content
+
+        # Classes that should NEVER appear in enhanced output (they exist elsewhere)
+        forbidden_classes = {
+            "TestDataGenerator",
+            "LoadTestConfig",
+            "ResponseValidator",
+            "RequestLogger",
+            "PerformanceMonitor",
+            "DataManager",
+        }
+
+        lines = content.split("\n")
+        result_lines = []
+        skip_until_dedent = False
+        class_indent = 0
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Check if this is a class definition we should remove
+            if stripped.startswith("class "):
+                class_match = re.match(r"class\s+(\w+)", stripped)
+                if class_match:
+                    class_name = class_match.group(1)
+                    if class_name in forbidden_classes:
+                        # Skip this entire class
+                        skip_until_dedent = True
+                        class_indent = len(line) - len(line.lstrip())
+                        logger.info(f"Removing unwanted class '{class_name}' from AI output")
+                        i += 1
+                        continue
+
+            # If we're skipping a class, check for end of class
+            if skip_until_dedent:
+                if stripped:
+                    current_indent = len(line) - len(line.lstrip())
+                    if current_indent <= class_indent:
+                        # We've exited the class
+                        skip_until_dedent = False
+                        # Check if this new line is also a forbidden class
+                        if stripped.startswith("class "):
+                            class_match = re.match(r"class\s+(\w+)", stripped)
+                            if class_match and class_match.group(1) in forbidden_classes:
+                                i += 1
+                                continue
+                        result_lines.append(line)
+                i += 1
+                continue
+
+            result_lines.append(line)
+            i += 1
+
+        return "\n".join(result_lines)
 
     def _analyze_api_domain(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]
