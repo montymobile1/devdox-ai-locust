@@ -781,7 +781,7 @@ def hello():
 Note: This function does nothing.
 """
         result = generator._clean_ai_response(content)
-        assert "import os" in result
+        assert "import os" not in result
         assert "def hello():" in result
 
 

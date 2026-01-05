@@ -966,11 +966,11 @@ class TestShowRunInstructionsEdgeCases:
                 host="http://localhost:8000",
             )
 
-            # Should print a Panel with instructions
-            mock_console.print.assert_called()
-            # Panel object was passed
-            calls_str = str(mock_console.print.call_args_list)
-            assert "Panel" in calls_str
+            calls = ["".join(call.args) for call in mock_console.print.call_args_list if call.args]
+            assert any("🚀 Next Steps" in text for text in calls)
+            assert any("1) Prepare your environment" in text for text in calls)
+            assert any("2) Choose how you want to run" in text for text in calls)
+            assert any("my_tests.py" in text for text in calls)
 
     def test_handles_empty_directory(self, temp_dir):
         """Should handle directory with no Python files."""

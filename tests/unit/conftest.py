@@ -3,20 +3,26 @@ Pytest configuration and shared fixtures for unit tests.
 """
 
 import asyncio
+import sys
 import pytest
 from unittest.mock import Mock, AsyncMock
 from pathlib import Path
 import tempfile
 import shutil
 
-from devdox_ai_locust.utils.open_ai_parser import (
+ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from devdox_ai_locust.utils.open_ai_parser import (  # noqa: E402
     Endpoint,
     Parameter,
     RequestBody,
     Response,
     ParameterType,
 )
-from devdox_ai_locust.schemas.processing_result import SwaggerProcessingRequest
+from devdox_ai_locust.schemas.processing_result import SwaggerProcessingRequest  # noqa: E402
 
 
 @pytest.fixture(scope="session")
