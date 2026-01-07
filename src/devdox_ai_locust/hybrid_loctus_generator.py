@@ -26,8 +26,12 @@ logger = logging.getLogger(__name__)
 
 UTILS_FILE = "utils.py"
 CLASS_PREFIX = "class "
+TEST_DATA_FILE = "test_data.py"
+METHOD_PATTERN = (
+    r"(def\s+(\w+)\s*\([^)]*\).*?(?=\ndef\s|\Z))"
+)  # NOSONAR - proven valid by tests test_regex_consumes_body_not_zero_with_dotall and test_regex_can_match_zero_between_def_and_boundary.
 
-test_data_file_path = "test_data.py"
+test_data_file_path = TEST_DATA_FILE
 data_provider_path = "data_provider.py"
 base_workflow_path = "base_workflow.py"
 workflow_jinja_path = "workflow.j2"
@@ -35,7 +39,7 @@ workflow_jinja_path = "workflow.j2"
 # Critical classes that MUST exist in each file after AI enhancement
 # If these are missing, the AI has corrupted the file and we must use the original
 CRITICAL_CLASSES = {
-    "test_data.py": ["TestDataGenerator"],
+    TEST_DATA_FILE: ["TestDataGenerator"],
     UTILS_FILE: [
         "ResponseValidator",
         "RequestLogger",
@@ -46,7 +50,7 @@ CRITICAL_CLASSES = {
 
 # Critical functions that MUST exist in each file
 CRITICAL_FUNCTIONS = {
-    "test_data.py": ["generate_json_data", "generate_string", "generate_id"],
+    TEST_DATA_FILE: ["generate_json_data", "generate_string", "generate_id"],
     UTILS_FILE: ["validate_response", "log_request"],
 }
 
@@ -85,31 +89,37 @@ class SafeCodeMerger:
         Returns:
             Set of class names that are imported
         """
-        imported_classes: Set[str] = set()
-
         try:
             tree = ast.parse(code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom):
-                    for alias in node.names:
-                        # Check if it looks like a class (starts with uppercase)
-                        name = alias.asname if alias.asname else alias.name
-                        if name and name[0].isupper():
-                            imported_classes.add(name)
-                elif isinstance(node, ast.Import):
-                    for alias in node.names:
-                        name = alias.asname if alias.asname else alias.name
-                        if name and name[0].isupper():
-                            imported_classes.add(name)
         except SyntaxError:
-            # Fallback to regex for imports
-            # Match: from module import ClassName
-            from_imports = re.findall(r"from\s+\S+\s+import\s+([A-Z]\w+)", code)
-            imported_classes.update(from_imports)
-            # Match: from module import ClassName as Alias
-            aliased_imports = re.findall(r"from\s+\S+\s+import\s+\w+\s+as\s+([A-Z]\w+)", code)
-            imported_classes.update(aliased_imports)
+            return SafeCodeMerger._get_imported_classes_regex(code)
 
+        return SafeCodeMerger._get_imported_classes_ast(tree)
+
+    @staticmethod
+    def _get_imported_classes_ast(tree: ast.AST) -> Set[str]:
+        imported_classes: Set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ImportFrom, ast.Import)):
+                imported_classes.update(SafeCodeMerger._extract_class_imports(node))
+        return imported_classes
+
+    @staticmethod
+    def _extract_class_imports(node: ast.AST) -> Set[str]:
+        imported_classes: Set[str] = set()
+        for alias in getattr(node, "names", []):
+            name = alias.asname if alias.asname else alias.name
+            if name and name[0].isupper():
+                imported_classes.add(name)
+        return imported_classes
+
+    @staticmethod
+    def _get_imported_classes_regex(code: str) -> Set[str]:
+        imported_classes: Set[str] = set()
+        from_imports = re.findall(r"from\s+\S+\s+import\s+([A-Z]\w+)", code)
+        imported_classes.update(from_imports)
+        aliased_imports = re.findall(r"from\s+\S+\s+import\s+\w+\s+as\s+([A-Z]\w+)", code)
+        imported_classes.update(aliased_imports)
         return imported_classes
 
     @staticmethod
@@ -326,8 +336,7 @@ class SafeCodeMerger:
     def _extract_methods_regex(ai_code: str, existing_methods: Set[str]) -> str:
         """Fallback method extraction using regex when AST fails."""
         # Match method definitions
-        pattern = r"(def\s+(\w+)\s*\([^)]*\).*?(?=\ndef\s|\Z))"
-        matches = re.findall(pattern, ai_code, re.DOTALL)
+        matches = re.findall(METHOD_PATTERN, ai_code, re.DOTALL)
 
         new_methods = []
         for full_match, method_name in matches:
@@ -1726,33 +1735,23 @@ class HybridLocustGenerator:
             line = lines[i]
             stripped = line.strip()
 
-            # Check if this is a class definition we should remove
-            if stripped.startswith(CLASS_PREFIX):
-                class_match = re.match(r"class\s+(\w+)", stripped)
-                if class_match:
-                    class_name = class_match.group(1)
-                    if class_name in forbidden_classes:
-                        # Skip this entire class
-                        skip_until_dedent = True
-                        class_indent = len(line) - len(line.lstrip())
-                        logger.info(f"Removing unwanted {CLASS_PREFIX}{class_name} from AI output")
-                        i += 1
-                        continue
-
-            # If we're skipping a class, check for end of class
             if skip_until_dedent:
-                if stripped:
-                    current_indent = len(line) - len(line.lstrip())
-                    if current_indent <= class_indent:
-                        # We've exited the class
-                        skip_until_dedent = False
-                        # Check if this new line is also a forbidden class
-                        if stripped.startswith(CLASS_PREFIX):
-                            class_match = re.match(r"class\s+(\w+)", stripped)
-                            if class_match and class_match.group(1) in forbidden_classes:
-                                i += 1
-                                continue
-                        result_lines.append(line)
+                skip_until_dedent, class_indent, should_skip_line = self._handle_skipped_class(
+                    line, stripped, class_indent, forbidden_classes
+                )
+                if should_skip_line:
+                    i += 1
+                    continue
+                if not skip_until_dedent and stripped:
+                    result_lines.append(line)
+                i += 1
+                continue
+
+            class_name = self._get_class_name_from_line(stripped)
+            if class_name and class_name in forbidden_classes:
+                skip_until_dedent = True
+                class_indent = len(line) - len(line.lstrip())
+                logger.info(f"Removing unwanted {CLASS_PREFIX}{class_name} from AI output")
                 i += 1
                 continue
 
@@ -1760,6 +1759,31 @@ class HybridLocustGenerator:
             i += 1
 
         return "\n".join(result_lines)
+
+    def _get_class_name_from_line(self, stripped: str) -> Optional[str]:
+        if not stripped.startswith(CLASS_PREFIX):
+            return None
+        class_match = re.match(r"class\s+(\w+)", stripped)
+        if class_match:
+            return class_match.group(1)
+        return None
+
+    def _handle_skipped_class(
+        self,
+        line: str,
+        stripped: str,
+        class_indent: int,
+        forbidden_classes: Set[str],
+    ) -> Tuple[bool, int, bool]:
+        if not stripped:
+            return True, class_indent, True
+        current_indent = len(line) - len(line.lstrip())
+        if current_indent > class_indent:
+            return True, class_indent, True
+        class_name = self._get_class_name_from_line(stripped)
+        if class_name and class_name in forbidden_classes:
+            return True, current_indent, True
+        return False, class_indent, False
 
     def _analyze_api_domain(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]
@@ -2010,28 +2034,14 @@ class HybridLocustGenerator:
         """
         missing_elements = []
 
-        # Check critical classes
-        if filename in CRITICAL_CLASSES:
-            for class_name in CRITICAL_CLASSES[filename]:
-                # Look for class definition pattern
-                class_pattern = rf"class\s+{class_name}\s*[:\(]"
-                if not re.search(class_pattern, enhanced_content):
-                    missing_elements.append(f"{CLASS_PREFIX}{class_name}")
-                    logger.warning(
-                        f"AI corrupted {filename}: missing critical class '{class_name}'"
-                    )
-
-        # Check critical functions (only if they exist in original)
-        if filename in CRITICAL_FUNCTIONS:
-            for func_name in CRITICAL_FUNCTIONS[filename]:
-                func_pattern = rf"def\s+{func_name}\s*\("
-                # Only check if the function exists in original
-                if re.search(func_pattern, original_content):
-                    if not re.search(func_pattern, enhanced_content):
-                        missing_elements.append(f"def {func_name}")
-                        logger.warning(
-                            f"AI corrupted {filename}: missing critical function '{func_name}'"
-                        )
+        missing_elements.extend(
+            self._find_missing_critical_classes(filename, enhanced_content)
+        )
+        missing_elements.extend(
+            self._find_missing_critical_functions(
+                filename, enhanced_content, original_content
+            )
+        )
 
         if missing_elements:
             logger.error(
@@ -2040,20 +2050,60 @@ class HybridLocustGenerator:
             )
             return False, original_content, missing_elements
 
-        # Additional validation: enhanced content shouldn't be dramatically smaller
+        if self._is_content_too_small(original_content, enhanced_content, filename):
+            return False, original_content, ["content_too_small"]
+
+        return True, enhanced_content, []
+
+    def _find_missing_critical_classes(
+        self,
+        filename: str,
+        enhanced_content: str,
+    ) -> List[str]:
+        missing = []
+        for class_name in CRITICAL_CLASSES.get(filename, []):
+            class_pattern = rf"{CLASS_PREFIX}{class_name}\s*[:\(]"
+            if not re.search(class_pattern, enhanced_content):
+                missing.append(f"{CLASS_PREFIX}{class_name}")
+                logger.warning(
+                    f"AI corrupted {filename}: missing critical class '{class_name}'"
+                )
+        return missing
+
+    def _find_missing_critical_functions(
+        self,
+        filename: str,
+        enhanced_content: str,
+        original_content: str,
+    ) -> List[str]:
+        missing = []
+        for func_name in CRITICAL_FUNCTIONS.get(filename, []):
+            func_pattern = rf"def\s+{func_name}\s*\("
+            if re.search(func_pattern, original_content) and not re.search(
+                func_pattern, enhanced_content
+            ):
+                missing.append(f"def {func_name}")
+                logger.warning(
+                    f"AI corrupted {filename}: missing critical function '{func_name}'"
+                )
+        return missing
+
+    def _is_content_too_small(
+        self,
+        original_content: str,
+        enhanced_content: str,
+        filename: str,
+    ) -> bool:
         original_lines = len(original_content.strip().split("\n"))
         enhanced_lines = len(enhanced_content.strip().split("\n"))
-
-        # If enhanced is less than 30% of original size, it's likely corrupted
         if original_lines > 50 and enhanced_lines < original_lines * 0.3:
             logger.error(
                 f"AI enhancement drastically reduced {filename} "
                 f"({original_lines} -> {enhanced_lines} lines). "
                 f"Falling back to original template code."
             )
-            return False, original_content, ["content_too_small"]
-
-        return True, enhanced_content, []
+            return True
+        return False
 
     def _safe_enhance_file(
         self,
@@ -2096,7 +2146,7 @@ class HybridLocustGenerator:
         )
 
         # Final validation: ensure critical elements still exist
-        is_valid, final_content, missing = self._validate_critical_elements(
+        is_valid, final_content, _ = self._validate_critical_elements(
             filename, merged_content, original_content
         )
 

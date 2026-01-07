@@ -1,5 +1,6 @@
 """Unit tests for HybridLocustGenerator helpers."""
 import io
+import re
 from unittest.mock import AsyncMock
 
 from devdox_ai_locust.hybrid_loctus_generator import (
@@ -7,6 +8,7 @@ from devdox_ai_locust.hybrid_loctus_generator import (
     SafeCodeMerger,
     format_auth_endpoints_for_prompt,
     CodebaseAwareness,
+    METHOD_PATTERN,
 )
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
 
@@ -99,7 +101,7 @@ def test_validation_and_path_helpers():
         "class PerformanceMonitor:\n    pass\n"
         "class DataManager:\n    pass\n"
     )
-    valid, content, missing = generator._validate_critical_elements(
+    valid, _, missing = generator._validate_critical_elements(
         "utils.py", enhanced, enhanced
     )
     assert valid is True
@@ -110,3 +112,31 @@ def test_validation_and_path_helpers():
 
     resources = generator._extract_resources_from_paths(["/api/v1/users/{id}", "/api/v1/orders"])
     assert "users" in resources
+
+
+def test_regex_consumes_body_not_zero_with_dotall():
+    ai_code = (
+        "def foo():\n"
+        "    x = 1\n"
+        "    return x\n"
+        "\n"
+        "def bar():\n"
+        "    return 2\n"
+    )
+
+    matches = re.findall(METHOD_PATTERN, ai_code, re.DOTALL)
+    full_match, name = matches[0]
+
+    assert name == "foo"
+    assert "return x" in full_match
+    assert len(full_match) > len("def foo():")
+
+
+def test_regex_can_match_zero_between_def_and_boundary():
+    ai_code = "def foo():\ndef bar():\n"
+
+    matches = re.findall(METHOD_PATTERN, ai_code, re.DOTALL)
+    full_match, name = matches[0]
+
+    assert name == "foo"
+    assert full_match == "def foo():"
