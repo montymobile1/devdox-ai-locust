@@ -361,6 +361,169 @@ def _finalize_patch_tracking(patch_tracker: Optional[PatchTracker]) -> None:
         )
 
 
+class _ProgressReporter:
+    def __init__(self, phase_info: Dict[str, Tuple[str, str, str]]):
+        self.phase_info = phase_info
+        self.start_gen_time = None
+        self.status: Optional[Status] = None
+        self.state = {
+            "phase": "INIT",
+            "message": "Initializing...",
+            "detail": "",
+            "progress": 0,
+            "files_written": 0,
+            "ai_calls": 0,
+            "last_printed_phase": "",
+        }
+
+    def start(self) -> None:
+        import time as time_module
+
+        self.start_gen_time = time_module.time()
+
+    def stop(self) -> None:
+        if self.status:
+            self.status.stop()
+
+    def progress_callback(self, phase: str, message: str, detail: str, pct: int) -> None:
+        if self.start_gen_time is None:
+            self.start()
+
+        self.state["phase"] = phase
+        self.state["message"] = message
+        self.state["detail"] = detail
+        self.state["progress"] = pct
+
+        self._update_status_text(phase, message, detail)
+
+        if self._track_progress_metrics(phase, detail):
+            return
+
+        if phase != self.state["last_printed_phase"] or phase in ("AI", "ERROR", "COMPLETE"):
+            self.state["last_printed_phase"] = phase
+            self._print_phase_update(phase, message, detail)
+            sys.stdout.flush()
+
+    def _update_status_text(self, phase: str, message: str, detail: str) -> None:
+        _, _, color = self.phase_info.get(phase, ("⏳", "", "white"))
+
+        if self.status is None:
+            self.status = console.status("[cyan]Preparing generation...[/cyan]", spinner="dots")
+            self.status.start()
+
+        status_text = f"[{color}]{message}[/]"
+        if detail:
+            status_text += f" [dim]→ {detail}{DIM}"
+        self.status.update(status=status_text)
+
+    def _print_phase_update(self, phase: str, message: str, detail: str) -> None:
+        import time as time_module
+
+        icon, _, color = self.phase_info.get(phase, ("⏳", "", "white"))
+        elapsed = time_module.time() - (self.start_gen_time or 0)
+        time_str = f"[dim][{elapsed:5.1f}s]{DIM}"
+        if phase == "COMPLETE":
+            console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
+            return
+        if phase == "ERROR":
+            console.print(f"{time_str} [{color}]{icon} {message}: {detail}[/{color}]")
+            return
+        if detail:
+            console.print(f"{time_str} [{color}]{icon} {message}[/{color}] [dim]→ {detail}{DIM}")
+            return
+        console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
+
+    def _track_progress_metrics(self, phase: str, detail: str) -> bool:
+        if phase == "AI":
+            self.state["ai_calls"] += 1
+            return False
+        if phase == "WRITE" and detail:
+            self.state["files_written"] += 1
+            if self.state["files_written"] % 10 == 0:
+                console.print(f"[dim]   💾 Written {self.state['files_written']} files...{DIM}")
+                sys.stdout.flush()
+            return True
+        return False
+
+
+def _print_generation_header() -> None:
+    console.print()
+    console.print("[bold blue]🚀 Generating Load Tests[/bold blue]")
+    console.print("[dim]─" * 50 + DIM)
+    sys.stdout.flush()
+
+
+def _create_modular_generator(
+    output_dir: Path,
+    api_key: str,
+    host: Optional[str],
+    auth: bool,
+    db_type: str,
+    retry_on_invalid: int,
+    progress_callback,
+    patch_tracker: Optional[PatchTracker],
+    custom_requirement: Optional[str],
+    progress_reporter: _ProgressReporter,
+) -> ModularGenerator:
+    progress_callback("INIT", "Initializing generator", "", 0)
+    try:
+        return ModularGenerator(
+            output_dir=str(output_dir),
+            api_key=api_key,
+            target_host=host or DEFAULT_HOST,
+            auth_enabled=auth,
+            db_type=db_type,
+            retry_on_invalid=retry_on_invalid,
+            progress_callback=progress_callback,
+            patch_tracker=patch_tracker,
+            custom_requirement=custom_requirement,
+        )
+    except Exception as e:
+        progress_reporter.stop()
+        console.print(f"[red]✗ Failed to initialize ModularGenerator: {e}[/red]")
+        raise
+
+
+async def _execute_generation(
+    generator: ModularGenerator,
+    endpoints: List[Endpoint],
+    schemas: Dict[str, Any],
+    api_info: Dict[str, Any],
+    auth_endpoints: List[str],
+    auth: bool,
+    progress_reporter: _ProgressReporter,
+) -> Dict[str, str]:
+    try:
+        return await generator.generate(
+            endpoints=endpoints,
+            schemas=schemas,
+            api_info=api_info,
+            auth_endpoints=auth_endpoints if auth else None,
+        )
+    except Exception as e:
+        console.print(f"[red]❌ Generation failed: {e}[/red]")
+        import traceback
+
+        console.print(f"[red]{traceback.format_exc()}[/red]")
+        raise
+    finally:
+        progress_reporter.stop()
+
+
+def _print_generation_summary(
+    progress_reporter: _ProgressReporter,
+    generated_files: Dict[str, str],
+) -> None:
+    import time as time_module
+
+    elapsed = time_module.time() - (progress_reporter.start_gen_time or 0)
+    console.print(f"[green]✅ Generated {len(generated_files)} files in {elapsed:.1f}s[/green]")
+    console.print(
+        f"[dim]   🤖 {progress_reporter.state['ai_calls']} AI calls  │  "
+        f"📄 {progress_reporter.state['files_written']} files written{DIM}"
+    )
+
+
 def _is_url(source: str) -> bool:
     """Check if the source is a URL or a file path"""
     source = source.strip()
@@ -449,10 +612,6 @@ async def _generate_modular_tests(
     This generator produces focused, single-responsibility files
     that are easier to maintain and enhance.
     """
-    from rich.text import Text
-    from rich.table import Table
-    import time as time_module
-
     # Phase icons and descriptions for visual feedback
     PHASE_INFO = {
         "INIT": ("🔧", "Initializing", "cyan"),
@@ -466,81 +625,8 @@ async def _generate_modular_tests(
         "ERROR": ("❌", "Error", "red"),
     }
 
-    # Current progress state
-    start_gen_time = time_module.time()
-    progress_state = {
-        "phase": "INIT",
-        "message": "Initializing...",
-        "detail": "",
-        "progress": 0,
-        "files_written": 0,
-        "ai_calls": 0,
-        "last_printed_phase": "",
-    }
-
-    status: Optional[Status] = None
-
-    def _update_status_text(
-        phase: str,
-        message: str,
-        detail: str,
-    ) -> None:
-        nonlocal status
-        icon, _, color = PHASE_INFO.get(phase, ("⏳", "", "white"))
-
-        if status is None:
-            status = console.status("[cyan]Preparing generation...[/cyan]", spinner="dots")
-            status.start()
-
-        if status:
-            status_text = f"[{color}]{message}[/]"
-            if detail:
-                status_text += f" [dim]→ {detail}{DIM}"
-            status.update(status=status_text)
-
-    def _print_phase_update(phase: str, message: str, detail: str) -> None:
-        icon, _, color = PHASE_INFO.get(phase, ("⏳", "", "white"))
-        elapsed = time_module.time() - start_gen_time
-        time_str = f"[dim][{elapsed:5.1f}s]{DIM}"
-        if phase == "COMPLETE":
-            console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
-            return
-        if phase == "ERROR":
-            console.print(f"{time_str} [{color}]{icon} {message}: {detail}[/{color}]")
-            return
-        if detail:
-            console.print(f"{time_str} [{color}]{icon} {message}[/{color}] [dim]→ {detail}{DIM}")
-            return
-        console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
-
-    def _track_progress_metrics(phase: str, detail: str) -> bool:
-        if phase == "AI":
-            progress_state["ai_calls"] += 1
-            return False
-        if phase == "WRITE" and detail:
-            progress_state["files_written"] += 1
-            if progress_state["files_written"] % 10 == 0:
-                console.print(f"[dim]   💾 Written {progress_state['files_written']} files...{DIM}")
-                sys.stdout.flush()
-            return True
-        return False
-
-    def progress_callback(phase: str, message: str, detail: str, pct: int) -> None:
-        """Callback for ModularGenerator progress updates - prints to console."""
-        progress_state["phase"] = phase
-        progress_state["message"] = message
-        progress_state["detail"] = detail
-        progress_state["progress"] = pct
-
-        _update_status_text(phase, message, detail)
-
-        if _track_progress_metrics(phase, detail):
-            return
-
-        if phase != progress_state["last_printed_phase"] or phase in ("AI", "ERROR", "COMPLETE"):
-            progress_state["last_printed_phase"] = phase
-            _print_phase_update(phase, message, detail)
-            sys.stdout.flush()
+    progress_reporter = _ProgressReporter(PHASE_INFO)
+    progress_callback = progress_reporter.progress_callback
 
     secured_endpoints, public_endpoints, security_schemes = _collect_security_info(
         endpoints,
@@ -568,64 +654,33 @@ async def _generate_modular_tests(
         enable_patch_tracking=enable_patch_tracking,
     )
 
-    # Print generation header
-    console.print()
-    console.print("[bold blue]🚀 Generating Load Tests[/bold blue]")
-    console.print("[dim]─" * 50 + DIM)
-    sys.stdout.flush()  # Ensure header is displayed before generation starts
+    _print_generation_header()
 
-    # Create modular generator with progress callback and patch tracker
-    progress_callback("INIT", "Initializing generator", "", 0)
-    try:
-        generator = ModularGenerator(
-            output_dir=str(output_dir),
-            api_key=api_key,
-            target_host=host or DEFAULT_HOST,
-            auth_enabled=auth,
-            db_type=db_type,
-            retry_on_invalid=retry_on_invalid,
-            progress_callback=progress_callback,
-            patch_tracker=patch_tracker,  # Pass tracker for WAL-style patching
-            custom_requirement=custom_requirement,
-        )
-    except Exception as e:
-        if status:
-            status.stop()
-        console.print(f"[red]✗ Failed to initialize ModularGenerator: {e}[/red]")
-        raise
-
-    # Generate all modular files
-    generated_files = {}
-    generation_error = None
-
-    try:
-        generated_files = await generator.generate(
-            endpoints=endpoints,
-            schemas=schemas,
-            api_info=api_info,
-            auth_endpoints=auth_endpoints if auth else None,
-        )
-    except Exception as e:
-        generation_error = e
-    finally:
-        if status:
-            status.stop()
-
-    # Print separator and final summary
-    console.print("[dim]─" * 50 + DIM)
-
-    if generation_error:
-        console.print(f"[red]❌ Generation failed: {generation_error}[/red]")
-        import traceback
-        console.print(f"[red]{traceback.format_exc()}[/red]")
-        raise generation_error
-
-    # Show completion stats
-    elapsed = time_module.time() - start_gen_time
-    console.print(f"[green]✅ Generated {len(generated_files)} files in {elapsed:.1f}s[/green]")
-    console.print(
-        f"[dim]   🤖 {progress_state['ai_calls']} AI calls  │  📄 {progress_state['files_written']} files written{DIM}"
+    generator = _create_modular_generator(
+        output_dir=output_dir,
+        api_key=api_key,
+        host=host,
+        auth=auth,
+        db_type=db_type,
+        retry_on_invalid=retry_on_invalid,
+        progress_callback=progress_callback,
+        patch_tracker=patch_tracker,
+        custom_requirement=custom_requirement,
+        progress_reporter=progress_reporter,
     )
+
+    generated_files = await _execute_generation(
+        generator=generator,
+        endpoints=endpoints,
+        schemas=schemas,
+        api_info=api_info,
+        auth_endpoints=auth_endpoints,
+        auth=auth,
+        progress_reporter=progress_reporter,
+    )
+
+    console.print("[dim]─" * 50 + DIM)
+    _print_generation_summary(progress_reporter, generated_files)
 
     if not generated_files:
         console.print("[yellow]⚠ Warning: No files were generated![/yellow]")

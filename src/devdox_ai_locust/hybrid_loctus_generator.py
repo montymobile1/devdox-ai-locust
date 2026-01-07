@@ -25,6 +25,7 @@ from together import AsyncTogether
 logger = logging.getLogger(__name__)
 
 UTILS_FILE = "utils.py"
+CLASS_PREFIX = "class "
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
@@ -241,12 +242,9 @@ class SafeCodeMerger:
         # Check if original already has auth-related classes
         original_has_auth = SafeCodeMerger.has_auth_class(original_code)
 
-        # Get all existing method names (without class prefix) for comparison
-        existing_method_names = set()
-        for method in orig_methods:
-            if "." in method:
-                existing_method_names.add(method.split(".")[-1])
-        existing_method_names.update(orig_functions)
+        existing_method_names = SafeCodeMerger._build_existing_method_names(
+            orig_methods, orig_functions
+        )
 
         try:
             ai_tree = ast.parse(ai_code)
@@ -260,40 +258,59 @@ class SafeCodeMerger:
         new_methods: List[str] = []
 
         for node in ast.iter_child_nodes(ai_tree):
-            if isinstance(node, ast.ClassDef):
-                class_name = node.name
-
-                # Check if this is an existing class we should add methods to
-                if class_name in orig_classes:
-                    new_methods.extend(
-                        SafeCodeMerger._extract_new_methods_from_class(
-                            node, ai_code, existing_method_names
-                        )
-                    )
-                    # Don't add the class itself, just the methods
-                    continue
-
-                # For NEW classes (not in orig_classes), apply deduplication rules:
-                if SafeCodeMerger._should_skip_new_class(
-                    class_name,
+            new_methods.extend(
+                SafeCodeMerger._process_ai_node(
+                    node,
+                    ai_code,
+                    orig_classes,
+                    existing_method_names,
                     imported_classes,
                     original_has_auth,
-                ):
-                    continue
-
-                # This is a genuinely new class - but we only extract methods, not full classes
-                # to prevent adding duplicate class definitions
-                logger.debug(f"Skipping new class '{class_name}' - only methods are extracted")
-
-            elif isinstance(node, ast.FunctionDef):
-                # Standalone method definition (AI returned methods only)
-                new_methods.extend(
-                    SafeCodeMerger._extract_new_methods_from_function(
-                        node, ai_code, existing_method_names
-                    )
                 )
+            )
 
         return "\n\n".join(new_methods)
+
+    @staticmethod
+    def _build_existing_method_names(
+        orig_methods: Set[str],
+        orig_functions: Set[str],
+    ) -> Set[str]:
+        existing_method_names = set()
+        for method in orig_methods:
+            if "." in method:
+                existing_method_names.add(method.split(".")[-1])
+        existing_method_names.update(orig_functions)
+        return existing_method_names
+
+    @staticmethod
+    def _process_ai_node(
+        node: ast.AST,
+        ai_code: str,
+        orig_classes: Set[str],
+        existing_method_names: Set[str],
+        imported_classes: Set[str],
+        original_has_auth: bool,
+    ) -> List[str]:
+        if isinstance(node, ast.ClassDef):
+            class_name = node.name
+            if class_name in orig_classes:
+                return SafeCodeMerger._extract_new_methods_from_class(
+                    node, ai_code, existing_method_names
+                )
+            if SafeCodeMerger._should_skip_new_class(
+                class_name,
+                imported_classes,
+                original_has_auth,
+            ):
+                return []
+            logger.debug(f"Skipping new class '{class_name}' - only methods are extracted")
+            return []
+        if isinstance(node, ast.FunctionDef):
+            return SafeCodeMerger._extract_new_methods_from_function(
+                node, ai_code, existing_method_names
+            )
+        return []
 
     @staticmethod
     def _indent_code(code: str, spaces: int) -> str:
@@ -519,27 +536,41 @@ class CodebaseAwareness:
             return self._extract_exports_regex(content)
 
     def _extract_exports_ast(self, content: str) -> Set[str]:
-        exports = set()
         tree = ast.parse(content)
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.ClassDef):
-                exports.add(node.name)
-                for item in node.body:
-                    if isinstance(item, ast.FunctionDef) and not item.name.startswith("_"):
-                        exports.add(f"{node.name}.{item.name}")
-            elif isinstance(node, ast.FunctionDef):
-                exports.add(node.name)
-            elif isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id.isupper():
-                        exports.add(target.id)
-        return exports
+        return self._collect_exports_from_tree(tree)
 
     def _extract_exports_regex(self, content: str) -> Set[str]:
         exports = set()
         exports.update(re.findall(r"^class\s+(\w+)", content, re.MULTILINE))
         exports.update(re.findall(r"^def\s+(\w+)", content, re.MULTILINE))
         exports.update(re.findall(r"^([A-Z_]+)\s*=", content, re.MULTILINE))
+        return exports
+
+    def _collect_exports_from_tree(self, tree: ast.AST) -> Set[str]:
+        exports = set()
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                exports.update(self._extract_class_exports(node))
+                continue
+            if isinstance(node, ast.FunctionDef):
+                exports.add(node.name)
+                continue
+            if isinstance(node, ast.Assign):
+                exports.update(self._extract_assign_exports(node))
+        return exports
+
+    def _extract_class_exports(self, node: ast.ClassDef) -> Set[str]:
+        exports = {node.name}
+        for item in node.body:
+            if isinstance(item, ast.FunctionDef) and not item.name.startswith("_"):
+                exports.add(f"{node.name}.{item.name}")
+        return exports
+
+    def _extract_assign_exports(self, node: ast.Assign) -> Set[str]:
+        exports = set()
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id.isupper():
+                exports.add(target.id)
         return exports
 
     def _extract_local_imports(self, content: str) -> Dict[str, Set[str]]:
@@ -1642,7 +1673,7 @@ class HybridLocustGenerator:
             stripped = line.strip()
             if stripped.startswith(("import ", "from ")):
                 continue
-            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@")):
+            if stripped.startswith(("def ", CLASS_PREFIX, "#", '"""', "'''", "@")):
                 return i
         return 0
 
@@ -1672,7 +1703,7 @@ class HybridLocustGenerator:
         When using methods-only prompts, the AI shouldn't return class definitions.
         But if it does, this removes them while preserving methods.
         """
-        if "class " not in content:
+        if CLASS_PREFIX not in content:
             return content
 
         # Classes that should NEVER appear in enhanced output (they exist elsewhere)
@@ -1696,7 +1727,7 @@ class HybridLocustGenerator:
             stripped = line.strip()
 
             # Check if this is a class definition we should remove
-            if stripped.startswith("class "):
+            if stripped.startswith(CLASS_PREFIX):
                 class_match = re.match(r"class\s+(\w+)", stripped)
                 if class_match:
                     class_name = class_match.group(1)
@@ -1704,7 +1735,7 @@ class HybridLocustGenerator:
                         # Skip this entire class
                         skip_until_dedent = True
                         class_indent = len(line) - len(line.lstrip())
-                        logger.info(f"Removing unwanted class '{class_name}' from AI output")
+                        logger.info(f"Removing unwanted {CLASS_PREFIX}{class_name} from AI output")
                         i += 1
                         continue
 
@@ -1716,7 +1747,7 @@ class HybridLocustGenerator:
                         # We've exited the class
                         skip_until_dedent = False
                         # Check if this new line is also a forbidden class
-                        if stripped.startswith("class "):
+                        if stripped.startswith(CLASS_PREFIX):
                             class_match = re.match(r"class\s+(\w+)", stripped)
                             if class_match and class_match.group(1) in forbidden_classes:
                                 i += 1
@@ -1985,7 +2016,7 @@ class HybridLocustGenerator:
                 # Look for class definition pattern
                 class_pattern = rf"class\s+{class_name}\s*[:\(]"
                 if not re.search(class_pattern, enhanced_content):
-                    missing_elements.append(f"class {class_name}")
+                    missing_elements.append(f"{CLASS_PREFIX}{class_name}")
                     logger.warning(
                         f"AI corrupted {filename}: missing critical class '{class_name}'"
                     )
