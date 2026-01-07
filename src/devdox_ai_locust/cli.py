@@ -18,6 +18,10 @@ from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console(force_terminal=True)  # Force terminal mode for immediate output
 
+DEFAULT_HOST = "http://localhost"
+DEFAULT_API_HOST = "http://localhost:8000"
+DIM = "[/dim]"
+
 
 def _initialize_config(together_api_key: Optional[str]) -> Tuple[Settings, str]:
     """Initialize configuration and validate API key"""
@@ -101,79 +105,98 @@ def _show_results(
         _show_run_instructions(output_dir, users, spawn_rate, run_time, host)
 
 
-def _show_generated_files(created_files: List[Dict[Any, Any]], verbose: bool, output_dir: Optional[Path] = None) -> None:
-    """Display list of generated files in a clean format"""
-    from rich.tree import Tree
-    from rich.text import Text
-
-    # Get output directory name for stripping from paths
+def _normalize_file_paths(
+    created_files: List[Dict[Any, Any]],
+    output_dir: Optional[Path],
+) -> List[str]:
     output_dir_name = str(output_dir.name) if output_dir else ""
-
-    # Extract just the file paths (relative to output directory)
     file_paths = []
-    for f in created_files:
-        if isinstance(f, dict):
-            path = f.get("path", str(f))
-            if isinstance(path, str):
-                # Normalize path separators
-                path = path.replace("\\", "/")
-                # Strip output directory prefix if present
-                if output_dir_name:
-                    # Find and remove output_dir_name from path
-                    parts = path.split("/")
-                    for i, part in enumerate(parts):
-                        if part == output_dir_name:
-                            path = "/".join(parts[i+1:])
-                            break
-            file_paths.append(path)
-        else:
-            file_paths.append(str(f))
 
-    # Group files by directory
+    for file_entry in created_files:
+        path = file_entry
+        if isinstance(file_entry, dict):
+            path = file_entry.get("path", str(file_entry))
+        path_str = str(path)
+        path_str = path_str.replace("\\", "/")
+        if output_dir_name:
+            parts = path_str.split("/")
+            for i, part in enumerate(parts):
+                if part == output_dir_name:
+                    path_str = "/".join(parts[i + 1 :])
+                    break
+        file_paths.append(path_str)
+
+    return file_paths
+
+
+def _group_files_by_directory(file_paths: List[str]) -> Tuple[Dict[str, List[str]], List[str]]:
     file_tree: Dict[str, List[str]] = {}
-    root_files = []
+    root_files: List[str] = []
 
     for fp in file_paths:
-        fp = str(fp)  # Ensure it's a string
         if "/" in fp:
-            parts = fp.split("/")
-            dir_name = parts[0]
-            file_name = "/".join(parts[1:])
-            if dir_name not in file_tree:
-                file_tree[dir_name] = []
-            file_tree[dir_name].append(file_name)
+            dir_name, file_name = fp.split("/", 1)
+            file_tree.setdefault(dir_name, []).append(file_name)
         else:
             root_files.append(fp)
+
+    return file_tree, root_files
+
+
+def _file_icon(filename: str) -> str:
+    if filename.endswith(".py"):
+        return "🐍"
+    if filename.endswith(".txt"):
+        return "📄"
+    return "📋"
+
+
+def _render_file_tree(
+    output_dir_name: str,
+    file_tree: Dict[str, List[str]],
+    root_files: List[str],
+) -> None:
+    from rich.tree import Tree
+
+    tree_root = f"📁 [bold]{output_dir_name}/[/bold]" if output_dir_name else "📁 [bold]output/[/bold]"
+    tree = Tree(tree_root)
+
+    for filename in sorted(root_files):
+        tree.add(f"{_file_icon(filename)} {filename}")
+
+    for dir_name in sorted(file_tree.keys()):
+        dir_branch = tree.add(f"📁 [cyan]{dir_name}/[/cyan]")
+        for filename in sorted(file_tree[dir_name])[:5]:
+            icon = "🐍" if filename.endswith(".py") else "📄"
+            dir_branch.add(f"{icon} {filename}")
+        extra_count = len(file_tree[dir_name]) - 5
+        if extra_count > 0:
+            dir_branch.add(f"[dim]... and {extra_count} more{DIM}")
+
+    console.print(tree)
+
+
+def _show_generated_files(
+    created_files: List[Dict[Any, Any]],
+    verbose: bool,
+    output_dir: Optional[Path] = None,
+) -> None:
+    """Display list of generated files in a clean format"""
+    output_dir_name = str(output_dir.name) if output_dir else ""
+    file_paths = _normalize_file_paths(created_files, output_dir)
+    file_tree, root_files = _group_files_by_directory(file_paths)
 
     console.print()
     console.print(f"[bold green]📦 Generated {len(created_files)} files:[/bold green]")
 
     if verbose or len(created_files) <= 15:
-        # Show tree structure with actual output directory name
-        tree_root = f"📁 [bold]{output_dir_name}/[/bold]" if output_dir_name else "📁 [bold]output/[/bold]"
-        tree = Tree(tree_root)
+        _render_file_tree(output_dir_name, file_tree, root_files)
+        return
 
-        # Add root files first
-        for f in sorted(root_files):
-            icon = "🐍" if f.endswith(".py") else ("📄" if f.endswith(".txt") else "📋")
-            tree.add(f"{icon} {f}")
-
-        # Add directories
-        for dir_name in sorted(file_tree.keys()):
-            dir_branch = tree.add(f"📁 [cyan]{dir_name}/[/cyan]")
-            for f in sorted(file_tree[dir_name])[:5]:  # Limit files shown per dir
-                icon = "🐍" if f.endswith(".py") else "📄"
-                dir_branch.add(f"{icon} {f}")
-            if len(file_tree[dir_name]) > 5:
-                dir_branch.add(f"[dim]... and {len(file_tree[dir_name]) - 5} more[/dim]")
-
-        console.print(tree)
-    else:
-        # Summary view for many files
-        console.print(f"  📄 Root files: {len(root_files)}")
-        for dir_name, files in sorted(file_tree.items()):
-            console.print(f"  📁 {dir_name}/: {len(files)} files")
-        console.print("\n[dim]Use --verbose to see all file names[/dim]")
+    console.print(f"  📄 Root files: {len(root_files)}")
+    for dir_name, files in sorted(file_tree.items()):
+        console.print(f"  📁 {dir_name}/: {len(files)} files")
+    console.print(f"\n[dim]Use --verbose to see all file names{DIM}")
 
 
 def _show_run_instructions(
@@ -181,7 +204,7 @@ def _show_run_instructions(
 ) -> None:
     """Display instructions for running the generated tests"""
 
-    default_host = host or "http://localhost:8000"
+    default_host = host or DEFAULT_API_HOST
     locustfile = output_dir / "locustfile.py"
 
     if locustfile.exists():
@@ -195,7 +218,7 @@ def _show_run_instructions(
     console.print("──────────────────────────────────────────────────")
     console.print("\n[cyan]1) Prepare your environment[/cyan]")
     console.print(f"  • cd {output_dir}")
-    console.print(f"  • pip install -r requirements.txt")
+    console.print("  • pip install -r requirements.txt")
 
     console.print("\n[cyan]2) Choose how you want to run[/cyan]")
     console.print("  Option A — Launch with Locust web UI")
@@ -223,6 +246,119 @@ def _show_run_instructions(
     console.print(
         "  [yellow]Copy .env.example to .env and configure your API credentials before running tests[/yellow]"
     )
+
+
+def _collect_security_info(
+    endpoints: List[Endpoint],
+    api_info: Dict[str, Any],
+) -> Tuple[List[str], List[str], Dict[str, Any]]:
+    global_security = api_info.get("global_security", [])
+    security_schemes = api_info.get("security_schemes", {})
+
+    secured_endpoints = []
+    public_endpoints = []
+    for ep in endpoints:
+        if ep.requires_auth(global_security):
+            secured_endpoints.append(ep.path)
+        else:
+            public_endpoints.append(ep.path)
+
+    return secured_endpoints, public_endpoints, security_schemes
+
+
+def _print_generation_config(
+    output_dir: Path,
+    host: Optional[str],
+    endpoints: List[Endpoint],
+    db_type: str,
+    security_schemes: Dict[str, Any],
+    secured_endpoints: List[str],
+    public_endpoints: List[str],
+) -> None:
+    console.print()
+    console.print("[bold cyan]⚙️ Configuration[/bold cyan]")
+    console.print("[dim]" + "─" * 50 + DIM)
+
+    def _conf_line(label: str, value: str, icon: str = "") -> None:
+        padded = label.ljust(12)
+        console.print(f"{icon} [bold]{padded}[/bold] {value}")
+
+    _conf_line("Output", str(output_dir), "📁")
+    _conf_line("Host", host or DEFAULT_HOST, "🌐")
+    _conf_line("Endpoints", str(len(endpoints)), "📡")
+    if db_type:
+        _conf_line("Database", db_type, "🗄️")
+
+    if security_schemes:
+        scheme_names = ", ".join(security_schemes.keys())
+        _conf_line("Security", scheme_names, "🔐")
+    _conf_line("Secured", f"{len(secured_endpoints)} endpoints", "🔒")
+    _conf_line("Public", f"{len(public_endpoints)} endpoints", "🔓")
+
+    console.print()
+
+
+def _init_metadata_and_patch_tracking(
+    output_dir: Path,
+    api_info: Dict[str, Any],
+    host: Optional[str],
+    auth: bool,
+    db_type: str,
+    endpoints: List[Endpoint],
+    enable_patch_tracking: bool,
+) -> Tuple[MetadataManager, Optional[PatchTracker]]:
+    metadata_manager = MetadataManager(output_dir)
+    swagger_source = api_info.get("swagger_source", "")
+    source_type = api_info.get("source_type", "url")
+    metadata_manager.initialize_session(
+        api_info=api_info,
+        swagger_source=swagger_source,
+        source_type=source_type,
+    )
+
+    metadata_manager.update_generation_config(
+        host=host,
+        auth_enabled=auth,
+        db_type=db_type,
+    )
+    metadata_manager.update_api_endpoints_count(len(endpoints))
+
+    patch_tracker: Optional[PatchTracker] = None
+    if enable_patch_tracking:
+        patch_tracker = PatchTracker.from_metadata_manager(metadata_manager)
+        patch_tracker.start_session()
+
+    return metadata_manager, patch_tracker
+
+
+def _build_created_files(
+    generated_files: Dict[str, str],
+    output_dir: Path,
+    metadata_manager: MetadataManager,
+) -> List[Dict[Any, Any]]:
+    created_files: List[Dict[Any, Any]] = []
+    for file_path, content in generated_files.items():
+        full_path = output_dir / file_path
+        created_files.append({
+            "path": str(full_path),
+            "content": content,
+            "type": "modular",
+        })
+        metadata_manager.register_file(file_path, content)
+    return created_files
+
+
+def _finalize_patch_tracking(patch_tracker: Optional[PatchTracker]) -> None:
+    if not patch_tracker:
+        return
+    summary = patch_tracker.get_summary()
+    patch_tracker.finalize()
+    session_id = summary.get('session_id', '')
+    total = summary.get('total_patches', 0)
+    if total > 0:
+        console.print(
+            f"[blue]📋 Patches saved to: .devdox_ai_locust/{session_id}/.patches/ ({total} patches)[/blue]"
+        )
 
 
 def _is_url(source: str) -> bool:
@@ -301,7 +437,7 @@ async def _generate_modular_tests(
     schemas: Dict[str, Any],
     api_info: Dict[str, Any],
     output_dir: Path,
-    host: Optional[str] = "http://localhost",
+    host: Optional[str] = DEFAULT_HOST,
     auth: bool = True,
     db_type: str = "",
     retry_on_invalid: int = 0,
@@ -344,13 +480,12 @@ async def _generate_modular_tests(
 
     status: Optional[Status] = None
 
-    def progress_callback(phase: str, message: str, detail: str, pct: int) -> None:
-        """Callback for ModularGenerator progress updates - prints to console."""
+    def _update_status_text(
+        phase: str,
+        message: str,
+        detail: str,
+    ) -> None:
         nonlocal status
-        progress_state["phase"] = phase
-        progress_state["message"] = message
-        progress_state["detail"] = detail
-        progress_state["progress"] = pct
         icon, _, color = PHASE_INFO.get(phase, ("⏳", "", "white"))
 
         if status is None:
@@ -360,110 +495,83 @@ async def _generate_modular_tests(
         if status:
             status_text = f"[{color}]{message}[/]"
             if detail:
-                status_text += f" [dim]→ {detail}[/dim]"
+                status_text += f" [dim]→ {detail}{DIM}"
             status.update(status=status_text)
 
-        # Track AI calls and file writes
+    def _print_phase_update(phase: str, message: str, detail: str) -> None:
+        icon, _, color = PHASE_INFO.get(phase, ("⏳", "", "white"))
+        elapsed = time_module.time() - start_gen_time
+        time_str = f"[dim][{elapsed:5.1f}s]{DIM}"
+        if phase == "COMPLETE":
+            console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
+            return
+        if phase == "ERROR":
+            console.print(f"{time_str} [{color}]{icon} {message}: {detail}[/{color}]")
+            return
+        if detail:
+            console.print(f"{time_str} [{color}]{icon} {message}[/{color}] [dim]→ {detail}{DIM}")
+            return
+        console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
+
+    def _track_progress_metrics(phase: str, detail: str) -> bool:
         if phase == "AI":
             progress_state["ai_calls"] += 1
-        elif phase == "WRITE" and detail:
+            return False
+        if phase == "WRITE" and detail:
             progress_state["files_written"] += 1
-            # Only print every 10th file to reduce noise
             if progress_state["files_written"] % 10 == 0:
-                console.print(f"[dim]   💾 Written {progress_state['files_written']} files...[/dim]")
-                sys.stdout.flush()  # Force immediate display on Windows
+                console.print(f"[dim]   💾 Written {progress_state['files_written']} files...{DIM}")
+                sys.stdout.flush()
+            return True
+        return False
+
+    def progress_callback(phase: str, message: str, detail: str, pct: int) -> None:
+        """Callback for ModularGenerator progress updates - prints to console."""
+        progress_state["phase"] = phase
+        progress_state["message"] = message
+        progress_state["detail"] = detail
+        progress_state["progress"] = pct
+
+        _update_status_text(phase, message, detail)
+
+        if _track_progress_metrics(phase, detail):
             return
 
-        # Print phase updates (avoid duplicate phase messages)
         if phase != progress_state["last_printed_phase"] or phase in ("AI", "ERROR", "COMPLETE"):
             progress_state["last_printed_phase"] = phase
-
-            # Format the message
-            elapsed = time_module.time() - start_gen_time
-            time_str = f"[dim][{elapsed:5.1f}s][/dim]"
-
-            if phase == "COMPLETE":
-                console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
-            elif phase == "ERROR":
-                console.print(f"{time_str} [{color}]{icon} {message}: {detail}[/{color}]")
-            elif detail:
-                console.print(f"{time_str} [{color}]{icon} {message}[/{color}] [dim]→ {detail}[/dim]")
-            else:
-                console.print(f"{time_str} [{color}]{icon} {message}[/{color}]")
-
-            # Force immediate display on Windows (buffering can delay output)
+            _print_phase_update(phase, message, detail)
             sys.stdout.flush()
 
-    # Print initial configuration using a simple, dash-separated section (no boxes)
-    console.print()
-    console.print("[bold cyan]⚙️ Configuration[/bold cyan]")
-    console.print("[dim]" + "─" * 50 + "[/dim]")
+    secured_endpoints, public_endpoints, security_schemes = _collect_security_info(
+        endpoints,
+        api_info,
+    )
+    _print_generation_config(
+        output_dir,
+        host,
+        endpoints,
+        db_type,
+        security_schemes,
+        secured_endpoints,
+        public_endpoints,
+    )
 
-    def _conf_line(label: str, value: str, icon: str = "") -> None:
-        padded = label.ljust(12)
-        console.print(f"{icon} [bold]{padded}[/bold] {value}")
-
-    _conf_line("Output", str(output_dir), "📁")
-    _conf_line("Host", host or "http://localhost", "🌐")
-    _conf_line("Endpoints", str(len(endpoints)), "📡")
-    if db_type:
-        _conf_line("Database", db_type, "🗄️")
-
-    # Get security information from OpenAPI spec
-    global_security = api_info.get("global_security", [])
-    security_schemes = api_info.get("security_schemes", {})
-
-    # Find secured endpoints using OpenAPI security specification
-    secured_endpoints = []
-    public_endpoints = []
-    for ep in endpoints:
-        if ep.requires_auth(global_security):
-            secured_endpoints.append(ep.path)
-        else:
-            public_endpoints.append(ep.path)
-
-    # Add security info to config section
-    if security_schemes:
-        scheme_names = ", ".join(security_schemes.keys())
-        _conf_line("Security", scheme_names, "🔐")
-    _conf_line("Secured", f"{len(secured_endpoints)} endpoints", "🔒")
-    _conf_line("Public", f"{len(public_endpoints)} endpoints", "🔓")
-
-    console.print()
-
-    # For backwards compatibility, pass secured endpoint paths as auth_endpoints
     auth_endpoints = secured_endpoints
 
-    # Initialize metadata manager and patch tracker
-    metadata_manager = MetadataManager(output_dir)
-
-    # Initialize session with API info - this populates metadata.json properly
-    swagger_source = api_info.get("swagger_source", "")
-    source_type = api_info.get("source_type", "url")
-    metadata_manager.initialize_session(
+    metadata_manager, patch_tracker = _init_metadata_and_patch_tracking(
+        output_dir=output_dir,
         api_info=api_info,
-        swagger_source=swagger_source,
-        source_type=source_type,
-    )
-
-    # Update generation config
-    metadata_manager.update_generation_config(
         host=host,
-        auth_enabled=auth,
+        auth=auth,
         db_type=db_type,
+        endpoints=endpoints,
+        enable_patch_tracking=enable_patch_tracking,
     )
-    metadata_manager.update_api_endpoints_count(len(endpoints))
-
-    # Initialize patch tracker with metadata manager for proper WAL tracking
-    patch_tracker: Optional[PatchTracker] = None
-    if enable_patch_tracking:
-        patch_tracker = PatchTracker.from_metadata_manager(metadata_manager)
-        patch_tracker.start_session()
 
     # Print generation header
     console.print()
     console.print("[bold blue]🚀 Generating Load Tests[/bold blue]")
-    console.print("[dim]─" * 50 + "[/dim]")
+    console.print("[dim]─" * 50 + DIM)
     sys.stdout.flush()  # Ensure header is displayed before generation starts
 
     # Create modular generator with progress callback and patch tracker
@@ -472,7 +580,7 @@ async def _generate_modular_tests(
         generator = ModularGenerator(
             output_dir=str(output_dir),
             api_key=api_key,
-            target_host=host or "http://localhost",
+            target_host=host or DEFAULT_HOST,
             auth_enabled=auth,
             db_type=db_type,
             retry_on_invalid=retry_on_invalid,
@@ -504,7 +612,7 @@ async def _generate_modular_tests(
             status.stop()
 
     # Print separator and final summary
-    console.print("[dim]─" * 50 + "[/dim]")
+    console.print("[dim]─" * 50 + DIM)
 
     if generation_error:
         console.print(f"[red]❌ Generation failed: {generation_error}[/red]")
@@ -515,31 +623,16 @@ async def _generate_modular_tests(
     # Show completion stats
     elapsed = time_module.time() - start_gen_time
     console.print(f"[green]✅ Generated {len(generated_files)} files in {elapsed:.1f}s[/green]")
-    console.print(f"[dim]   🤖 {progress_state['ai_calls']} AI calls  │  📄 {progress_state['files_written']} files written[/dim]")
+    console.print(
+        f"[dim]   🤖 {progress_state['ai_calls']} AI calls  │  📄 {progress_state['files_written']} files written{DIM}"
+    )
 
     if not generated_files:
         console.print("[yellow]⚠ Warning: No files were generated![/yellow]")
 
-    # Convert to format expected by _show_results
-    created_files = []
-    for file_path, content in generated_files.items():
-        full_path = output_dir / file_path
-        created_files.append({
-            "path": str(full_path),
-            "content": content,
-            "type": "modular",
-        })
-        # Register file in metadata manager
-        metadata_manager.register_file(file_path, content)
+    created_files = _build_created_files(generated_files, output_dir, metadata_manager)
 
-    # Finalize patch tracking
-    if patch_tracker:
-        summary = patch_tracker.get_summary()
-        patch_tracker.finalize()
-        session_id = summary.get('session_id', '')
-        total = summary.get('total_patches', 0)
-        if total > 0:
-            console.print(f"[blue]📋 Patches saved to: .devdox_ai_locust/{session_id}/.patches/ ({total} patches)[/blue]")
+    _finalize_patch_tracking(patch_tracker)
 
     # Finalize metadata
     metadata_manager.finalize_session()

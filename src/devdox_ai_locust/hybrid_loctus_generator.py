@@ -24,6 +24,7 @@ from together import AsyncTogether
 
 logger = logging.getLogger(__name__)
 
+UTILS_FILE = "utils.py"
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
@@ -34,7 +35,7 @@ workflow_jinja_path = "workflow.j2"
 # If these are missing, the AI has corrupted the file and we must use the original
 CRITICAL_CLASSES = {
     "test_data.py": ["TestDataGenerator"],
-    "utils.py": [
+    UTILS_FILE: [
         "ResponseValidator",
         "RequestLogger",
         "PerformanceMonitor",
@@ -45,7 +46,7 @@ CRITICAL_CLASSES = {
 # Critical functions that MUST exist in each file
 CRITICAL_FUNCTIONS = {
     "test_data.py": ["generate_json_data", "generate_string", "generate_id"],
-    "utils.py": ["validate_response", "log_request"],
+    UTILS_FILE: ["validate_response", "log_request"],
 }
 
 
@@ -158,6 +159,58 @@ class SafeCodeMerger:
         return class_names, method_names, function_names
 
     @staticmethod
+    def _extract_new_methods_from_class(
+        node: ast.ClassDef,
+        ai_code: str,
+        existing_method_names: Set[str],
+    ) -> List[str]:
+        new_methods = []
+        for item in node.body:
+            if isinstance(item, ast.FunctionDef) and item.name not in existing_method_names:
+                try:
+                    method_source = ast.get_source_segment(ai_code, item)
+                    if method_source:
+                        indented = SafeCodeMerger._indent_code(method_source, 4)
+                        new_methods.append(f"    # AI-added method\n{indented}")
+                except Exception:
+                    pass
+        return new_methods
+
+    @staticmethod
+    def _extract_new_methods_from_function(
+        node: ast.FunctionDef,
+        ai_code: str,
+        existing_method_names: Set[str],
+    ) -> List[str]:
+        if node.name in existing_method_names:
+            return []
+        try:
+            method_source = ast.get_source_segment(ai_code, node)
+            if method_source:
+                indented = SafeCodeMerger._indent_code(method_source, 4)
+                return [f"    # AI-added method\n{indented}"]
+        except Exception:
+            return []
+        return []
+
+    @staticmethod
+    def _should_skip_new_class(
+        class_name: str,
+        imported_classes: Set[str],
+        original_has_auth: bool,
+    ) -> bool:
+        if class_name in imported_classes:
+            logger.info(f"Skipping class '{class_name}' - already imported")
+            return True
+        if class_name in SafeCodeMerger.SINGLETON_CLASSES:
+            logger.info(f"Skipping singleton class '{class_name}' - would create duplicate")
+            return True
+        if SafeCodeMerger.is_auth_related_class(class_name) and original_has_auth:
+            logger.info(f"Skipping auth class '{class_name}' - original already has auth")
+            return True
+        return False
+
+    @staticmethod
     def extract_new_methods_only(
         original_code: str, ai_code: str, target_class: str = None
     ) -> str:
@@ -204,7 +257,7 @@ class SafeCodeMerger:
             # Fallback: extract method definitions via regex
             return SafeCodeMerger._extract_methods_regex(ai_code, existing_method_names)
 
-        new_methods = []
+        new_methods: List[str] = []
 
         for node in ast.iter_child_nodes(ai_tree):
             if isinstance(node, ast.ClassDef):
@@ -212,42 +265,20 @@ class SafeCodeMerger:
 
                 # Check if this is an existing class we should add methods to
                 if class_name in orig_classes:
-                    # Extract only new methods from this class (even for singleton classes)
-                    for item in node.body:
-                        if isinstance(item, ast.FunctionDef):
-                            if item.name not in existing_method_names:
-                                try:
-                                    method_source = ast.get_source_segment(
-                                        ai_code, item
-                                    )
-                                    if method_source:
-                                        # Ensure proper indentation for class method
-                                        indented = SafeCodeMerger._indent_code(
-                                            method_source, 4
-                                        )
-                                        new_methods.append(
-                                            f"    # AI-added method\n{indented}"
-                                        )
-                                except Exception:
-                                    pass
+                    new_methods.extend(
+                        SafeCodeMerger._extract_new_methods_from_class(
+                            node, ai_code, existing_method_names
+                        )
+                    )
                     # Don't add the class itself, just the methods
                     continue
 
                 # For NEW classes (not in orig_classes), apply deduplication rules:
-
-                # Skip classes that are already imported (Bug #3 fix)
-                if class_name in imported_classes:
-                    logger.info(f"Skipping class '{class_name}' - already imported")
-                    continue
-
-                # Skip singleton classes that shouldn't be duplicated
-                if class_name in SafeCodeMerger.SINGLETON_CLASSES:
-                    logger.info(f"Skipping singleton class '{class_name}' - would create duplicate")
-                    continue
-
-                # Skip auth-related classes if original already has auth (Bug #1 fix)
-                if SafeCodeMerger.is_auth_related_class(class_name) and original_has_auth:
-                    logger.info(f"Skipping auth class '{class_name}' - original already has auth")
+                if SafeCodeMerger._should_skip_new_class(
+                    class_name,
+                    imported_classes,
+                    original_has_auth,
+                ):
                     continue
 
                 # This is a genuinely new class - but we only extract methods, not full classes
@@ -256,15 +287,11 @@ class SafeCodeMerger:
 
             elif isinstance(node, ast.FunctionDef):
                 # Standalone method definition (AI returned methods only)
-                if node.name not in existing_method_names:
-                    try:
-                        method_source = ast.get_source_segment(ai_code, node)
-                        if method_source:
-                            # Add indentation for class method
-                            indented = SafeCodeMerger._indent_code(method_source, 4)
-                            new_methods.append(f"    # AI-added method\n{indented}")
-                    except Exception:
-                        pass
+                new_methods.extend(
+                    SafeCodeMerger._extract_new_methods_from_function(
+                        node, ai_code, existing_method_names
+                    )
+                )
 
         return "\n\n".join(new_methods)
 
@@ -326,51 +353,61 @@ class SafeCodeMerger:
             logger.info("No new methods found in AI output, returning original")
             return original_code
 
-        # Find where to insert new methods (at the end of the target class)
         if target_class:
-            # Find the class definition and locate the end of the class
-            # Look for the class and find where it ends
             lines = original_code.split("\n")
-            class_start = -1
-            class_indent = 0
-
-            for i, line in enumerate(lines):
-                if re.match(rf"\s*class\s+{target_class}\s*[\(:]", line):
-                    class_start = i
-                    class_indent = len(line) - len(line.lstrip())
-                    break
-
-            if class_start >= 0:
-                # Find the end of the class (next line with same or less indentation that's not empty)
-                class_end = len(lines)
-                for i in range(class_start + 1, len(lines)):
-                    line = lines[i]
-                    if line.strip() and not line.strip().startswith("#"):
-                        current_indent = len(line) - len(line.lstrip())
-                        if (
-                            current_indent <= class_indent
-                            and not line.strip().startswith("def ")
-                        ):
-                            # Check if this is a new class or module-level code
-                            if re.match(
-                                r"\s*(class\s|def\s|if\s+__name__|@|[A-Z_]+\s*=)", line
-                            ):
-                                class_end = i
-                                break
-
-                # Insert new methods before the class ends
-                new_lines = lines[:class_end]
-                new_lines.append("")
-                new_lines.append(new_methods)
-                new_lines.extend(lines[class_end:])
-
-                merged = "\n".join(new_lines)
-                logger.info(f"Added new methods to {target_class}")
+            class_bounds = SafeCodeMerger._find_class_bounds(lines, target_class)
+            if class_bounds:
+                merged = SafeCodeMerger._insert_methods_into_class(
+                    lines,
+                    class_bounds,
+                    new_methods,
+                    target_class,
+                )
                 return merged
 
         # Fallback: append at end of file
         logger.info("Appending new methods at end of file")
         return original_code + "\n\n# AI-enhanced additions\n" + new_methods
+
+    @staticmethod
+    def _find_class_bounds(lines: List[str], target_class: str) -> Optional[Tuple[int, int]]:
+        class_start = -1
+        class_indent = 0
+        for i, line in enumerate(lines):
+            if re.match(rf"\s*class\s+{target_class}\s*[\(:]", line):
+                class_start = i
+                class_indent = len(line) - len(line.lstrip())
+                break
+        if class_start < 0:
+            return None
+
+        class_end = len(lines)
+        for i in range(class_start + 1, len(lines)):
+            line = lines[i]
+            if not line.strip() or line.strip().startswith("#"):
+                continue
+            current_indent = len(line) - len(line.lstrip())
+            if current_indent <= class_indent and not line.strip().startswith("def "):
+                if re.match(r"\s*(class\s|def\s|if\s+__name__|@|[A-Z_]+\s*=)", line):
+                    class_end = i
+                    break
+        return class_start, class_end
+
+    @staticmethod
+    def _insert_methods_into_class(
+        lines: List[str],
+        class_bounds: Tuple[int, int],
+        new_methods: str,
+        target_class: str,
+    ) -> str:
+        _, class_end = class_bounds
+        new_lines = lines[:class_end]
+        new_lines.append("")
+        new_lines.append(new_methods)
+        new_lines.extend(lines[class_end:])
+        merged = "\n".join(new_lines)
+        logger.info(f"Added new methods to {target_class}")
+        return merged
 
 
 @dataclass
@@ -476,32 +513,33 @@ class CodebaseAwareness:
 
     def _extract_exports(self, content: str) -> Set[str]:
         """Extract all symbols defined in this file."""
-        exports = set()
-
         try:
-            tree = ast.parse(content)
-            for node in ast.iter_child_nodes(tree):
-                if isinstance(node, ast.ClassDef):
-                    exports.add(node.name)
-                    # Also add methods as ClassName.method_name
-                    for item in node.body:
-                        if isinstance(
-                            item, ast.FunctionDef
-                        ) and not item.name.startswith("_"):
-                            exports.add(f"{node.name}.{item.name}")
-                elif isinstance(node, ast.FunctionDef):
-                    exports.add(node.name)
-                elif isinstance(node, ast.Assign):
-                    # Constants like SOME_VALUE = ...
-                    for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id.isupper():
-                            exports.add(target.id)
+            return self._extract_exports_ast(content)
         except SyntaxError:
-            # Fallback to regex
-            exports.update(re.findall(r"^class\s+(\w+)", content, re.MULTILINE))
-            exports.update(re.findall(r"^def\s+(\w+)", content, re.MULTILINE))
-            exports.update(re.findall(r"^([A-Z_]+)\s*=", content, re.MULTILINE))
+            return self._extract_exports_regex(content)
 
+    def _extract_exports_ast(self, content: str) -> Set[str]:
+        exports = set()
+        tree = ast.parse(content)
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                exports.add(node.name)
+                for item in node.body:
+                    if isinstance(item, ast.FunctionDef) and not item.name.startswith("_"):
+                        exports.add(f"{node.name}.{item.name}")
+            elif isinstance(node, ast.FunctionDef):
+                exports.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id.isupper():
+                        exports.add(target.id)
+        return exports
+
+    def _extract_exports_regex(self, content: str) -> Set[str]:
+        exports = set()
+        exports.update(re.findall(r"^class\s+(\w+)", content, re.MULTILINE))
+        exports.update(re.findall(r"^def\s+(\w+)", content, re.MULTILINE))
+        exports.update(re.findall(r"^([A-Z_]+)\s*=", content, re.MULTILINE))
         return exports
 
     def _extract_local_imports(self, content: str) -> Dict[str, Set[str]]:
@@ -518,27 +556,33 @@ class CodebaseAwareness:
         ]
 
         for pattern in patterns:
-            for match in re.finditer(pattern, content):
-                source_file = match.group(1)
-                if not source_file.endswith(".py"):
-                    source_file += ".py"
-                imported_symbols = match.group(2)
-
-                # Parse the imported symbols
-                symbols = set()
-                for sym in imported_symbols.split(","):
-                    sym = sym.strip()
-                    # Handle 'as' aliases
-                    if " as " in sym:
-                        sym = sym.split(" as ")[0].strip()
-                    if sym and sym != "*":
-                        symbols.add(sym)
-
-                if source_file not in imports:
-                    imports[source_file] = set()
-                imports[source_file].update(symbols)
+            self._add_imports_from_pattern(imports, content, pattern)
 
         return imports
+
+    def _add_imports_from_pattern(
+        self,
+        imports: Dict[str, Set[str]],
+        content: str,
+        pattern: str,
+    ) -> None:
+        for match in re.finditer(pattern, content):
+            source_file = match.group(1)
+            if not source_file.endswith(".py"):
+                source_file += ".py"
+            imported_symbols = match.group(2)
+            symbols = self._parse_imported_symbols(imported_symbols)
+            imports.setdefault(source_file, set()).update(symbols)
+
+    def _parse_imported_symbols(self, imported_symbols: str) -> Set[str]:
+        symbols = set()
+        for sym in imported_symbols.split(","):
+            sym = sym.strip()
+            if " as " in sym:
+                sym = sym.split(" as ")[0].strip()
+            if sym and sym != "*":
+                symbols.add(sym)
+        return symbols
 
     def _build_protected_map(self) -> None:
         """Build the map of protected symbols for each file."""
@@ -548,38 +592,37 @@ class CodebaseAwareness:
         # For each file, find which of its exports are used by other files
         for filename, exports in self.exports.items():
             for symbol in exports:
-                used_by = []
+                used_by = self._find_symbol_users(filename, symbol)
+                if not used_by:
+                    continue
+                protected_symbol = ProtectedSymbol(
+                    name=symbol,
+                    symbol_type=self._get_symbol_type(symbol),
+                    defined_in=filename,
+                    used_by=used_by,
+                    reason=f"Imported by: {', '.join(used_by)}",
+                )
+                self.protected[filename].append(protected_symbol)
 
-                # Check which other files import this symbol
-                for other_file, other_imports in self.imports.items():
-                    if other_file == filename:
-                        continue
+    def _find_symbol_users(self, filename: str, symbol: str) -> List[str]:
+        used_by = []
+        for other_file, other_imports in self.imports.items():
+            if other_file == filename:
+                continue
+            for source, symbols in other_imports.items():
+                if source == filename or source.replace(".py", "") in filename:
+                    if symbol in symbols or symbol.split(".")[-1] in symbols:
+                        used_by.append(other_file)
+        return used_by
 
-                    # Check if this file imports from our file
-                    for source, symbols in other_imports.items():
-                        if source == filename or source.replace(".py", "") in filename:
-                            if symbol in symbols or symbol.split(".")[-1] in symbols:
-                                used_by.append(other_file)
-
-                if used_by:
-                    # Determine symbol type
-                    if "." in symbol:
-                        symbol_type = "method"
-                    elif symbol.isupper():
-                        symbol_type = "constant"
-                    elif symbol[0].isupper():
-                        symbol_type = "class"
-                    else:
-                        symbol_type = "function"
-
-                    protected_symbol = ProtectedSymbol(
-                        name=symbol,
-                        symbol_type=symbol_type,
-                        defined_in=filename,
-                        used_by=used_by,
-                        reason=f"Imported by: {', '.join(used_by)}",
-                    )
-                    self.protected[filename].append(protected_symbol)
+    def _get_symbol_type(self, symbol: str) -> str:
+        if "." in symbol:
+            return "method"
+        if symbol.isupper():
+            return "constant"
+        if symbol[0].isupper():
+            return "class"
+        return "function"
 
     def get_constraints_for_file(self, filename: str) -> str:
         """
@@ -900,12 +943,12 @@ class EnhancementProcessor:
         """Process validation enhancement with validation and fallback"""
         enhanced_files = {}
         enhancements = []
-        original_content = base_files.get("utils.py", "")
+        original_content = base_files.get(UTILS_FILE, "")
 
         # Get constraints from codebase awareness
         constraints = ""
         if self.awareness:
-            constraints = self.awareness.get_constraints_for_file("utils.py")
+            constraints = self.awareness.get_constraints_for_file(UTILS_FILE)
             if constraints:
                 logger.info("📋 Applying constraints to utils.py")
 
@@ -915,9 +958,9 @@ class EnhancementProcessor:
             )
             # Use safe enhancement with validation and fallback
             validated_content = self.locust_generator._safe_enhance_file(
-                "utils.py", enhanced_validation, original_content
+                UTILS_FILE, enhanced_validation, original_content
             )
-            enhanced_files["utils.py"] = validated_content
+            enhanced_files[UTILS_FILE] = validated_content
             # Only mark as enhanced if we actually used the AI output
             if validated_content == enhanced_validation:
                 enhancements.append("advanced_validation")
@@ -1510,12 +1553,9 @@ class HybridLocustGenerator:
         new_methods_matches = re.findall(new_methods_pattern, response_text, re.DOTALL)
 
         context_suffix = f" context={parse_context}" if parse_context else ""
-        tags_found = False
-
         if new_methods_matches:
             content = max(new_methods_matches, key=len).strip()
             if content and len(content) > 10:
-                tags_found = True
                 logger.debug(
                     "AI_PARSE tag=new_methods extracted_chars=%d%s",
                     len(content),
@@ -1530,7 +1570,6 @@ class HybridLocustGenerator:
         if code_matches:
             content = max(code_matches, key=len).strip()
             if content and len(content) > 10:
-                tags_found = True
                 logger.debug(
                     "AI_PARSE tag=code extracted_chars=%d%s",
                     len(content),
@@ -1578,58 +1617,53 @@ class HybridLocustGenerator:
         if not content:
             return ""
 
-        # Remove markdown code blocks if present
-        if content.startswith("```python"):
-            content = content[9:]
-        elif content.startswith("```"):
-            content = content[3:]
-
-        if content.endswith("```"):
-            content = content[:-3]
-
-        content = content.strip()
-
-        # Remove any explanatory text before code starts
+        content = self._strip_code_fences(content)
         lines = content.split("\n")
-        start_idx = 0
-
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-
-            # Skip import statements when we're looking for the first real code block.
-            # The enhanced prompts are expected to return method bodies only, so any
-            # leading imports are typically boilerplate that we don't want to merge
-            # back into the target file.
-            if stripped.startswith(("import ", "from ")):
-                continue
-
-            # Look for start of actual Python code
-            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@")):
-                start_idx = i
-                break
-
-        # Remove trailing non-code text
-        end_idx = len(lines)
-        for i in range(len(lines) - 1, -1, -1):
-            line = lines[i].strip()
-            if line:
-                # Stop if we find actual code
-                if line.startswith(("return", "pass", "raise", ")", "]", "}")) or \
-                   "=" in line or "(" in line or line.startswith("#"):
-                    end_idx = i + 1
-                    break
-                # Skip obvious non-code endings
-                if line.lower().startswith(("note:", "this ", "the ", "---")):
-                    continue
-                end_idx = i + 1
-                break
-
+        start_idx = self._find_code_start(lines)
+        end_idx = self._find_code_end(lines)
         cleaned = "\n".join(lines[start_idx:end_idx])
 
         # Remove unwanted class definitions that AI might have included despite instructions
         cleaned = self._remove_unwanted_class_definitions(cleaned)
 
         return cleaned
+
+    def _strip_code_fences(self, content: str) -> str:
+        if content.startswith("```python"):
+            content = content[9:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        return content.strip()
+
+    def _find_code_start(self, lines: List[str]) -> int:
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ")):
+                continue
+            if stripped.startswith(("def ", "class ", "#", '"""', "'''", "@")):
+                return i
+        return 0
+
+    def _find_code_end(self, lines: List[str]) -> int:
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i].strip()
+            if not line:
+                continue
+            if self._looks_like_code(line):
+                return i + 1
+            if line.lower().startswith(("note:", "this ", "the ", "---")):
+                continue
+            return i + 1
+        return len(lines)
+
+    def _looks_like_code(self, line: str) -> bool:
+        if line.startswith(("return", "pass", "raise", ")", "]", "}")):
+            return True
+        if line.startswith("#"):
+            return True
+        return "=" in line or "(" in line
 
     def _remove_unwanted_class_definitions(self, content: str) -> str:
         """
@@ -2020,7 +2054,7 @@ class HybridLocustGenerator:
         target_class = None
         if filename == test_data_file_path:
             target_class = "TestDataGenerator"
-        elif filename == "utils.py":
+        elif filename == UTILS_FILE:
             target_class = "ResponseValidator"  # Primary class to extend
 
         # Use SafeCodeMerger to safely combine original + AI additions
