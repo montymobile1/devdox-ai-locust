@@ -6,11 +6,9 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 from rich.status import Status
 
 from .modular_generator import ModularGenerator
-from .schemas.progress import ProgressStatus, ProgressPhase
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
@@ -19,96 +17,6 @@ from devdox_ai_locust.utils.metadata_manager import MetadataManager
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console(force_terminal=True)  # Force terminal mode for immediate output
-
-
-class ProgressDisplay:
-    """Manages live progress display for generation"""
-
-    PHASE_ICONS = {
-        ProgressPhase.INITIALIZING: "🔧",
-        ProgressPhase.PARSING_SCHEMA: "📖",
-        ProgressPhase.GENERATING_TEMPLATES: "📝",
-        ProgressPhase.ANALYZING_CODEBASE: "🔍",
-        ProgressPhase.ENHANCING_LOCUSTFILE: "🤖",
-        ProgressPhase.ENHANCING_TEST_DATA: "🤖",
-        ProgressPhase.ENHANCING_VALIDATION: "🤖",
-        ProgressPhase.ENHANCING_DOMAIN_FLOWS: "🤖",
-        ProgressPhase.ENHANCING_WORKFLOWS: "🤖",
-        ProgressPhase.MERGING_CODE: "🔀",
-        ProgressPhase.VALIDATING_OUTPUT: "✅",
-        ProgressPhase.WRITING_FILES: "💾",
-        ProgressPhase.FINALIZING: "📦",
-        ProgressPhase.COMPLETE: "🎉",
-        ProgressPhase.FAILED: "❌",
-    }
-
-    def __init__(self):
-        self.progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=30),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("[dim]{task.fields[detail]}"),
-            console=console,
-            transient=False,
-        )
-        self.main_task: Optional[TaskID] = None
-        self.current_status = ""
-        self.completed_phases: List[str] = []
-
-    def start(self) -> None:
-        """Start the progress display"""
-        self.main_task = self.progress.add_task(
-            "Generating tests...",
-            total=100,
-            detail="Initializing..."
-        )
-        self.progress.start()
-
-    def stop(self) -> None:
-        """Stop the progress display"""
-        self.progress.stop()
-
-    async def update(self, status: ProgressStatus) -> None:
-        """Update the progress display with new status"""
-        if self.main_task is None:
-            return
-
-        icon = self.PHASE_ICONS.get(status.phase, "⏳")
-        message = f"{icon} {status.message}"
-
-        phase_progress = {
-            ProgressPhase.INITIALIZING: 5,
-            ProgressPhase.GENERATING_TEMPLATES: 15,
-            ProgressPhase.ANALYZING_CODEBASE: 20,
-            ProgressPhase.ENHANCING_LOCUSTFILE: 35,
-            ProgressPhase.ENHANCING_TEST_DATA: 50,
-            ProgressPhase.ENHANCING_VALIDATION: 60,
-            ProgressPhase.ENHANCING_DOMAIN_FLOWS: 70,
-            ProgressPhase.ENHANCING_WORKFLOWS: 85,
-            ProgressPhase.VALIDATING_OUTPUT: 90,
-            ProgressPhase.WRITING_FILES: 95,
-            ProgressPhase.COMPLETE: 100,
-            ProgressPhase.FAILED: 100,
-        }
-
-        progress_value = phase_progress.get(status.phase, 0)
-        detail = status.detail or ""
-
-        if status.is_ai_call:
-            detail = f"[yellow]AI[/yellow] {detail}"
-
-        self.progress.update(
-            self.main_task,
-            completed=progress_value,
-            description=message,
-            detail=detail,
-        )
-
-        if status.phase not in [ProgressPhase.COMPLETE, ProgressPhase.FAILED]:
-            phase_str = f"{icon} {status.message}"
-            if phase_str not in self.completed_phases:
-                self.completed_phases.append(phase_str)
 
 
 def _initialize_config(together_api_key: Optional[str]) -> Tuple[Settings, str]:
