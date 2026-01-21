@@ -321,7 +321,7 @@ Pre-LLM workflow for {method.upper()} {path}
 Generated using template generator.
 """
 from locust import task
-from base_workflow import BaseWorkflow
+from ...base_workflow import BaseWorkflow
 
 import logging
 
