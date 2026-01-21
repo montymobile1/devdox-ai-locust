@@ -178,3 +178,7 @@ class BaseAPIUser(HttpUser):
         }
         if self.auth_token:
             self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
+
+
+# Alias for LLM-generated workflows that inherit from this base
+BaseWorkflow = BaseTaskMethods

@@ -306,33 +306,38 @@ async def _generate_scenario_based_tests(
         words = sanitized.replace("_", " ").split()
         return "".join(word.capitalize() for word in words) or "Unnamed"
 
-    # Generate fallback template when LLM fails
+    # Generate pre-LLM fallback template when LLM fails
     def generate_fallback_workflow(endpoint: Any, scenario_type: str) -> str:
-        """Generate a basic fallback workflow when LLM generation fails"""
+        """Generate a pre-LLM fallback workflow using template generator"""
         operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
         class_name = to_class_name(operation_id)
         method = endpoint.method.lower()
         path = endpoint.path
 
+        # Use template generator to create proper task method
+        task_method = template_gen._generate_task_method(endpoint)
+        # Indent task method for class body (4 spaces)
+        indented_task = "\n".join(
+            f"    {line}" if line.strip() else line
+            for line in task_method.split("\n")
+        )
+
         return f'''"""
-Fallback {scenario_type} workflow for {method.upper()} {path}
-Generated because LLM generation failed - please customize manually.
+Pre-LLM fallback workflow for {method.upper()} {path}
+Generated using template generator (LLM enhancement failed).
 """
 from locust import task
 from base_workflow import BaseWorkflow
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     """{scenario_type.capitalize()} tests for {method.upper()} {path}"""
 
-    @task(1)
-    def test_{scenario_type}(self):
-        """Basic {scenario_type} test - customize as needed"""
-        with self.client.{method}("{path}", catch_response=True) as response:
-            if response.status_code < 400:
-                response.success()
-            else:
-                response.failure(f"Status {{response.status_code}}")
+{indented_task}
 '''
 
     # Build endpoint to tag mapping
