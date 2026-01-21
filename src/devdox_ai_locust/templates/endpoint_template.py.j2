@@ -28,7 +28,7 @@ response_validator = ResponseValidator()
 performance_monitor = PerformanceMonitor()
 
 
-class {{ group | capitalize }}TaskMethods(SequentialTaskSet, BaseTaskMethods):
+class {{ class_name }}TaskMethods(SequentialTaskSet, BaseTaskMethods):
     """Mixin class containing all API task methods"""
 
     {{task_methods_content}}

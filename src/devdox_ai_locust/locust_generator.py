@@ -219,10 +219,13 @@ class LocustTestGenerator:
                 indented_task_methods = self._indent_methods(
                     task_methods, indent_level=1
                 )
+                # Sanitize names for file and class
+                safe_file_name = group.lower().replace(" ", "_").replace("-", "_")
+                safe_class_name = "".join(word.capitalize() for word in group.replace("-", " ").split())
                 file_content = self._build_endpoint_template(
-                    api_info, indented_task_methods, group
+                    api_info, indented_task_methods, group, safe_class_name
                 )
-                file_name = f"{group}_workflow.py".replace("-", "_")
+                file_name = f"{safe_file_name}_workflow.py"
 
                 workflows.append({file_name: file_content})
 
@@ -238,11 +241,11 @@ class LocustTestGenerator:
             return []
 
     def _build_endpoint_template(
-        self, api_info: Dict[str, Any], task_methods_content: str, group: str
+        self, api_info: Dict[str, Any], task_methods_content: str, group: str, class_name: str
     ) -> str:
         template = self.jinja_env.get_template("endpoint_template.py.j2")
         return template.render(
-            api_info=api_info, group=group, task_methods_content=task_methods_content
+            api_info=api_info, group=group, class_name=class_name, task_methods_content=task_methods_content
         )
 
     def _generate_main_locustfile(

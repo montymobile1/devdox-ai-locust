@@ -290,7 +290,7 @@ async def _generate_scenario_based_tests(
     # Process each tag and endpoint
     with console.status("[bold green]Generating per-endpoint workflows...") as status:
         for tag_name, tag_endpoints in grouped_endpoints.items():
-            tag_dir_name = tag_name.lower().replace(" ", "_")
+            tag_dir_name = tag_name.lower().replace(" ", "_").replace("-", "_")
 
             for endpoint in tag_endpoints:
                 endpoint_idx += 1
