@@ -29,6 +29,12 @@ REQUIREMENTS:
    - Invalid data types for actual schema fields - expect 400/422 (weight: 3)
    - Non-existent resource ID (for endpoints with path params) - expect 404 (weight: 3)
 
+   **IMPORTANT for 404 testing with path params**:
+   - Use obviously non-existent IDs that WON'T accidentally exist in the database
+   - If path param is integer: use very large numbers like 999999999
+   - If path param is string/UUID: use "nonexistent-id-12345" or "00000000-0000-0000-0000-000000000000"
+   - Example: `self.client.get("/items/999999999", ...)` for integer ID params
+
 3. **EDGE CASE SCENARIOS** (Boundary Testing):
    Generate 1-2 @task methods for boundaries:
    - Empty strings/zero values for actual schema fields (weight: 2)

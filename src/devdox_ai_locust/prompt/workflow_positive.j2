@@ -21,10 +21,35 @@ REQUIREMENTS:
    - Valid data with all required fields (weight: 10)
    - Valid data with optional fields included (weight: 8)
 
-2. **STATE-DEPENDENT SCENARIOS**:
-   Generate 1-2 @task methods for state interactions:
-   - Create then read/update (weight: 5)
-   - Operation on created resource (weight: 5)
+2. **STATE-DEPENDENT SCENARIOS** (CRITICAL for GET/PUT/DELETE with path params):
+   If the endpoint has path parameters like `/{id}` or `/{user_id}/posts/{post_id}`:
+   - You MUST create the resource FIRST, then use the returned ID
+   - NEVER use random/hardcoded IDs - they will return 404
+   - Extract the ID from the response using the EXACT field name from Response Schema
+
+   Example for GET /items/{item_id}:
+   ```python
+   @task(5)
+   def test_create_then_get(self):
+       # Step 1: Create a resource first (POST to parent endpoint)
+       create_data = {"name": "Test Item"}  # Use actual schema fields
+       create_resp = self.client.post("/items", json=create_data)
+       if create_resp.status_code not in [200, 201]:
+           return  # Can't test without created resource
+
+       # Step 2: Extract ID using EXACT field name from Response Schema
+       # CHECK THE RESPONSE SCHEMA - use "id" if that's what it shows, not "item_id"
+       resource_id = create_resp.json().get("id")  # Use actual response field
+       if not resource_id:
+           return
+
+       # Step 3: Now test the actual endpoint with the real ID
+       with self.client.get(f"/items/{resource_id}", catch_response=True) as response:
+           if response.status_code == 200:
+               response.success()
+           else:
+               response.failure(f"Expected 200, got {response.status_code}")
+   ```
 
 3. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
    - You MUST use the EXACT property names listed in the Schema section above

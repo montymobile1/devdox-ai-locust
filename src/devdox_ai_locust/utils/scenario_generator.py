@@ -407,6 +407,8 @@ class ScenarioWorkflowGenerator:
             lines.append(f"Description: {description}")
 
         # Parameters with full details
+        has_cookie_params = False
+        has_header_params = False
         if hasattr(endpoint, "parameters") and endpoint.parameters:
             lines.append("\nParameters:")
             for param in endpoint.parameters:
@@ -417,6 +419,13 @@ class ScenarioWorkflowGenerator:
                 # Handle ParameterType enum
                 if hasattr(param_in, "value"):
                     param_in = param_in.value
+
+                # Track cookie and header params for type coercion warning
+                if param_in == "cookie":
+                    has_cookie_params = True
+                if param_in == "header":
+                    has_header_params = True
+
                 param_required = getattr(param, "required", False)
                 param_type = getattr(param, "type", "string")
                 param_format = getattr(param, "format", None)
@@ -433,6 +442,21 @@ class ScenarioWorkflowGenerator:
                     lines.append(f"      enum: {param_enum}")
                 if param_desc:
                     lines.append(f"      description: {param_desc[:80]}")
+
+            # Add type coercion warnings for cookies and headers
+            if has_cookie_params:
+                lines.append("")
+                lines.append("  *** COOKIE VALUES MUST BE STRINGS ***")
+                lines.append("  When passing cookies, ALL values must be strings, not integers or other types.")
+                lines.append("  WRONG: cookies={'session_id': 123}")
+                lines.append("  CORRECT: cookies={'session_id': '123'}")
+
+            if has_header_params:
+                lines.append("")
+                lines.append("  *** HEADER VALUES MUST BE STRINGS ***")
+                lines.append("  When passing headers, ALL values must be strings.")
+                lines.append("  WRONG: headers={'X-Count': 10}")
+                lines.append("  CORRECT: headers={'X-Count': '10'}")
 
         # Request body with FULL SCHEMA DETAILS
         if hasattr(endpoint, "request_body") and endpoint.request_body:
@@ -462,7 +486,7 @@ class ScenarioWorkflowGenerator:
                 schema_lines = self._format_schema(schema, indent=2)
                 lines.extend(schema_lines)
 
-        # Responses
+        # Responses with FULL SCHEMA DETAILS
         if hasattr(endpoint, "responses") and endpoint.responses:
             responses = endpoint.responses
             lines.append("\nResponses:")
@@ -470,11 +494,23 @@ class ScenarioWorkflowGenerator:
                 for status_code, response in responses.items():
                     desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
                     lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+                    # Add response schema if available
+                    resp_schema = getattr(response, "schema", None) if hasattr(response, "schema") else None
+                    if resp_schema and isinstance(resp_schema, dict):
+                        lines.append(f"    Response Schema (use these EXACT field names when accessing response):")
+                        schema_lines = self._format_response_schema(resp_schema, indent=3)
+                        lines.extend(schema_lines)
             elif isinstance(responses, list):
                 for response in responses:
                     status_code = getattr(response, "status_code", "???")
                     desc = getattr(response, "description", "")
                     lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+                    # Add response schema if available
+                    resp_schema = getattr(response, "schema", None)
+                    if resp_schema and isinstance(resp_schema, dict):
+                        lines.append(f"    Response Schema (use these EXACT field names when accessing response):")
+                        schema_lines = self._format_response_schema(resp_schema, indent=3)
+                        lines.extend(schema_lines)
 
         return "\n".join(lines)
 
@@ -569,6 +605,59 @@ class ScenarioWorkflowGenerator:
                         lines.append(f"{prefix}        array item properties:")
                         nested_lines = self._format_schema(items, indent + 3)
                         lines.extend(nested_lines)
+
+        return lines
+
+    def _format_response_schema(self, schema: dict, indent: int = 0) -> List[str]:
+        """
+        Format a response JSON Schema for the LLM prompt.
+
+        Simpler than _format_schema - focuses on field names and types
+        so the LLM knows what fields to expect in API responses.
+        """
+        lines = []
+        prefix = "  " * indent
+
+        schema_type = schema.get("type", "object")
+        properties = schema.get("properties", {})
+
+        if properties:
+            for prop_name, prop_schema in properties.items():
+                prop_type = prop_schema.get("type", "any")
+                prop_format = prop_schema.get("format")
+
+                # Build type string with format
+                type_str = prop_type
+                if prop_format:
+                    type_str = f"{prop_type} [{prop_format}]"
+
+                lines.append(f"{prefix}- {prop_name}: {type_str}")
+
+                # Handle nested objects (show one level deep)
+                if prop_type == "object" and prop_schema.get("properties"):
+                    for nested_name, nested_schema in prop_schema["properties"].items():
+                        nested_type = nested_schema.get("type", "any")
+                        lines.append(f"{prefix}    - {nested_name}: {nested_type}")
+
+                # Handle arrays
+                if prop_type == "array" and prop_schema.get("items"):
+                    items = prop_schema["items"]
+                    items_type = items.get("type", "any")
+                    lines.append(f"{prefix}    (array of {items_type})")
+                    if items.get("properties"):
+                        for item_name, item_schema in items["properties"].items():
+                            item_type = item_schema.get("type", "any")
+                            lines.append(f"{prefix}    - {item_name}: {item_type}")
+        elif schema_type == "array":
+            items = schema.get("items", {})
+            items_type = items.get("type", "any")
+            lines.append(f"{prefix}(array of {items_type})")
+            if items.get("properties"):
+                for item_name, item_schema in items["properties"].items():
+                    item_type = item_schema.get("type", "any")
+                    lines.append(f"{prefix}- {item_name}: {item_type}")
+        else:
+            lines.append(f"{prefix}type: {schema_type}")
 
         return lines
 
