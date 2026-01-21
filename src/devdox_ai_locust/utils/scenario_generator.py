@@ -406,50 +406,171 @@ class ScenarioWorkflowGenerator:
         if description:
             lines.append(f"Description: {description}")
 
-        # Parameters
+        # Parameters with full details
         if hasattr(endpoint, "parameters") and endpoint.parameters:
             lines.append("\nParameters:")
             for param in endpoint.parameters:
                 param_name = getattr(param, "name", "unknown")
-                param_in = getattr(param, "in_", "query")
+                param_in = getattr(param, "location", None)
+                if param_in is None:
+                    param_in = getattr(param, "in_", "query")
+                # Handle ParameterType enum
+                if hasattr(param_in, "value"):
+                    param_in = param_in.value
                 param_required = getattr(param, "required", False)
-                param_type = "string"
-                if hasattr(param, "schema") and param.schema:
-                    param_type = getattr(param.schema, "type", "string")
-                required_str = "(required)" if param_required else "(optional)"
-                lines.append(f"  - {param_name} [{param_in}]: {param_type} {required_str}")
+                param_type = getattr(param, "type", "string")
+                param_format = getattr(param, "format", None)
+                param_enum = getattr(param, "enum", None)
+                param_desc = getattr(param, "description", None)
 
-        # Request body
+                required_str = "(required)" if param_required else "(optional)"
+                type_str = param_type
+                if param_format:
+                    type_str = f"{param_type} [{param_format}]"
+
+                lines.append(f"  - {param_name} [{param_in}]: {type_str} {required_str}")
+                if param_enum:
+                    lines.append(f"      enum: {param_enum}")
+                if param_desc:
+                    lines.append(f"      description: {param_desc[:80]}")
+
+        # Request body with FULL SCHEMA DETAILS
         if hasattr(endpoint, "request_body") and endpoint.request_body:
+            rb = endpoint.request_body
+            content_type = getattr(rb, "content_type", "application/json")
+            schema = getattr(rb, "schema", {})
+            rb_required = getattr(rb, "required", True)
+            rb_desc = getattr(rb, "description", None)
+
             lines.append("\nRequest Body:")
-            if hasattr(endpoint.request_body, "content"):
-                content = endpoint.request_body.content
-                # Handle both dict and other formats
-                if isinstance(content, dict):
-                    for content_type, media_type in content.items():
-                        lines.append(f"  Content-Type: {content_type}")
-                        if hasattr(media_type, "schema") and media_type.schema:
-                            schema = media_type.schema
-                            if hasattr(schema, "properties") and schema.properties:
-                                props = schema.properties
-                                if isinstance(props, dict):
-                                    lines.append("  Properties:")
-                                    for prop_name, prop_schema in props.items():
-                                        prop_type = getattr(prop_schema, "type", "any")
-                                        lines.append(f"    - {prop_name}: {prop_type}")
-                else:
-                    lines.append(f"  Content: {type(content).__name__}")
+            lines.append(f"  Content-Type: {content_type}")
+            if rb_desc:
+                lines.append(f"  Description: {rb_desc[:100]}")
+            lines.append(f"  Required: {rb_required}")
+
+            # Check for file upload - add explicit instructions
+            if content_type in ["multipart/form-data", "application/octet-stream"]:
+                lines.append("")
+                lines.append("  *** FILE UPLOAD ENDPOINT ***")
+                lines.append("  This endpoint requires multipart/form-data file upload.")
+                lines.append("  DO NOT use json= parameter. Use files= with actual file data:")
+                lines.append("  Example: files={'file': ('test.txt', b'file content', 'text/plain')}")
+                lines.append("")
+
+            # Format full schema with all details
+            if schema and isinstance(schema, dict):
+                schema_lines = self._format_schema(schema, indent=2)
+                lines.extend(schema_lines)
 
         # Responses
         if hasattr(endpoint, "responses") and endpoint.responses:
             responses = endpoint.responses
+            lines.append("\nResponses:")
             if isinstance(responses, dict):
-                lines.append("\nResponses:")
                 for status_code, response in responses.items():
                     desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
                     lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+            elif isinstance(responses, list):
+                for response in responses:
+                    status_code = getattr(response, "status_code", "???")
+                    desc = getattr(response, "description", "")
+                    lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
 
         return "\n".join(lines)
+
+    def _format_schema(self, schema: dict, indent: int = 0) -> List[str]:
+        """
+        Format a JSON Schema with full details for the LLM prompt.
+
+        Includes:
+        - Property names and types
+        - Required fields (marked with *)
+        - Field descriptions
+        - Constraints (minLength, maxLength, pattern, enum, min, max, etc.)
+        - Nested objects and arrays
+        """
+        lines = []
+        prefix = "  " * indent
+
+        schema_type = schema.get("type", "object")
+        required_fields = schema.get("required", [])
+        properties = schema.get("properties", {})
+
+        if properties:
+            lines.append(f"{prefix}Schema:")
+            if required_fields:
+                lines.append(f"{prefix}  Required fields: {required_fields}")
+            else:
+                lines.append(f"{prefix}  Required fields: none")
+            lines.append(f"{prefix}  Properties (use these EXACT field names in your code):")
+
+            for prop_name, prop_schema in properties.items():
+                is_required = prop_name in required_fields
+                req_marker = " (REQUIRED)" if is_required else " (optional)"
+                prop_type = prop_schema.get("type", "any")
+                prop_format = prop_schema.get("format")
+
+                # Build type string with format
+                type_str = prop_type
+                if prop_format:
+                    type_str = f"{prop_type} [{prop_format}]"
+
+                lines.append(f"{prefix}    - {prop_name}: {type_str}{req_marker}")
+
+                # Add description
+                if prop_schema.get("description"):
+                    desc = prop_schema["description"][:80]
+                    lines.append(f"{prefix}        description: {desc}")
+
+                # Add constraints
+                constraints = []
+                if prop_schema.get("minLength") is not None:
+                    constraints.append(f"minLength={prop_schema['minLength']}")
+                if prop_schema.get("maxLength") is not None:
+                    constraints.append(f"maxLength={prop_schema['maxLength']}")
+                if prop_schema.get("pattern"):
+                    pattern = prop_schema["pattern"][:40]
+                    constraints.append(f"pattern='{pattern}'")
+                if prop_schema.get("minimum") is not None:
+                    constraints.append(f"min={prop_schema['minimum']}")
+                if prop_schema.get("maximum") is not None:
+                    constraints.append(f"max={prop_schema['maximum']}")
+                if prop_schema.get("exclusiveMinimum") is not None:
+                    constraints.append(f"exclusiveMin={prop_schema['exclusiveMinimum']}")
+                if prop_schema.get("exclusiveMaximum") is not None:
+                    constraints.append(f"exclusiveMax={prop_schema['exclusiveMaximum']}")
+                if prop_schema.get("multipleOf") is not None:
+                    constraints.append(f"multipleOf={prop_schema['multipleOf']}")
+
+                if constraints:
+                    lines.append(f"{prefix}        constraints: {', '.join(constraints)}")
+
+                # Add enum values
+                if prop_schema.get("enum"):
+                    enum_vals = str(prop_schema["enum"])[:60]
+                    lines.append(f"{prefix}        allowed values: {enum_vals}")
+
+                # Add default value
+                if prop_schema.get("default") is not None:
+                    lines.append(f"{prefix}        default: {prop_schema['default']}")
+
+                # Handle nested objects
+                if prop_type == "object" and prop_schema.get("properties"):
+                    lines.append(f"{prefix}        nested object properties:")
+                    nested_lines = self._format_schema(prop_schema, indent + 3)
+                    lines.extend(nested_lines)
+
+                # Handle arrays
+                if prop_type == "array" and prop_schema.get("items"):
+                    items = prop_schema["items"]
+                    items_type = items.get("type", "any")
+                    lines.append(f"{prefix}        array items type: {items_type}")
+                    if items.get("properties"):
+                        lines.append(f"{prefix}        array item properties:")
+                        nested_lines = self._format_schema(items, indent + 3)
+                        lines.extend(nested_lines)
+
+        return lines
 
     def _format_endpoints_list(self, endpoints: List[Any]) -> str:
         """Format list of endpoints (for auth endpoints)"""

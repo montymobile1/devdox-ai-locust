@@ -26,13 +26,21 @@ REQUIREMENTS:
    - Create then read/update (weight: 5)
    - Operation on created resource (weight: 5)
 
-3. **CONSTRAINTS** (CRITICAL):
+3. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
+   - You MUST use the EXACT property names listed in the Schema section above
+   - Do NOT invent field names like "string_field", "integer_field", "field", etc.
+   - If Schema shows "name", "count", "price" - use those exact names
+   - If Schema shows required fields - include ALL of them in your test data
+   - Generate values appropriate for each field's type and constraints
+
+4. **CONSTRAINTS**:
    - ALL test values must be SHORT: max 50 characters per field
-   - Use realistic, representative test data
+   - Use realistic, representative test data matching the schema
    - Keep total code under 100 lines
    - NEVER generate excessively long strings
+   - For file uploads (multipart/form-data): use files= parameter, NOT json=
 
-4. **CLASS STRUCTURE**:
+5. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
@@ -46,17 +54,23 @@ REQUIREMENTS:
        @task(10)
        def test_success_with_valid_data(self):
            """Test successful operation"""
-           with self.client.{{ method|lower }}("{{ path }}", ..., catch_response=True) as response:
+           # Use EXACT field names from the Schema above
+           data = {
+               "actual_field_name": "appropriate_value",
+               # ... all required fields from schema
+           }
+           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
                if response.status_code in [200, 201]:
                    response.success()
                else:
                    response.failure(f"Expected success, got {response.status_code}")
    ```
 
-5. **IMPORTANT**:
+6. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Use catch_response=True for proper Locust reporting
+   - READ THE SCHEMA CAREFULLY and use those exact field names
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.

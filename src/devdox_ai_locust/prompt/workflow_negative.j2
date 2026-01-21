@@ -16,59 +16,59 @@ TEST DATA AVAILABLE:
 
 REQUIREMENTS:
 
-1. **NEGATIVE TEST SCENARIOS** (Validation Errors):
+1. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
+   - You MUST use the EXACT property names listed in the Schema section above
+   - Do NOT invent field names like "field", "string_field", "data", etc.
+   - Use the actual field names when testing invalid values
+   - Check if the endpoint has required fields before testing "missing required field"
+   - If Schema shows "Required fields: none", skip the missing-field test
+
+2. **NEGATIVE TEST SCENARIOS** (Validation Errors):
    Generate 2-3 @task methods for error handling:
-   - Missing required fields - expect 400/422 (weight: 3)
-   - Invalid data types - expect 400/422 (weight: 3)
-   - Non-existent resource ID - expect 404 (weight: 3)
+   - Missing required fields (ONLY if schema has required fields) - expect 400/422 (weight: 3)
+   - Invalid data types for actual schema fields - expect 400/422 (weight: 3)
+   - Non-existent resource ID (for endpoints with path params) - expect 404 (weight: 3)
 
-2. **EDGE CASE SCENARIOS** (Boundary Testing):
+3. **EDGE CASE SCENARIOS** (Boundary Testing):
    Generate 1-2 @task methods for boundaries:
-   - Empty strings/zero values (weight: 2)
-   - Unicode/special characters (weight: 2)
+   - Empty strings/zero values for actual schema fields (weight: 2)
+   - Unicode/special characters in actual schema fields (weight: 2)
 
-3. **CONSTRAINTS** (CRITICAL - DO NOT VIOLATE):
+4. **CONSTRAINTS** (CRITICAL):
    - ALL test values must be SHORT: max 50 characters
-   - For unicode tests, use 1-5 special chars, NOT thousands (e.g., "tëst" not "üüüü...×1000")
-   - For boundary tests, use small representative values
+   - For unicode tests, use 1-5 special chars (e.g., "tëst")
+   - For path parameter tests: use the correct type (int if schema says integer)
    - NEVER generate strings longer than 100 characters
    - Keep total code under 100 lines
+   - For file uploads: use files= parameter, NOT json=
 
-4. **CLASS STRUCTURE**:
+5. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
    import test_data
-   import uuid
 
    class {{ class_name }}NegativeWorkflow(BaseWorkflow):
        """Negative and edge case tests for {{ method }} {{ path }}"""
 
        @task(3)
-       def test_missing_required_field(self):
-           """Test with missing required field - expect 400/422"""
-           with self.client.{{ method|lower }}("{{ path }}", json={}, catch_response=True) as response:
+       def test_invalid_data_type(self):
+           """Test with invalid data type for a schema field - expect 400/422"""
+           # Use an ACTUAL field name from the schema with wrong type
+           data = {"actual_field_from_schema": "wrong_type_value"}
+           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
                if response.status_code in [400, 422]:
                    response.success()
                else:
                    response.failure(f"Expected 400/422, got {response.status_code}")
-
-       @task(2)
-       def test_edge_empty_string(self):
-           """Test with empty string"""
-           data = {"field": ""}
-           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
-               if response.status_code in [200, 201, 400, 422]:
-                   response.success()
-               else:
-                   response.failure(f"Unexpected: {response.status_code}")
    ```
 
-5. **IMPORTANT**:
+6. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Mark success() when expected error occurs
-   - NEVER use excessively long strings in test data
+   - READ THE SCHEMA CAREFULLY - use those exact field names
+   - Check parameter types: if path param is int, use int (e.g., 999999 not uuid)
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.

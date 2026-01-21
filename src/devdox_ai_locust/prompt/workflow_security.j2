@@ -16,25 +16,31 @@ TEST DATA AVAILABLE:
 
 REQUIREMENTS:
 
-1. **SECURITY TEST SCENARIOS**:
+1. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
+   - You MUST use the EXACT property names listed in the Schema section above
+   - Do NOT use generic names like "field", "data", "input", etc.
+   - Inject payloads into ACTUAL string fields from the schema
+   - Include ALL required fields with valid data, only inject into ONE field at a time
+
+2. **SECURITY TEST SCENARIOS**:
    Generate 3-5 @task methods for security testing:
-   - SQL injection in parameters (weight: 3)
-   - XSS payloads in text fields (weight: 3)
+   - SQL injection in string fields from schema (weight: 3)
+   - XSS payloads in string fields from schema (weight: 3)
    - Path traversal attempts (weight: 2)
    - Missing/invalid auth (weight: 2)
 
-2. **PAYLOADS TO USE**:
+3. **PAYLOADS TO USE**:
    - SQL: `' OR '1'='1`, `'; DROP TABLE users; --`
    - XSS: `<script>alert('XSS')</script>`, `<img src=x onerror=alert(1)>`
    - Path: `../../../etc/passwd`, `%2e%2e%2f`
 
-3. **CONSTRAINTS** (CRITICAL):
+4. **CONSTRAINTS** (CRITICAL):
    - ALL payloads must be SHORT: max 100 characters
-   - Use the exact payloads shown above, do not generate longer variants
+   - Use the exact payloads shown above
    - Keep total code under 80 lines
-   - NEVER generate excessively long injection strings
+   - For file uploads: use files= parameter, NOT json=
 
-4. **CLASS STRUCTURE**:
+5. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
@@ -50,7 +56,12 @@ REQUIREMENTS:
        def test_sql_injection(self):
            """SQL injection test"""
            payload = random.choice(SQL_PAYLOADS)
-           with self.client.{{ method|lower }}("{{ path }}", json={"field": payload}, catch_response=True) as response:
+           # Use ACTUAL field names from schema, inject payload into a string field
+           data = {
+               "actual_string_field": payload,
+               # Include other required fields with valid values
+           }
+           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
                if response.status_code in [400, 422]:
                    response.success()  # Properly rejected
                elif response.status_code == 500:
@@ -59,11 +70,12 @@ REQUIREMENTS:
                    response.success()
    ```
 
-5. **IMPORTANT**:
+6. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (50-80 lines max)
    - Flag 500 errors as potential vulnerabilities
    - 400/422 rejections are success (proper validation)
+   - READ THE SCHEMA - use exact field names for injections
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.
