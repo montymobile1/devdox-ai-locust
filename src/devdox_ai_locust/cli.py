@@ -3,7 +3,6 @@ import sys
 import asyncio
 import aiofiles
 import traceback
-import re
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
@@ -499,18 +498,6 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             tag_imports.append(f"from .{tag_dir_name} import *")
         workflows_init.write_text("\n".join(tag_imports) + "\n", encoding='utf-8')
 
-        # Helper to extract actual class name from generated file
-        def extract_class_name(file_path: Path) -> Optional[str]:
-            """Extract the workflow class name from a generated file"""
-            if not file_path.exists():
-                return None
-            content = file_path.read_text(encoding='utf-8')
-            # Look for class definition inheriting from BaseWorkflow
-            match = re.search(r'class\s+(\w+)\s*\([^)]*BaseWorkflow[^)]*\)', content)
-            if match:
-                return match.group(1)
-            return None
-
         # Create __init__.py for each tag directory
         for tag_name, tag_endpoints in grouped_endpoints.items():
             tag_dir_name = sanitize_dir_name(tag_name)
@@ -519,14 +506,12 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 init_lines = ['"""Auto-generated workflow exports"""']
                 for ep in tag_endpoints:
                     op_id = scenario_gen.get_endpoint_dir_name(ep)
-                    # Import all three scenario types - extract actual class names from files
+                    class_name = to_class_name(op_id)
+                    # Import all three scenario types
                     for scenario in ["positive", "negative", "security"]:
-                        workflow_file = tag_dir / op_id / f"{scenario}_workflow.py"
-                        actual_class_name = extract_class_name(workflow_file)
-                        if actual_class_name:
-                            init_lines.append(
-                                f"from .{op_id}.{scenario}_workflow import {actual_class_name}"
-                            )
+                        init_lines.append(
+                            f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
+                        )
                 tag_init = tag_dir / "__init__.py"
                 tag_init.write_text("\n".join(init_lines) + "\n", encoding='utf-8')
 
