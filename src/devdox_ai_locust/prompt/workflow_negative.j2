@@ -99,15 +99,32 @@ Before writing code, you MUST reason through these steps:
 - Missing required field test: Only if there ARE required fields
 - Invalid type test: Send wrong type for a field (string where int expected)
 - Invalid enum test: If field has enum, send a value NOT in the allowed list
-- Invalid pattern test: If field has pattern constraint, send a value that doesn't match
+- Invalid pattern test: **ONLY if the field has a pattern constraint in the spec** - send a value that doesn't match the pattern
 - Non-existent ID test: For endpoints with path params, use obviously fake IDs:
   - Integer params: use 999999999 (very large number)
   - String/UUID params: use "nonexistent-id-12345"
+  - **CRITICAL**: When testing non-existent IDs, ALL OTHER FIELDS must use VALID values!
+    - For enum fields: use one of the ALLOWED values from the spec
+    - For pattern fields: use a value that MATCHES the pattern
+    - For required fields: provide valid values
+    - The ONLY invalid thing should be the non-existent ID
+
+**TESTS TO AVOID (these cause false failures):**
+- **DO NOT test empty path segments** (e.g., `/path/enum/` with trailing slash but no value)
+  - Empty path segments result in 404 (route not found), NOT 422 (validation error)
+  - This is because the route pattern requires a value - an empty segment doesn't match the route
+- **DO NOT test special characters unless the field has an explicit pattern constraint**
+  - If no pattern is defined in the spec, special characters are valid input
+  - Only generate special character tests when you see "pattern=" in the field constraints
+- **DO NOT assume validation rules that aren't in the OpenAPI spec**
+  - If a string field has no min_length/max_length/pattern, any string is valid
 
 **STEP 4 - PLAN EDGE CASE TESTS:**
-- Empty string for string fields
-- Zero for numeric fields
-- Special characters / unicode in strings
+- Empty string for string fields (only if min_length constraint exists and min_length > 0)
+- Zero for numeric fields (only if ge/gt constraint exists that prohibits zero)
+- Special characters in strings **ONLY IF** the field has a pattern constraint that would reject them
+  - If no pattern constraint exists, special characters are VALID and should NOT be tested as edge cases
+- Boundary values for numeric fields with min/max constraints
 
 **STEP 5 - DETERMINE EXPECTED STATUS CODES:**
 - Use ONLY the status codes from endpoint_expected_status (extracted from OpenAPI spec)
@@ -149,6 +166,28 @@ def test_invalid_input(self):
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
+=== CRITICAL: TEST GENERATION RULES ===
+**Rule 1 - No Empty Path Segment Tests:**
+- NEVER test empty path parameters by omitting the value (e.g., `/users/` instead of `/users/{id}`)
+- Empty path segments cause 404 (route not found), NOT 422 (validation error)
+- This leads to false test failures - avoid entirely
+
+**Rule 2 - Only Test Against Actual Constraints:**
+- ONLY generate special character tests if the field has a `pattern` constraint in the spec
+- ONLY generate empty string tests if the field has `min_length > 0` in the spec
+- ONLY generate boundary tests if the field has `ge`, `gt`, `le`, `lt`, `min`, or `max` constraints
+- If a field has NO constraints, any valid-typed value is acceptable to the API
+
+**Rule 3 - Non-Existent ID Tests Must Use Valid Other Values:**
+- When testing that a non-existent resource ID returns 404:
+  - Use a non-existent ID (e.g., 999999999)
+  - BUT all OTHER fields MUST use VALID values from the spec
+  - For enum fields: use one of the ALLOWED values (copy from spec)
+  - For pattern fields: use a value that MATCHES the pattern
+- Example: If testing non-existent user_id with emoji field that allows only [A, B, C]:
+  - CORRECT: `{"emoji": "A"}` (valid enum) with user_id=999999999
+  - WRONG: `{"emoji": "X"}` (invalid enum) - this returns 422, not 404!
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.
@@ -165,17 +204,27 @@ Path params: [list with types]
 STEP 2 - SCHEMA FIELDS:
 Required: [list exact names and types, or "none"]
 Optional: [list exact names and types, or "none"]
-Enums: [list any fields with "allowed values:" and their valid values]
-Patterns: [list any fields with pattern constraints]
+Enums: [list any fields with "allowed values:" and their EXACT valid values - use these when testing non-existent IDs]
+Patterns: [list any fields with pattern constraints - ONLY test special chars for these fields]
+Min/Max constraints: [list fields with length or value constraints]
 
 STEP 3 - NEGATIVE TEST PLAN:
-[List what negative tests make sense based on error codes in the spec]
+[List what negative tests make sense based on ACTUAL constraints in the spec]
+- For non-existent ID tests: specify which valid values to use for enum/pattern fields
+- DO NOT include empty path segment tests (they return 404, not 422)
+- DO NOT include special character tests unless the field has a pattern constraint
 
 STEP 4 - EDGE CASE PLAN:
-[List edge cases to test]
+[List edge cases to test - ONLY for fields with actual constraints]
+- Empty string: only if min_length > 0
+- Zero: only if ge/gt constraint prohibits it
+- Special chars: ONLY if pattern constraint exists
 
 STEP 5 - EXPECTED STATUS CODES:
 [Use ONLY status codes from endpoint_expected_status]
+
+STEP 6 - VALID VALUES FOR NON-EXISTENT ID TESTS:
+[For each enum/pattern field, list the VALID value to use when testing non-existent IDs]
 </analysis>
 
 <code>
