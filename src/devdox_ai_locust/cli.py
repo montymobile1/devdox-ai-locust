@@ -200,65 +200,23 @@ async def _generate_and_create_tests(
     db_type: str = "",
     diagnostics: bool = False,
     timeout: int = 120,
-    scenario_mode: bool = False,
 ) -> List[Dict[Any, Any]]:
-    """Generate tests using AI and create test files"""
+    """Generate tests using scenario-based approach (positive/negative/security per tag)"""
     together_client = AsyncTogether(api_key=api_key)
 
     # Create AI config with custom timeout
     ai_config = AIEnhancementConfig(timeout=timeout)
 
-    if scenario_mode:
-        # Use scenario-based generation
-        return await _generate_scenario_based_tests(
-            together_client,
-            ai_config,
-            endpoints,
-            api_info,
-            output_dir,
-            auth,
-            db_type,
-        )
-
-    # Use original hybrid generation
-    with console.status("[bold green]Generating Locust tests with AI..."):
-        generator = HybridLocustGenerator(
-            ai_client=together_client,
-            ai_config=ai_config,
-            output_dir=output_dir,
-            diagnostics=diagnostics,
-        )
-        test_files, test_directories = await generator.generate_from_endpoints(
-            endpoints=endpoints,
-            api_info=api_info,
-            custom_requirement=custom_requirement,
-            target_host=host,
-            include_auth=auth,
-            db_type=db_type,
-        )
-
-    # Create test files
-    with console.status("[bold green]Creating test files..."):
-        created_files = []
-
-        # Create workflow files
-        if test_directories:
-            workflows_dir = output_dir / "workflows"
-            workflows_dir.mkdir(exist_ok=True)
-            for file_workflow in test_directories:
-                workflow_files = await generator._create_test_files_safely(
-                    file_workflow, workflows_dir
-                )
-                created_files.extend(workflow_files)
-
-        # Create main test files
-        if test_files:
-            main_files = await generator._create_test_files_safely(
-                test_files, output_dir
-            )
-            created_files.extend(main_files)
-
-    return created_files
+    # Always use scenario-based generation for better results
+    return await _generate_scenario_based_tests(
+        together_client,
+        ai_config,
+        endpoints,
+        api_info,
+        output_dir,
+        auth,
+        db_type,
+    )
 
 
 async def _generate_scenario_based_tests(
@@ -444,12 +402,6 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     default=120,
     help="Timeout in seconds for AI API calls (default: 120, increase for large APIs)",
 )
-@click.option(
-    "--scenario-mode",
-    is_flag=True,
-    default=False,
-    help="Enable scenario-based generation: splits tests into positive/negative/security files per tag",
-)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -466,7 +418,6 @@ def generate(
     together_api_key: Optional[str],
     diagnostics: bool,
     timeout: int,
-    scenario_mode: bool,
 ) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
 
@@ -488,7 +439,6 @@ def generate(
                 together_api_key,
                 diagnostics,
                 timeout,
-                scenario_mode,
             )
         )
     except Exception as e:
@@ -515,7 +465,6 @@ async def _async_generate(
     together_api_key: Optional[str],
     diagnostics: bool = False,
     timeout: int = 120,
-    scenario_mode: bool = False,
 ) -> None:
     """Async function to handle the generation process"""
 
@@ -553,7 +502,6 @@ async def _async_generate(
             db_type,
             diagnostics,
             timeout,
-            scenario_mode,
         )
 
         # Show results
