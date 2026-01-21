@@ -19,6 +19,7 @@ TEST DATA MODULE (test_data.py):
 === ALLOWED IMPORTS (use ONLY these) ===
 ```python
 import random
+from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
@@ -51,6 +52,11 @@ Before writing code, you MUST reason through these steps:
   - For /responses/206 → expect 206, NOT 200
   - For /responses/500 → expect 500, NOT 200
   - DO NOT write tests expecting 200 for these endpoints!
+- **CRITICAL**: Is this a REDIRECT endpoint (3xx like 301, 302, 307, 308)?
+  - For paths like /responses/307, /responses/301, /responses/302, /responses/308
+  - You MUST use allow_redirects=False to capture the actual redirect status code
+  - Example: self.client.get("/responses/307", allow_redirects=False, catch_response=True)
+  - Without allow_redirects=False, the HTTP client auto-follows redirects and you'll see 200!
 
 **STEP 2 - EXTRACT SCHEMA FIELDS:**
 - List ALL required fields from the Schema (exact names!)
@@ -125,6 +131,7 @@ STEP 5 - TEST METHODS TO GENERATE:
 
 <code>
 import random
+from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator

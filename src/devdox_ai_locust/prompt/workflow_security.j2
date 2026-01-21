@@ -18,10 +18,11 @@ TEST DATA MODULE (test_data.py):
 
 === ALLOWED IMPORTS (use ONLY these) ===
 ```python
+import random
+from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
-import random
 ```
 
 === CRITICAL: OUTPUT REQUIREMENTS ===
@@ -130,10 +131,11 @@ STEP 4 - EXPECTED RESPONSES:
 </analysis>
 
 <code>
+import random
+from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
-import random
 
 SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --"]
 XSS_PAYLOADS = ["<script>alert('XSS')</script>"]

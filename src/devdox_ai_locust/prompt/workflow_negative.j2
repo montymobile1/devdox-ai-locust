@@ -19,6 +19,7 @@ TEST DATA MODULE (test_data.py):
 === ALLOWED IMPORTS (use ONLY these) ===
 ```python
 import random
+from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
@@ -143,6 +144,7 @@ STEP 5 - EXPECTED STATUS CODES:
 
 <code>
 import random
+from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
