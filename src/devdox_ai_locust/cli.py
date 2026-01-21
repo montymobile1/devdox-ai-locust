@@ -352,16 +352,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             endpoint_to_tag[id(ep)] = tag_name
 
     # Track active workers for concurrent progress display
-    active_workers: Dict[int, str] = {}  # worker_task_id -> endpoint_info
+    active_workers: set = set()  # Set of active endpoint short_info strings
     active_lock = asyncio.Lock()
-    worker_task_ids: List[Any] = []  # Progress task IDs for workers
 
     # Process endpoint and save files (resilient - catches and tracks errors)
     async def process_and_save_endpoint(
         endpoint: Any,
         progress: Progress,
         task_id: Any,
-        worker_slots: List[Any],
     ) -> List[Dict[str, Any]]:
         nonlocal completed_count, failed_count
         tag_name = endpoint_to_tag.get(id(endpoint), "default")
@@ -370,15 +368,9 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         endpoint_info = f"{endpoint.method} {endpoint.path}"
         short_info = f"{endpoint.method} {endpoint.path[:30]}..." if len(endpoint.path) > 30 else endpoint_info
 
-        # Claim a worker slot
-        worker_slot = None
+        # Track active worker
         async with active_lock:
-            for i, slot_id in enumerate(worker_slots):
-                if slot_id not in active_workers:
-                    active_workers[slot_id] = short_info
-                    worker_slot = slot_id
-                    progress.update(slot_id, description=f"[cyan]  → {short_info}[/cyan]")
-                    break
+            active_workers.add(short_info)
 
         try:
             # Create endpoint directory
@@ -409,15 +401,15 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                         "scenario": scenario_type.value,
                     })
 
-            # Update progress (success) and release worker slot
+            # Update progress (success) and release worker
             async with file_write_lock:
                 completed_count += 1
                 created_files.extend(local_files)
-                progress.update(task_id, completed=completed_count + failed_count)
-                # Release worker slot
-                if worker_slot is not None:
-                    active_workers.pop(worker_slot, None)
-                    progress.update(worker_slot, description="[dim]  · idle[/dim]")
+                active_workers.discard(short_info)
+                # Update progress with active worker count
+                active_count = len(active_workers)
+                desc = f"[green]Generating workflows...[/green] [dim]({active_count} active)[/dim]"
+                progress.update(task_id, completed=completed_count + failed_count, description=desc)
 
             return local_files
 
@@ -452,11 +444,11 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     "error_type": type(e).__name__,
                 })
                 created_files.extend(fallback_files)  # Use pre-LLM templates
-                progress.update(task_id, completed=completed_count + failed_count)
-                # Release worker slot
-                if worker_slot is not None:
-                    active_workers.pop(worker_slot, None)
-                    progress.update(worker_slot, description="[dim]  · idle[/dim]")
+                active_workers.discard(short_info)
+                # Update progress with active worker count
+                active_count = len(active_workers)
+                desc = f"[green]Generating workflows...[/green] [dim]({active_count} active)[/dim]"
+                progress.update(task_id, completed=completed_count + failed_count, description=desc)
                 # Print full traceback so user can debug (no truncation)
                 progress.console.print(
                     f"\n   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id} failed, using base template:"
@@ -478,33 +470,20 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         TextColumn("[cyan]{task.completed}/{task.total}[/cyan]"),
         console=console,
     ) as progress:
-        # Main progress bar
+        # Main progress bar (description will be updated with active count)
         task_id = progress.add_task(
-            "[green]Generating workflows...",
+            "[green]Generating workflows...[/green] [dim](0 active)[/dim]",
             total=num_endpoints,
         )
 
-        # Add worker slots to show concurrent operations
-        worker_slots = []
-        for i in range(num_workers):
-            slot_id = progress.add_task(
-                "[dim]  · idle[/dim]",
-                total=None,  # Indeterminate progress
-            )
-            worker_slots.append(slot_id)
-
-        # Create all tasks (pass worker_slots for tracking)
+        # Create all tasks
         tasks = [
-            process_and_save_endpoint(ep, progress, task_id, worker_slots)
+            process_and_save_endpoint(ep, progress, task_id)
             for ep in endpoints
         ]
 
         # Run all concurrently (semaphore in generator limits actual API calls)
         await asyncio.gather(*tasks)
-
-        # Clean up worker slots (hide them after completion)
-        for slot_id in worker_slots:
-            progress.update(slot_id, visible=False)
 
     # Show summary
     rate_info = scenario_gen.get_rate_limit_info()
