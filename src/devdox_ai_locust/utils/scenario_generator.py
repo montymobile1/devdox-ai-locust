@@ -176,7 +176,7 @@ class ScenarioWorkflowGenerator:
 
     def estimate_time(self, num_endpoints: int) -> TimeEstimate:
         """
-        Estimate generation time based on rate limits.
+        Estimate generation time based on rate limits and concurrency.
 
         Args:
             num_endpoints: Number of endpoints to process
@@ -184,16 +184,20 @@ class ScenarioWorkflowGenerator:
         Returns:
             TimeEstimate with calculated values
         """
-        # 5 LLM calls per endpoint (positive + negative + edge + state + security)
+        # 3 LLM calls per endpoint (positive + negative + security)
         total_calls = num_endpoints * self.num_scenarios
 
         rpm = self._rate_limit_info.requests_per_minute if self._rate_limit_info else 60
-        estimated_minutes = total_calls / rpm
+
+        # Factor in concurrency - with N concurrent workers, effective throughput is higher
+        # But still bounded by rate limit (rpm)
+        effective_rpm = min(rpm, self._current_concurrency * 20)  # ~3s per call avg
+        estimated_minutes = total_calls / effective_rpm
         estimated_seconds = estimated_minutes * 60
 
         return TimeEstimate(
             total_calls=total_calls,
-            rpm=rpm,
+            rpm=effective_rpm,
             estimated_minutes=estimated_minutes,
             estimated_seconds=estimated_seconds,
         )

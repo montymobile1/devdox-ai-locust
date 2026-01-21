@@ -64,6 +64,9 @@ REQUIREMENTS:
    - Keep total code under 100 lines
    - NEVER generate excessively long strings
    - For file uploads (multipart/form-data): use files= parameter, NOT json=
+   - **BYTES LITERALS MUST BE ASCII ONLY**: Never put unicode in b'...' literals
+     WRONG: b'tëst' (SyntaxError!)
+     CORRECT: b'test' or 'tëst'.encode('utf-8')
 
 5. **CLASS STRUCTURE**:
    ```python

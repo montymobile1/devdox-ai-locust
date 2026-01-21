@@ -39,6 +39,9 @@ REQUIREMENTS:
    - Use the exact payloads shown above
    - Keep total code under 80 lines
    - For file uploads: use files= parameter, NOT json=
+   - **BYTES LITERALS MUST BE ASCII ONLY**: Never put unicode in b'...' literals
+     WRONG: b'tëst' (SyntaxError!)
+     CORRECT: b'test' or 'tëst'.encode('utf-8')
 
 5. **CLASS STRUCTURE**:
    ```python
