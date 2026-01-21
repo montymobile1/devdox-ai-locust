@@ -165,24 +165,20 @@ async def _process_api_schema(
     if not api_schema:
         console.print("[red]✗[/red] Failed to fetch API schema")
         sys.exit(1)
-    schema_length = len(api_schema) if api_schema else 0
-    console.print(
-        f"[green]✓[/green] Successfully fetched API schema ({schema_length} characters)"
-    )
+    schema_kb = len(api_schema) // 1024 if api_schema else 0
 
     # Parse schema
     with console.status("[bold green]Parsing API schema..."):
         parser = OpenAPIParser()
         try:
             schema_data = parser.parse_schema(api_schema)
-            if verbose:
-                console.print("✓ Schema data parsed successfully")
-
             endpoints = parser.parse_endpoints()
             api_info = parser.get_schema_info()
 
+            # Consolidated output: schema + endpoints in one line
+            api_title = api_info.get('title', 'API')
             console.print(
-                f"[green]📋 Parsed {len(endpoints)} endpoints from {api_info.get('title', 'API')}[/green]"
+                f"[green]✓[/green] Loaded [bold]{api_title}[/bold] ({schema_kb}KB) — {len(endpoints)} endpoints"
             )
             return schema_data, endpoints, api_info
 
@@ -263,12 +259,9 @@ async def _generate_scenario_based_tests(
     time_estimate = scenario_gen.estimate_time(num_endpoints)
     estimated_rpm = time_estimate.rpm
 
-    console.print(f"\n📊 [bold]Per-Endpoint Generation[/bold]")
-    console.print(f"   Tags: {num_tags}")
-    console.print(f"   Endpoints: {num_endpoints}")
-    console.print(f"   API calls needed: {time_estimate.total_calls} ({num_scenarios} per endpoint)")
-    console.print(f"   Estimated time: {time_estimate}")
-    console.print(f"   Files per endpoint: {scenario_filenames}\n")
+    console.print(f"\n📊 [bold]Generation Plan[/bold]")
+    console.print(f"   {num_endpoints} endpoints × {num_scenarios} scenarios = {time_estimate.total_calls} LLM calls")
+    console.print(f"   Estimated: {time_estimate} (across {num_tags} tags)\n")
 
     # Generate base files first using template generator
     template_gen = LocustTestGenerator()
@@ -341,15 +334,15 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 '''
 
     # Generate all pre-LLM templates upfront (before LLM processing)
-    console.print("[bold cyan]📝 Generating pre-LLM templates...[/bold cyan]")
-    pre_llm_templates: Dict[Tuple[int, str], str] = {}
-    scenario_types = ["positive", "negative", "security"]
-    for endpoint in endpoints:
-        for scenario_type in scenario_types:
-            pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
-                endpoint, scenario_type
-            )
-    console.print(f"   Generated {len(pre_llm_templates)} pre-LLM templates\n")
+    with console.status("[bold cyan]Preparing fallback templates...[/bold cyan]"):
+        pre_llm_templates: Dict[Tuple[int, str], str] = {}
+        scenario_types = ["positive", "negative", "security"]
+        for endpoint in endpoints:
+            for scenario_type in scenario_types:
+                pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
+                    endpoint, scenario_type
+                )
+    console.print("[green]✓[/green] Fallback templates ready")
 
     # Build endpoint to tag mapping
     endpoint_to_tag = {}
@@ -445,8 +438,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             return fallback_files
 
     # Process all endpoints in parallel with progress bar
-    console.print(f"\n[bold cyan]🚀 Processing {num_endpoints} endpoints in parallel[/bold cyan]")
-    console.print(f"   Concurrency: {scenario_gen.current_concurrency} concurrent API calls\n")
+    console.print(f"\n🚀 [bold cyan]Generating workflows[/bold cyan] ({scenario_gen.current_concurrency} concurrent)\n")
 
     with Progress(
         SpinnerColumn(),
