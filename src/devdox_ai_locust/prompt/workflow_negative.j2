@@ -16,14 +16,33 @@ TEST DATA AVAILABLE:
 
 REQUIREMENTS:
 
-1. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
+1. **CRITICAL - DETECT RESPONSE-TESTING ENDPOINTS**:
+   If the endpoint path contains `/responses/` followed by a status code (e.g., `/responses/404`, `/responses/401`),
+   or if the endpoint's purpose is to RETURN a specific HTTP status code for testing:
+   - This is a MOCK/TEST endpoint that ALWAYS returns that specific status code
+   - Do NOT test for 400/422 validation errors - the endpoint ignores input validation
+   - Instead, test that it correctly returns its designated status code
+   - Example for `/responses/404`: expect 404, NOT 400/422
+
+   ```python
+   @task(3)
+   def test_expected_status_code(self):
+       """Test that endpoint returns its designated status code"""
+       with self.client.get("/api/v1/comprehensive/responses/404", catch_response=True) as response:
+           if response.status_code == 404:  # Expected status from the endpoint
+               response.success()
+           else:
+               response.failure(f"Expected 404, got {response.status_code}")
+   ```
+
+2. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
    - You MUST use the EXACT property names listed in the Schema section above
    - Do NOT invent field names like "field", "string_field", "data", etc.
    - Use the actual field names when testing invalid values
    - Check if the endpoint has required fields before testing "missing required field"
    - If Schema shows "Required fields: none", skip the missing-field test
 
-2. **NEGATIVE TEST SCENARIOS** (Validation Errors):
+3. **NEGATIVE TEST SCENARIOS** (Validation Errors - SKIP for response-testing endpoints):
    Generate 2-3 @task methods for error handling:
    - Missing required fields (ONLY if schema has required fields) - expect 400/422 (weight: 3)
    - Invalid data types for actual schema fields - expect 400/422 (weight: 3)
@@ -35,12 +54,12 @@ REQUIREMENTS:
    - If path param is string/UUID: use "nonexistent-id-12345" or "00000000-0000-0000-0000-000000000000"
    - Example: `self.client.get("/items/999999999", ...)` for integer ID params
 
-3. **EDGE CASE SCENARIOS** (Boundary Testing):
+4. **EDGE CASE SCENARIOS** (Boundary Testing - SKIP for response-testing endpoints):
    Generate 1-2 @task methods for boundaries:
    - Empty strings/zero values for actual schema fields (weight: 2)
    - Unicode/special characters in actual schema fields (weight: 2)
 
-4. **CONSTRAINTS** (CRITICAL):
+5. **CONSTRAINTS** (CRITICAL):
    - ALL test values must be SHORT: max 50 characters
    - For unicode tests in strings, use 1-5 special chars (e.g., "tëst")
    - For path parameter tests: use the correct type (int if schema says integer)
@@ -51,7 +70,7 @@ REQUIREMENTS:
      WRONG: b'tëst' (SyntaxError!)
      CORRECT: b'test' or 'tëst'.encode('utf-8')
 
-5. **CLASS STRUCTURE**:
+6. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
@@ -72,7 +91,7 @@ REQUIREMENTS:
                    response.failure(f"Expected 400/422, got {response.status_code}")
    ```
 
-6. **IMPORTANT**:
+7. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Mark success() when expected error occurs
