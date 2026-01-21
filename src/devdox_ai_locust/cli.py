@@ -2,6 +2,7 @@ import click
 import sys
 import asyncio
 import aiofiles
+import traceback
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
@@ -431,11 +432,11 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 })
                 created_files.extend(fallback_files)  # Use pre-LLM templates
                 progress.update(task_id, completed=completed_count + failed_count)
-                # Print error with details so user can debug
-                error_msg = str(e)[:200]  # Truncate very long errors
+                # Print full traceback so user can debug
                 progress.console.print(
-                    f"   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id}: [red]{type(e).__name__}[/red]: {error_msg}"
+                    f"\n   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id} failed, using base template:"
                 )
+                progress.console.print(f"[red]{traceback.format_exc()}[/red]")
             return fallback_files
 
     # Process all endpoints in parallel with progress bar
