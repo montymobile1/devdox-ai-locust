@@ -197,7 +197,6 @@ async def _generate_and_create_tests(
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
     db_type: str = "",
-    debug_logger: Optional[Any] = None,
     timeout: int = 120,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
@@ -215,7 +214,6 @@ async def _generate_and_create_tests(
         output_dir,
         auth,
         db_type,
-        debug_logger,
     )
 
 
@@ -227,7 +225,6 @@ async def _generate_scenario_based_tests(
     output_dir: Path,
     auth: bool,
     db_type: str,
-    debug_logger: Optional[Any] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
@@ -252,7 +249,6 @@ async def _generate_scenario_based_tests(
         prompt_dir=prompt_dir,
         ai_client=ai_client,
         ai_config=ai_config,
-        debug_logger=debug_logger,
     )
 
     # Get dynamic counts from generator
@@ -439,14 +435,6 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     "fallback": True,
                 })
 
-                # Log to debug logger if available (for exceptions that bypass normal logging)
-                if debug_logger:
-                    debug_logger.log_final_outcome(
-                        tag_name, operation_id, scenario_type,
-                        success=False, used_fallback=True, final_code=fallback_content,
-                        error_message=f"{type(e).__name__}: {str(e)}"
-                    )
-
             async with file_write_lock:
                 failed_count += 1
                 failed_endpoints.append({
@@ -615,12 +603,6 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="Together AI API key (can also be set via TOGETHER_API_KEY env var)",
 )
 @click.option(
-    "--debug",
-    is_flag=True,
-    default=False,
-    help="Enable debug mode: saves prompts, LLM responses, and artifacts to .devdox-ai-locust/debug/",
-)
-@click.option(
     "--timeout",
     type=int,
     default=120,
@@ -640,9 +622,8 @@ def generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
-    debug: bool,
     timeout: int,
-) -> None:  # Added return type annotation
+) -> None:
     """Generate Locust test files from API documentation URL or file"""
 
     try:
@@ -661,7 +642,6 @@ def generate(
                 dry_run,
                 custom_requirement,
                 together_api_key,
-                debug,
                 timeout,
             )
         )
@@ -687,20 +667,10 @@ async def _async_generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
-    debug: bool = False,
     timeout: int = 120,
 ) -> None:
     """Async function to handle the generation process"""
-    from devdox_ai_locust.utils.debug_logger import create_debug_logger
-
     start_time = datetime.now(timezone.utc)
-
-    # Always create debug logger to capture artifacts for debugging
-    # When --debug is passed: files are kept silently (always_keep=True)
-    # When --debug is NOT passed: we ask at the end if there were failures
-    debug_logger = create_debug_logger(always_keep=debug)
-    if debug:
-        console.print(f"[blue]🔍[/blue] Debug mode enabled: {debug_logger.session_dir}")
 
     try:
         _, api_key = _initialize_config(together_api_key)
@@ -732,15 +702,7 @@ async def _async_generate(
             host,
             auth,
             db_type,
-            debug_logger,
             timeout,
-        )
-
-        # Finalize debug session with stats
-        debug_logger.finalize_session(
-            total_endpoints=len(endpoints),
-            successful=debug_logger.success_count,
-            failed=debug_logger.failure_count,
         )
 
         # Show results
@@ -755,35 +717,6 @@ async def _async_generate(
             run_time,
             host,
         )
-
-        # Handle debug file retention based on --debug flag and failures
-        if debug_logger.always_keep:
-            # --debug was passed: keep files silently
-            if debug_logger.has_failures:
-                console.print(f"\n[blue]🔍[/blue] Debug artifacts saved to: {debug_logger.get_session_path()}")
-                console.print(f"   [dim]{debug_logger.failure_count} failures logged in exceptions_summary.json[/dim]")
-            else:
-                console.print(f"\n[dim]Debug artifacts saved to: {debug_logger.get_session_path()}[/dim]")
-        elif debug_logger.has_failures:
-            # --debug was NOT passed but there were failures: ask user
-            console.print()
-            console.print(f"[bold yellow]Debug files available:[/bold yellow] {debug_logger.get_session_path()}")
-            console.print(f"[dim]Contains detailed logs for {debug_logger.failure_count} failed generations[/dim]")
-            console.print()
-
-            try:
-                keep = console.input("[bold]Keep debug files for review?[/bold] [y/N]: ")
-                if keep.lower().strip() in ('y', 'yes'):
-                    console.print(f"[green]✓[/green] Debug files kept at: {debug_logger.get_session_path()}")
-                else:
-                    debug_logger.delete_session()
-                    console.print("[dim]Debug files deleted[/dim]")
-            except (EOFError, KeyboardInterrupt):
-                # Non-interactive mode or user cancelled - keep files by default
-                console.print(f"\n[dim]Debug files kept at: {debug_logger.get_session_path()}[/dim]")
-        else:
-            # --debug was NOT passed and no failures: clean up silently
-            debug_logger.delete_session()
 
     except Exception as e:
         end_time = datetime.now(timezone.utc)

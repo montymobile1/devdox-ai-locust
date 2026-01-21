@@ -132,7 +132,6 @@ class ScenarioWorkflowGenerator:
         ai_client: Any,
         ai_config: Any,
         max_concurrency: int = MAX_CONCURRENCY,
-        debug_logger: Optional[Any] = None,
     ):
         """
         Initialize the scenario generator.
@@ -142,12 +141,10 @@ class ScenarioWorkflowGenerator:
             ai_client: Together AI client for LLM calls
             ai_config: AI configuration (model, timeout, etc.)
             max_concurrency: Maximum concurrent API calls
-            debug_logger: Optional DebugLogger for saving artifacts
         """
         self.prompt_dir = prompt_dir
         self.ai_client = ai_client
         self.ai_config = ai_config
-        self.debug_logger = debug_logger
         self._rate_limit_info: Optional[RateLimitInfo] = None
         self._max_concurrency = max_concurrency
         self._current_concurrency = self.DEFAULT_CONCURRENCY
@@ -356,14 +353,6 @@ class ScenarioWorkflowGenerator:
         operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
         scenario_name = scenario_type.value
 
-        # Debug logging helper
-        def debug_log(step: str, **kwargs):
-            if self.debug_logger:
-                self.debug_logger.log_generation_event(
-                    tag_name, operation_id, scenario_name, step, kwargs if kwargs else None
-                )
-
-        debug_log("started")
 
         template_name = self.PROMPT_TEMPLATES.get(scenario_type)
         if not template_name:
@@ -378,21 +367,6 @@ class ScenarioWorkflowGenerator:
         # Build class name from operation_id
         class_name = self._operation_to_class_name(endpoint)
 
-        # Log endpoint info for debugging
-        if self.debug_logger:
-            endpoint_info = {
-                "method": endpoint.method,
-                "path": endpoint.path,
-                "operation_id": operation_id,
-                "summary": getattr(endpoint, "summary", ""),
-                "parameters": [
-                    {"name": p.name, "in": getattr(p, "location", getattr(p, "in_", "query")), "required": p.required}
-                    for p in (getattr(endpoint, "parameters", []) or [])
-                ],
-                "has_request_body": hasattr(endpoint, "request_body") and endpoint.request_body is not None,
-            }
-            self.debug_logger.log_endpoint_info(tag_name, operation_id, scenario_name, endpoint_info)
-
         # Render prompt
         prompt = template.render(
             endpoint=endpoint_details,
@@ -405,12 +379,6 @@ class ScenarioWorkflowGenerator:
             path=endpoint.path,
         )
 
-        # Log rendered prompt
-        if self.debug_logger:
-            self.debug_logger.log_rendered_prompt(tag_name, operation_id, scenario_name, prompt)
-
-        debug_log("prompt_rendered", template=template_name)
-
         # Call LLM with validation retry (error-aware on retry)
         max_validation_retries = 2
         last_error = None
@@ -418,34 +386,17 @@ class ScenarioWorkflowGenerator:
         current_prompt = prompt  # Start with the original prompt
 
         for attempt in range(max_validation_retries):
-            debug_log(f"llm_call_attempt_{attempt + 1}")
-
             # On retry, use error-aware fix prompt instead of original
             if attempt > 0 and last_error and last_code:
-                debug_log("using_fix_prompt", error=last_error)
                 current_prompt = self._render_fix_prompt(last_code, last_error)
-
-                # Log the fix prompt
-                if self.debug_logger:
-                    self.debug_logger.log_rendered_prompt(
-                        tag_name, operation_id, scenario_name + "_fix", current_prompt
-                    )
 
             content = await self._call_ai_service(current_prompt, scenario_type.value)
 
-            # Log raw LLM response
-            if self.debug_logger:
-                self.debug_logger.log_llm_response(
-                    tag_name, operation_id, scenario_name, content or "(empty)", attempt + 1
-                )
-
             if not content:
-                debug_log("error_empty_response")
                 raise AIServiceError(f"AI service returned empty response for {scenario_type.value} [{endpoint.method} {endpoint.path}]")
 
             # Detect if API returned HTML error page instead of code
             if content.strip().startswith('<') and '<html' in content.lower():
-                debug_log("error_html_response")
                 raise AIServiceError(
                     f"API returned HTML error page instead of code for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}]. "
@@ -455,10 +406,6 @@ class ScenarioWorkflowGenerator:
             # Extract code from response
             extracted = self._extract_code(content)
 
-            # Log extracted code
-            if self.debug_logger:
-                self.debug_logger.log_extracted_code(tag_name, operation_id, scenario_name, extracted, attempt + 1)
-
             # Fix class name to match expected naming convention
             # LLMs sometimes ignore the template and generate their own class names
             after_class_fix = self._fix_class_name(extracted, class_name, scenario_type.value)
@@ -466,37 +413,11 @@ class ScenarioWorkflowGenerator:
             # Fix bytes literals with unicode (b'tëst' → 'tëst'.encode('utf-8'))
             after_bytes_fix = self._fix_bytes_literals(after_class_fix)
 
-            # Track what fixes were applied
-            fixes_applied = []
-            if after_class_fix != extracted:
-                fixes_applied.append("class_name_fix")
-            if after_bytes_fix != after_class_fix:
-                fixes_applied.append("bytes_literal_fix")
-
-            # Log after fixes
-            if self.debug_logger:
-                self.debug_logger.log_after_fixes(
-                    tag_name, operation_id, scenario_name, after_bytes_fix, fixes_applied, attempt + 1
-                )
-
             content = after_bytes_fix
 
             is_valid, error = self._validate_python_code(content)
 
-            # Log validation result
-            if self.debug_logger:
-                self.debug_logger.log_validation_result(
-                    tag_name, operation_id, scenario_name, is_valid, error, content, attempt + 1
-                )
-
             if is_valid:
-                debug_log("success", attempt=attempt + 1)
-                # Log final successful outcome
-                if self.debug_logger:
-                    self.debug_logger.log_final_outcome(
-                        tag_name, operation_id, scenario_name,
-                        success=True, used_fallback=False, final_code=content
-                    )
                 return content
 
             # Save for error reporting and fix prompt on retry
@@ -508,19 +429,9 @@ class ScenarioWorkflowGenerator:
                     f"Validation failed for {scenario_type.value} [{endpoint.method} {endpoint.path}], "
                     f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying with fix prompt..."
                 )
-                debug_log("validation_failed_retrying_with_fix", error=error)
                 await asyncio.sleep(1)
 
         # All retries exhausted
-        debug_log("all_retries_exhausted", final_error=last_error)
-
-        # Log final failed outcome
-        if self.debug_logger:
-            self.debug_logger.log_final_outcome(
-                tag_name, operation_id, scenario_name,
-                success=False, used_fallback=False, final_code=last_code, error_message=last_error
-            )
-
         raise CodeValidationError(
             scenario_type.value,
             last_error,
