@@ -10,11 +10,17 @@ API Information:
 from locust import HttpUser, task, between, events, SequentialTaskSet, TaskSet
 import json
 import logging
+import traceback
+import sys
 from typing import Dict, Any, Optional, List
 from urllib.parse import urljoin
 
 from test_data import TestDataGenerator
-from utils import ResponseValidator, RequestLogger, PerformanceMonitor
+from utils import (
+    ResponseValidator, RequestLogger, PerformanceMonitor,
+    ErrorContext, RequestContext, log_failure, capture_exception_context,
+    create_request_context, create_response_context
+)
 from config import LoadTestConfig
 
 # Configure logging
@@ -116,6 +122,12 @@ class BaseTaskMethods:
         self._initialize_attributes()
         self.request_count += 1
 
+        # Build full URL
+        full_url = urljoin(config.base_url, path)
+
+        # Create request context BEFORE making the request (for error logging)
+        request_context = None
+
         try:
             # Merge headers
             request_headers = {**self.default_headers, **kwargs.get("headers", {})}
@@ -129,18 +141,31 @@ class BaseTaskMethods:
 
             kwargs["headers"] = request_headers
 
-            # Log request
-            RequestLogger.log_request(method, path, kwargs)
+            # Create request context for detailed error logging
+            request_context = create_request_context(method, path, full_url, **kwargs)
+
+            # Log request (also stores context for error logging)
+            logger.info(f"REQUEST: {method.upper()} {full_url}")
+            if kwargs.get('params'):
+                logger.info(f"  Query params: {kwargs['params']}")
+            if kwargs.get('json'):
+                body_preview = json.dumps(kwargs['json'], default=str)
+                if len(body_preview) > 500:
+                    body_preview = body_preview[:500] + "..."
+                logger.info(f"  JSON body: {body_preview}")
 
             with self.client.request(
                 method=method,
-                url=urljoin(config.base_url, path),
+                url=full_url,
                 catch_response=True,
                 **kwargs
             ) as response:
                 # Validate using caller-provided expected_status or method-based defaults
+                # Pass request context for detailed error logging
                 is_valid = response_validator.validate_response(
-                    response, method, path, expected_status=expected_status
+                    response, method, path,
+                    expected_status=expected_status,
+                    request_context=request_context
                 )
                 performance_monitor.record_response(response, method, path)
 
@@ -153,11 +178,48 @@ class BaseTaskMethods:
                 except json.JSONDecodeError:
                     if response.status_code < 400:
                         return {"raw_content": response.text}
+
+                    # Log JSON decode error with full context
+                    error_ctx = ErrorContext(
+                        error_type="json_decode_error",
+                        message=f"Invalid JSON response for {method} {path}",
+                        request=request_context,
+                        response=create_response_context(response),
+                        expected_status=expected_status,
+                        actual_status=response.status_code,
+                    )
+                    log_failure(error_ctx)
                     response.failure(f"Invalid JSON response for {method} {path}")
                     return None
 
         except Exception as e:
-            logger.error(f"Request failed {method} {path}: {e}")
+            # Capture full stack trace
+            stack_trace = traceback.format_exc()
+
+            # Determine error type
+            exception_name = type(e).__name__
+            if 'ConnectionError' in exception_name or 'Connection' in str(e):
+                error_type = "connection_error"
+            elif 'Timeout' in exception_name or 'timeout' in str(e).lower():
+                error_type = "timeout"
+            elif 'SSL' in exception_name:
+                error_type = "ssl_error"
+            else:
+                error_type = "request_exception"
+
+            # Log with full context
+            error_ctx = ErrorContext(
+                error_type=error_type,
+                message=f"Request failed {method} {path}: {str(e)}",
+                request=request_context,
+                response=None,
+                expected_status=expected_status,
+                actual_status=0,  # No response received
+                exception=e,
+                stack_trace=stack_trace,
+            )
+            log_failure(error_ctx)
+
             return None
 
     def _store_response_data(self, method_name: str, data: Dict):
