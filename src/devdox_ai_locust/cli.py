@@ -432,11 +432,13 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 })
                 created_files.extend(fallback_files)  # Use pre-LLM templates
                 progress.update(task_id, completed=completed_count + failed_count)
-                # Print full traceback so user can debug
+                # Print full traceback so user can debug (no truncation)
                 progress.console.print(
                     f"\n   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id} failed, using base template:"
                 )
-                progress.console.print(f"[red]{traceback.format_exc()}[/red]")
+                # Use format_exception with no limit to avoid Python 3.11+ truncation
+                exc_lines = traceback.format_exception(type(e), e, e.__traceback__)
+                progress.console.print(f"[red]{''.join(exc_lines)}[/red]")
             return fallback_files
 
     # Process all endpoints in parallel with progress bar
