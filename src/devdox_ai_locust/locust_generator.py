@@ -187,6 +187,7 @@ class LocustTestGenerator:
                 "locustfile.py": self._generate_main_locustfile(
                     endpoints, api_info, list(grouped_enpoint.keys())
                 ),
+                "base_workflow.py": self.generate_base_common_file(api_info),
                 "test_data.py": self._generate_test_data_file(db_type),
                 "config.py": self._generate_config_file(api_info),
                 "utils.py": self._generate_utils_file(),
