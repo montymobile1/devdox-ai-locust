@@ -23,6 +23,9 @@ from together import AsyncTogether
 
 logger = logging.getLogger(__name__)
 
+# Hardcoded batch size for endpoint processing to prevent LLM output truncation
+ENDPOINT_BATCH_SIZE = 5
+
 
 test_data_file_path = "test_data.py"
 data_provider_path = "data_provider.py"
@@ -465,8 +468,18 @@ class HybridLocustGenerator:
     async def _enhance_locustfile(
         self, base_content: str, endpoints: List[Any], api_info: Dict[str, Any]
     ) -> Optional[str]:
-        # Configuration
+        """
+        Enhance the main locustfile with AI-generated improvements.
 
+        Args:
+            base_content: The template-generated locustfile content.
+            endpoints: List of API endpoints to consider for enhancement.
+            api_info: Dictionary containing API metadata (title, description, etc.).
+
+        Returns:
+            Enhanced locustfile content if successful and valid, otherwise
+            falls back to base_content.
+        """
         try:
             template = self.jinja_env.get_template("locust.j2")
 
@@ -481,7 +494,15 @@ class HybridLocustGenerator:
             # Render enhanced content
             prompt = template.render(**context)
             enhanced_content = await self._call_ai_service(prompt)
-            return enhanced_content
+
+            # Validate the generated Python code
+            if enhanced_content and self._validate_python_code(enhanced_content):
+                return enhanced_content
+
+            logger.warning(
+                "Enhanced locustfile failed syntax validation, using base content"
+            )
+            return base_content
         except Exception as e:
             logger.error(f"Enhancement failed: {e}")
             return base_content
@@ -601,8 +622,21 @@ class HybridLocustGenerator:
         api_info: Dict[str, Any],
         custom_requirement: Optional[str] = "",
     ) -> Optional[str]:
-        """Generate domain-specific user flows"""
+        """
+        Generate domain-specific user flows using AI.
 
+        Analyzes the API domain and generates custom Locust user flow classes
+        tailored to the specific business domain (e.g., e-commerce, user management).
+
+        Args:
+            endpoints: List of API endpoints to analyze.
+            api_info: Dictionary containing API metadata.
+            custom_requirement: Optional custom requirements from the user.
+
+        Returns:
+            Generated domain flow Python code if successful and valid,
+            empty string otherwise.
+        """
         # Analyze endpoints to determine domain
         domain_analysis = self._analyze_api_domain(endpoints, api_info)
         try:
@@ -615,8 +649,14 @@ class HybridLocustGenerator:
             )
 
             enhanced_content = await self._call_ai_service(prompt)
-            if enhanced_content:
+
+            # Validate the generated Python code
+            if enhanced_content and self._validate_python_code(enhanced_content):
                 return enhanced_content
+
+            logger.warning(
+                "Generated domain flows failed syntax validation, skipping"
+            )
         except Exception as e:
             logger.warning(f"Domain flows generation failed: {e}")
 
@@ -628,6 +668,30 @@ class HybridLocustGenerator:
         """Return directory items that contain the specified key"""
         return [items for items in directory_files if target_key in items]
 
+    def _batch_endpoints(
+        self, endpoints: List[Endpoint]
+    ) -> List[List[Endpoint]]:
+        """
+        Split endpoints into batches to prevent LLM output truncation.
+
+        Large endpoint lists can cause the LLM to generate responses that exceed
+        the max_tokens limit, resulting in truncated (and syntactically invalid)
+        Python code. This method splits endpoints into manageable batches.
+
+        Args:
+            endpoints: List of endpoints to batch.
+
+        Returns:
+            List of endpoint batches, each containing at most ENDPOINT_BATCH_SIZE
+            endpoints.
+        """
+        if not endpoints:
+            return []
+        return [
+            endpoints[i : i + ENDPOINT_BATCH_SIZE]
+            for i in range(0, len(endpoints), ENDPOINT_BATCH_SIZE)
+        ]
+
     async def _enhance_workflows(
         self,
         base_content: str,
@@ -638,25 +702,354 @@ class HybridLocustGenerator:
         db_type: str = "",
         template_path: str = workflow_jinja_path,
     ) -> Optional[str]:
+        """
+        Enhance workflow files with AI-generated improvements.
+
+        If the endpoint list is large, it will be processed in batches to prevent
+        LLM output truncation. Each batch generates a separate workflow class
+        (e.g., UsersWorkflowPart1, UsersWorkflowPart2).
+
+        Args:
+            base_content: The template-generated workflow content.
+            test_data_content: Content of the test_data.py file.
+            base_workflow: Content of the base_workflow.py file.
+            grouped_enpoints: Dictionary mapping workflow names to endpoint lists.
+            auth_endpoints: List of authentication-related endpoints.
+            db_type: Database type for data provider integration.
+            template_path: Path to the Jinja2 template.
+
+        Returns:
+            Enhanced workflow content if successful and valid, empty string otherwise.
+        """
         try:
             template = self.jinja_env.get_template(template_path)
 
-            # Render enhanced content
-            prompt = template.render(
-                grouped_enpoints=grouped_enpoints,
+            # Get the workflow key and endpoints
+            workflow_key = list(grouped_enpoints.keys())[0] if grouped_enpoints else ""
+            endpoints = grouped_enpoints.get(workflow_key, [])
+
+            # Check if batching is needed
+            if len(endpoints) <= ENDPOINT_BATCH_SIZE:
+                # No batching needed - process normally
+                return await self._enhance_workflow_single(
+                    template=template,
+                    base_content=base_content,
+                    test_data_content=test_data_content,
+                    base_workflow=base_workflow,
+                    grouped_enpoints=grouped_enpoints,
+                    auth_endpoints=auth_endpoints,
+                    db_type=db_type,
+                )
+
+            # Batching needed - process in batches and generate separate classes
+            return await self._enhance_workflow_batched(
+                template=template,
+                base_content=base_content,
                 test_data_content=test_data_content,
                 base_workflow=base_workflow,
+                workflow_key=workflow_key,
+                endpoints=endpoints,
                 auth_endpoints=auth_endpoints,
-                base_content=base_content,
                 db_type=db_type,
             )
 
-            enhanced_content = await self._call_ai_service(prompt)
-            return enhanced_content
         except Exception as e:
             logger.warning(f"Workflow enhancement failed: {e}")
 
         return ""
+
+    async def _enhance_workflow_single(
+        self,
+        template,
+        base_content: str,
+        test_data_content: str,
+        base_workflow: str,
+        grouped_enpoints: Dict[str, List[Endpoint]],
+        auth_endpoints: List[Endpoint],
+        db_type: str,
+    ) -> Optional[str]:
+        """
+        Enhance a workflow with a single LLM call (no batching).
+
+        Args:
+            template: Jinja2 template object.
+            base_content: The template-generated workflow content.
+            test_data_content: Content of the test_data.py file.
+            base_workflow: Content of the base_workflow.py file.
+            grouped_enpoints: Dictionary mapping workflow names to endpoint lists.
+            auth_endpoints: List of authentication-related endpoints.
+            db_type: Database type for data provider integration.
+
+        Returns:
+            Enhanced workflow content if valid, empty string otherwise.
+        """
+        prompt = template.render(
+            grouped_enpoints=grouped_enpoints,
+            test_data_content=test_data_content,
+            base_workflow=base_workflow,
+            auth_endpoints=auth_endpoints,
+            base_content=base_content,
+            db_type=db_type,
+        )
+
+        enhanced_content = await self._call_ai_service(prompt)
+
+        # Validate the generated Python code
+        if enhanced_content and self._validate_python_code(enhanced_content):
+            return enhanced_content
+
+        logger.warning(
+            "Enhanced workflow failed syntax validation, falling back to template"
+        )
+        return ""
+
+    async def _enhance_workflow_batched(
+        self,
+        template,
+        base_content: str,
+        test_data_content: str,
+        base_workflow: str,
+        workflow_key: str,
+        endpoints: List[Endpoint],
+        auth_endpoints: List[Endpoint],
+        db_type: str,
+    ) -> Optional[str]:
+        """
+        Enhance a workflow by processing endpoints in batches.
+
+        Generates separate workflow classes for each batch (e.g., UsersWorkflowPart1,
+        UsersWorkflowPart2) to prevent LLM output truncation.
+
+        Args:
+            template: Jinja2 template object.
+            base_content: The template-generated workflow content.
+            test_data_content: Content of the test_data.py file.
+            base_workflow: Content of the base_workflow.py file.
+            workflow_key: The name/key of the workflow being enhanced.
+            endpoints: Full list of endpoints to process.
+            auth_endpoints: List of authentication-related endpoints.
+            db_type: Database type for data provider integration.
+
+        Returns:
+            Combined workflow content with multiple classes, or empty string on failure.
+        """
+        batches = self._batch_endpoints(endpoints)
+        all_parts = []
+        batch_size = ENDPOINT_BATCH_SIZE
+
+        for batch_idx, batch in enumerate(batches, start=1):
+            logger.info(
+                f"Processing batch {batch_idx}/{len(batches)} for {workflow_key} "
+                f"({len(batch)} endpoints)"
+            )
+
+            batch_grouped = {workflow_key: batch}
+
+            prompt = template.render(
+                grouped_enpoints=batch_grouped,
+                test_data_content=test_data_content,
+                base_workflow=base_workflow,
+                auth_endpoints=auth_endpoints if batch_idx == 1 else [],
+                base_content=base_content if batch_idx == 1 else "",
+                db_type=db_type,
+            )
+
+            enhanced_content = await self._call_ai_service(prompt)
+
+            # Validate with retry using smaller batches
+            if not enhanced_content or not self._validate_python_code(enhanced_content):
+                logger.warning(
+                    f"Batch {batch_idx} failed validation, retrying with smaller batch"
+                )
+                enhanced_content = await self._retry_with_smaller_batch(
+                    template=template,
+                    batch=batch,
+                    workflow_key=workflow_key,
+                    test_data_content=test_data_content,
+                    base_workflow=base_workflow,
+                    auth_endpoints=auth_endpoints if batch_idx == 1 else [],
+                    base_content=base_content if batch_idx == 1 else "",
+                    db_type=db_type,
+                    current_batch_size=batch_size,
+                )
+
+            if enhanced_content:
+                # Rename class to include part number if multiple batches
+                if len(batches) > 1:
+                    enhanced_content = self._rename_workflow_class(
+                        enhanced_content, workflow_key, batch_idx
+                    )
+                all_parts.append(enhanced_content)
+            else:
+                logger.warning(
+                    f"Batch {batch_idx} failed completely, skipping"
+                )
+
+        if not all_parts:
+            logger.error("All batches failed, returning empty")
+            return ""
+
+        # Combine all parts into a single file
+        return self._combine_workflow_parts(all_parts)
+
+    async def _retry_with_smaller_batch(
+        self,
+        template,
+        batch: List[Endpoint],
+        workflow_key: str,
+        test_data_content: str,
+        base_workflow: str,
+        auth_endpoints: List[Endpoint],
+        base_content: str,
+        db_type: str,
+        current_batch_size: int,
+    ) -> Optional[str]:
+        """
+        Retry workflow enhancement with progressively smaller batches.
+
+        If validation fails, this method halves the batch size and retries until
+        either success or the batch size reaches 1. If all retries fail, returns
+        empty string (caller should fall back to template).
+
+        Args:
+            template: Jinja2 template object.
+            batch: Current batch of endpoints.
+            workflow_key: The name/key of the workflow.
+            test_data_content: Content of the test_data.py file.
+            base_workflow: Content of the base_workflow.py file.
+            auth_endpoints: List of authentication endpoints.
+            base_content: Base workflow content.
+            db_type: Database type.
+            current_batch_size: Current batch size.
+
+        Returns:
+            Valid enhanced content or empty string.
+        """
+        batch_size = current_batch_size // 2
+        results = []
+
+        while batch_size >= 1:
+            logger.info(f"Retrying with batch size: {batch_size}")
+            sub_batches = [
+                batch[i : i + batch_size]
+                for i in range(0, len(batch), batch_size)
+            ]
+
+            all_valid = True
+            batch_results = []
+
+            for sub_batch in sub_batches:
+                sub_grouped = {workflow_key: sub_batch}
+                prompt = template.render(
+                    grouped_enpoints=sub_grouped,
+                    test_data_content=test_data_content,
+                    base_workflow=base_workflow,
+                    auth_endpoints=auth_endpoints,
+                    base_content=base_content,
+                    db_type=db_type,
+                )
+
+                content = await self._call_ai_service(prompt)
+                if content and self._validate_python_code(content):
+                    batch_results.append(content)
+                else:
+                    all_valid = False
+                    break
+
+            if all_valid and batch_results:
+                return self._combine_workflow_parts(batch_results)
+
+            batch_size = batch_size // 2
+
+        logger.error("All retry attempts failed")
+        return ""
+
+    def _rename_workflow_class(
+        self, content: str, workflow_key: str, part_num: int
+    ) -> str:
+        """
+        Rename workflow class to include part number.
+
+        Transforms class names like 'UsersWorkflow' to 'UsersWorkflowPart1' to
+        allow multiple classes in the same file without naming conflicts.
+
+        Args:
+            content: The Python code content.
+            workflow_key: The workflow name/key.
+            part_num: The part number (1-indexed).
+
+        Returns:
+            Content with renamed class.
+        """
+        # Common class name patterns to look for
+        class_patterns = [
+            f"class {workflow_key.title().replace('_', '')}Workflow",
+            f"class {workflow_key.title()}Workflow",
+            f"class {workflow_key.replace('_', ' ').title().replace(' ', '')}Workflow",
+        ]
+
+        for pattern in class_patterns:
+            if pattern in content:
+                new_name = f"{pattern}Part{part_num}"
+                content = content.replace(pattern, new_name, 1)
+                break
+
+        return content
+
+    def _combine_workflow_parts(self, parts: List[str]) -> str:
+        """
+        Combine multiple workflow parts into a single file.
+
+        Deduplicates imports and combines class definitions.
+
+        Args:
+            parts: List of workflow code parts to combine.
+
+        Returns:
+            Combined Python code as a single string.
+        """
+        if not parts:
+            return ""
+
+        if len(parts) == 1:
+            return parts[0]
+
+        # Extract imports from all parts
+        all_imports = set()
+        class_definitions = []
+
+        for part in parts:
+            lines = part.split('\n')
+            imports = []
+            code_lines = []
+            in_imports = True
+
+            for line in lines:
+                stripped = line.strip()
+                if in_imports and (
+                    stripped.startswith('import ')
+                    or stripped.startswith('from ')
+                    or stripped == ''
+                    or stripped.startswith('#')
+                ):
+                    if stripped.startswith('import ') or stripped.startswith('from '):
+                        all_imports.add(line)
+                    elif stripped.startswith('#') and not code_lines:
+                        imports.append(line)
+                else:
+                    in_imports = False
+                    code_lines.append(line)
+
+            if code_lines:
+                class_definitions.append('\n'.join(code_lines))
+
+        # Build combined content
+        sorted_imports = sorted(all_imports)
+        combined = '\n'.join(sorted_imports)
+        combined += '\n\n'
+        combined += '\n\n'.join(class_definitions)
+
+        return combined
 
     async def enhance_test_data_file(
         self,
@@ -667,8 +1060,23 @@ class HybridLocustGenerator:
         db_config: str = "",
         data_provider_path: str = "",
     ) -> Optional[str]:
-        """Enhance test data generation with domain knowledge"""
+        """
+        Enhance test data generation with domain knowledge.
 
+        Uses AI to improve the test data file with more realistic and
+        domain-appropriate data generators based on the API schemas.
+
+        Args:
+            base_content: The template-generated test_data.py content.
+            endpoints: List of API endpoints to analyze for data patterns.
+            db_type: Database type (e.g., 'mongo') for data provider integration.
+            data_provider: Content of the data_provider.py file.
+            db_config: Content of the db_config.py file.
+            data_provider_path: Path to the data provider module.
+
+        Returns:
+            Enhanced test data content if successful and valid, empty string otherwise.
+        """
         # Extract schema information
         schemas_info = self._extract_schema_patterns(endpoints)
 
@@ -699,8 +1107,19 @@ class HybridLocustGenerator:
     async def _enhance_validation(
         self, base_content: str, endpoints: List[Endpoint]
     ) -> Optional[str]:
-        """Enhance response validation with endpoint-specific checks"""
+        """
+        Enhance response validation utilities with endpoint-specific checks.
 
+        Generates improved validation functions based on the API response schemas
+        defined in the endpoints.
+
+        Args:
+            base_content: The template-generated utils.py content.
+            endpoints: List of API endpoints to analyze for validation patterns.
+
+        Returns:
+            Enhanced validation content if successful and valid, empty string otherwise.
+        """
         validation_patterns = self._extract_validation_patterns(endpoints)
         try:
             template = self.jinja_env.get_template("validation.j2")
@@ -710,8 +1129,14 @@ class HybridLocustGenerator:
                 base_content=base_content, validation_patterns=validation_patterns
             )
             enhanced_content = await self._call_ai_service(prompt)
-            if enhanced_content:
+
+            # Validate the generated Python code
+            if enhanced_content and self._validate_python_code(enhanced_content):
                 return enhanced_content
+
+            logger.warning(
+                "Enhanced validation failed syntax validation, skipping"
+            )
         except Exception as e:
             logger.warning(f"Validation enhancement failed: {e}")
 
@@ -1067,7 +1492,19 @@ class HybridLocustGenerator:
                 logger.warning(f"Failed to cleanup temp directory: {e}")
 
     def _validate_python_code(self, content: str) -> bool:
-        """Validate Python code syntax"""
+        """
+        Validate Python code syntax using the compile() built-in.
+
+        This is used to catch truncated or malformed code generated by the LLM
+        before writing it to disk. Truncated code (due to max_tokens limits)
+        typically results in SyntaxError.
+
+        Args:
+            content: Python source code to validate.
+
+        Returns:
+            True if the code compiles successfully, False if there's a SyntaxError.
+        """
         try:
             compile(content, "<string>", "exec")
             return True

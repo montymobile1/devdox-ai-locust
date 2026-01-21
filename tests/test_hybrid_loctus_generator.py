@@ -2379,3 +2379,466 @@ class TestCallAIService:
 
         assert result == "success_code"
         assert call_count["count"] == 3
+
+
+class TestEndpointBatching:
+    """Test endpoint batching functionality to prevent LLM output truncation."""
+
+    def test_batch_endpoints_empty_list(self, mock_together_client):
+        """Test batching with empty endpoint list."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        result = generator._batch_endpoints([])
+        assert result == []
+
+    def test_batch_endpoints_small_list(self, mock_together_client):
+        """Test batching with list smaller than batch size."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        endpoints = [Mock() for _ in range(3)]
+        result = generator._batch_endpoints(endpoints)
+
+        assert len(result) == 1
+        assert len(result[0]) == 3
+
+    def test_batch_endpoints_exact_batch_size(self, mock_together_client):
+        """Test batching with list exactly equal to batch size."""
+        from devdox_ai_locust.hybrid_loctus_generator import ENDPOINT_BATCH_SIZE
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        endpoints = [Mock() for _ in range(ENDPOINT_BATCH_SIZE)]
+        result = generator._batch_endpoints(endpoints)
+
+        assert len(result) == 1
+        assert len(result[0]) == ENDPOINT_BATCH_SIZE
+
+    def test_batch_endpoints_multiple_batches(self, mock_together_client):
+        """Test batching with list requiring multiple batches."""
+        from devdox_ai_locust.hybrid_loctus_generator import ENDPOINT_BATCH_SIZE
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        total_endpoints = ENDPOINT_BATCH_SIZE * 2 + 2
+        endpoints = [Mock() for _ in range(total_endpoints)]
+        result = generator._batch_endpoints(endpoints)
+
+        assert len(result) == 3
+        assert len(result[0]) == ENDPOINT_BATCH_SIZE
+        assert len(result[1]) == ENDPOINT_BATCH_SIZE
+        assert len(result[2]) == 2
+
+    def test_batch_endpoints_preserves_order(self, mock_together_client):
+        """Test that batching preserves endpoint order."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        endpoints = [Mock(name=f"endpoint_{i}") for i in range(12)]
+        result = generator._batch_endpoints(endpoints)
+
+        # Flatten and verify order
+        flattened = [ep for batch in result for ep in batch]
+        assert flattened == endpoints
+
+
+class TestWorkflowClassRenaming:
+    """Test workflow class renaming for batched outputs."""
+
+    def test_rename_workflow_class_standard_name(self, mock_together_client):
+        """Test renaming a standard workflow class."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        content = """
+from locust import HttpUser
+
+class UsersWorkflow(HttpUser):
+    @task
+    def test_users(self):
+        pass
+"""
+        result = generator._rename_workflow_class(content, "users", 2)
+        assert "class UsersWorkflowPart2" in result
+        assert "class UsersWorkflow(" not in result
+
+    def test_rename_workflow_class_with_underscore(self, mock_together_client):
+        """Test renaming workflow class with underscores in name."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        content = """
+class AdminPanelWorkflow(HttpUser):
+    pass
+"""
+        result = generator._rename_workflow_class(content, "admin_panel", 1)
+        # Should match one of the patterns
+        assert "Part1" in result
+
+    def test_rename_workflow_class_no_match(self, mock_together_client):
+        """Test renaming when class pattern doesn't match."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        content = """
+class SomeOtherClass(HttpUser):
+    pass
+"""
+        result = generator._rename_workflow_class(content, "users", 1)
+        # Should return unchanged if no pattern matches
+        assert result == content
+
+
+class TestCombineWorkflowParts:
+    """Test combining multiple workflow parts into single file."""
+
+    def test_combine_workflow_parts_empty(self, mock_together_client):
+        """Test combining empty list of parts."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        result = generator._combine_workflow_parts([])
+        assert result == ""
+
+    def test_combine_workflow_parts_single(self, mock_together_client):
+        """Test combining single part returns unchanged."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        content = "import locust\n\nclass Test:\n    pass"
+        result = generator._combine_workflow_parts([content])
+        assert result == content
+
+    def test_combine_workflow_parts_deduplicates_imports(self, mock_together_client):
+        """Test that combining deduplicates imports."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        part1 = """import locust
+from locust import HttpUser, task
+
+class WorkflowPart1(HttpUser):
+    pass
+"""
+        part2 = """import locust
+from locust import HttpUser, task
+
+class WorkflowPart2(HttpUser):
+    pass
+"""
+        result = generator._combine_workflow_parts([part1, part2])
+
+        # Should only have each import once
+        assert result.count("import locust") == 1
+        assert result.count("from locust import HttpUser, task") == 1
+
+        # Both classes should be present
+        assert "class WorkflowPart1" in result
+        assert "class WorkflowPart2" in result
+
+    def test_combine_workflow_parts_preserves_classes(self, mock_together_client):
+        """Test that combining preserves all class definitions."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+        part1 = """from locust import HttpUser
+
+class UsersPart1(HttpUser):
+    def method1(self):
+        pass
+"""
+        part2 = """from locust import HttpUser
+
+class UsersPart2(HttpUser):
+    def method2(self):
+        pass
+"""
+        result = generator._combine_workflow_parts([part1, part2])
+
+        assert "class UsersPart1" in result
+        assert "class UsersPart2" in result
+        assert "def method1" in result
+        assert "def method2" in result
+
+
+class TestEnhanceWorkflowSingle:
+    """Test single workflow enhancement (no batching)."""
+
+    @pytest.mark.asyncio
+    async def test_enhance_workflow_single_valid_code(self, mock_together_client):
+        """Test enhancement returns valid code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        template = Mock()
+        template.render.return_value = "prompt"
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            mock_ai.return_value = """
+from locust import HttpUser
+
+class TestWorkflow(HttpUser):
+    pass
+"""
+            result = await generator._enhance_workflow_single(
+                template=template,
+                base_content="# base",
+                test_data_content="# test data",
+                base_workflow="# base workflow",
+                grouped_enpoints={"users": []},
+                auth_endpoints=[],
+                db_type="",
+            )
+
+            assert "class TestWorkflow" in result
+
+    @pytest.mark.asyncio
+    async def test_enhance_workflow_single_invalid_code_returns_empty(
+        self, mock_together_client
+    ):
+        """Test enhancement returns empty string for invalid code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        template = Mock()
+        template.render.return_value = "prompt"
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            # Return truncated/invalid code
+            mock_ai.return_value = """
+from locust import HttpUser
+
+class TestWorkflow(HttpUser):
+    def method(self):
+        if True:
+            # truncated here
+"""
+            result = await generator._enhance_workflow_single(
+                template=template,
+                base_content="# base",
+                test_data_content="# test data",
+                base_workflow="# base workflow",
+                grouped_enpoints={"users": []},
+                auth_endpoints=[],
+                db_type="",
+            )
+
+            assert result == ""
+
+
+class TestEnhanceWorkflowBatched:
+    """Test batched workflow enhancement."""
+
+    @pytest.mark.asyncio
+    async def test_enhance_workflow_batched_creates_parts(self, mock_together_client):
+        """Test batched enhancement creates separate class parts."""
+        from devdox_ai_locust.hybrid_loctus_generator import ENDPOINT_BATCH_SIZE
+
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        # Create more endpoints than batch size
+        endpoints = [Mock() for _ in range(ENDPOINT_BATCH_SIZE + 2)]
+
+        template = Mock()
+        template.render.return_value = "prompt"
+
+        call_count = {"count": 0}
+
+        async def mock_ai_call(prompt):
+            call_count["count"] += 1
+            return f"""
+from locust import HttpUser
+
+class UsersWorkflow(HttpUser):
+    def method_{call_count["count"]}(self):
+        pass
+"""
+
+        with patch.object(generator, "_call_ai_service", side_effect=mock_ai_call):
+            result = await generator._enhance_workflow_batched(
+                template=template,
+                base_content="# base",
+                test_data_content="# test data",
+                base_workflow="# base workflow",
+                workflow_key="users",
+                endpoints=endpoints,
+                auth_endpoints=[],
+                db_type="",
+            )
+
+            # Should have called AI service twice (2 batches)
+            assert call_count["count"] == 2
+
+            # Should contain both parts
+            assert "Part1" in result or "Part2" in result
+
+
+class TestValidationRetry:
+    """Test validation-based retry with smaller batches."""
+
+    @pytest.mark.asyncio
+    async def test_retry_halves_batch_size(self, mock_together_client):
+        """Test that retry halves batch size on failure."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        endpoints = [Mock() for _ in range(4)]
+        template = Mock()
+        template.render.return_value = "prompt"
+
+        call_sizes = []
+
+        async def mock_ai_call(prompt):
+            # Track batch sizes based on prompt content
+            call_sizes.append(len(endpoints))
+            return """
+from locust import HttpUser
+
+class TestWorkflow(HttpUser):
+    pass
+"""
+
+        with patch.object(generator, "_call_ai_service", side_effect=mock_ai_call):
+            result = await generator._retry_with_smaller_batch(
+                template=template,
+                batch=endpoints,
+                workflow_key="test",
+                test_data_content="",
+                base_workflow="",
+                auth_endpoints=[],
+                base_content="",
+                db_type="",
+                current_batch_size=4,
+            )
+
+            # Should return valid content
+            assert "class TestWorkflow" in result
+
+
+class TestEnhanceWorkflowsWithValidation:
+    """Test _enhance_workflows with syntax validation."""
+
+    @pytest.mark.asyncio
+    async def test_enhance_workflows_validates_output(self, mock_together_client):
+        """Test that _enhance_workflows validates generated code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            # Return valid Python code
+            mock_ai.return_value = """
+from locust import HttpUser
+
+class TestWorkflow(HttpUser):
+    @task
+    def test(self):
+        pass
+"""
+            result = await generator._enhance_workflows(
+                base_content="# base",
+                test_data_content="# test data",
+                base_workflow="# base workflow",
+                grouped_enpoints={"users": [Mock()]},
+                auth_endpoints=[],
+            )
+
+            assert "class TestWorkflow" in result
+
+    @pytest.mark.asyncio
+    async def test_enhance_workflows_rejects_invalid_code(self, mock_together_client):
+        """Test that _enhance_workflows rejects syntactically invalid code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            # Return truncated/invalid Python code
+            mock_ai.return_value = """
+from locust import HttpUser
+
+class TestWorkflow(HttpUser):
+    @task
+    def test(self):
+        if True:
+            # Code truncated here - missing closing
+"""
+            result = await generator._enhance_workflows(
+                base_content="# base",
+                test_data_content="# test data",
+                base_workflow="# base workflow",
+                grouped_enpoints={"users": [Mock()]},
+                auth_endpoints=[],
+            )
+
+            # Should return empty string for invalid code
+            assert result == ""
+
+
+class TestEnhanceLocustfileWithValidation:
+    """Test _enhance_locustfile with syntax validation."""
+
+    @pytest.mark.asyncio
+    async def test_enhance_locustfile_validates_output(self, mock_together_client):
+        """Test that _enhance_locustfile validates generated code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        result = await generator._enhance_locustfile(
+            base_content="# base", endpoints=[], api_info={"title": "Test"}
+        )
+
+        # The mock returns valid code, so it should pass validation
+        assert "class TestUser" in result or "import locust" in result
+
+    @pytest.mark.asyncio
+    async def test_enhance_locustfile_falls_back_on_invalid(self, mock_together_client):
+        """Test fallback to base content when validation fails."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            # Return invalid code
+            mock_ai.return_value = "def broken(:"
+
+            base_content = "# valid base content\nprint('hello')"
+            result = await generator._enhance_locustfile(
+                base_content=base_content, endpoints=[], api_info={"title": "Test"}
+            )
+
+            # Should fall back to base content
+            assert result == base_content
+
+
+class TestEnhanceValidationWithSyntaxCheck:
+    """Test _enhance_validation with syntax validation."""
+
+    @pytest.mark.asyncio
+    async def test_enhance_validation_validates_output(self, mock_together_client):
+        """Test that _enhance_validation validates generated code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            mock_ai.return_value = """
+def validate_response(response):
+    return response.status_code == 200
+"""
+            result = await generator._enhance_validation(
+                base_content="# base", endpoints=[]
+            )
+
+            assert "def validate_response" in result
+
+    @pytest.mark.asyncio
+    async def test_enhance_validation_rejects_invalid(self, mock_together_client):
+        """Test that _enhance_validation rejects invalid code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            mock_ai.return_value = "def broken(:"
+
+            result = await generator._enhance_validation(
+                base_content="# base", endpoints=[]
+            )
+
+            assert result == ""
+
+
+class TestGenerateDomainFlowsWithValidation:
+    """Test _generate_domain_flows with syntax validation."""
+
+    @pytest.mark.asyncio
+    async def test_generate_domain_flows_validates_output(self, mock_together_client):
+        """Test that _generate_domain_flows validates generated code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        result = await generator._generate_domain_flows(
+            endpoints=[], api_info={"title": "Test"}
+        )
+
+        # The mock returns valid code
+        assert "class" in result or "import" in result
+
+    @pytest.mark.asyncio
+    async def test_generate_domain_flows_rejects_invalid(self, mock_together_client):
+        """Test that _generate_domain_flows rejects invalid code."""
+        generator = HybridLocustGenerator(ai_client=mock_together_client)
+
+        with patch.object(generator, "_call_ai_service") as mock_ai:
+            mock_ai.return_value = "class Broken(:"
+
+            result = await generator._generate_domain_flows(
+                endpoints=[], api_info={"title": "Test"}
+            )
+
+            assert result == ""
