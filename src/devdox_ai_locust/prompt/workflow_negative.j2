@@ -42,7 +42,18 @@ REQUIREMENTS:
    - Check if the endpoint has required fields before testing "missing required field"
    - If Schema shows "Required fields: none", skip the missing-field test
 
-3. **NEGATIVE TEST SCENARIOS** (Validation Errors - SKIP for response-testing endpoints):
+3. **CRITICAL - OPTIONAL FIELDS DON'T CAUSE VALIDATION ERRORS**:
+   - If endpoint name/path contains "optional" (e.g., `/upload/single-optional`), omitting the field succeeds (200)
+   - Do NOT expect 400/422 for missing optional fields - the request will succeed!
+   - Only test validation errors for REQUIRED fields
+   - For optional file uploads: test with malformed files, not missing files
+
+4. **CRITICAL - ARRAY/INDEX ENDPOINTS RETURN 404 FOR MISSING INDEX**:
+   - If endpoint path contains array index (e.g., `/arrays/constrained/0`, `/items/{index}`):
+   - Accessing non-existent index returns 404 (not found), NOT 400/422 (validation error)
+   - Test for 404 when accessing non-existent indices, not 400/422
+
+5. **NEGATIVE TEST SCENARIOS** (Validation Errors - SKIP for response-testing endpoints):
    Generate 2-3 @task methods for error handling:
    - Missing required fields (ONLY if schema has required fields) - expect 400/422 (weight: 3)
    - Invalid data types for actual schema fields - expect 400/422 (weight: 3)
@@ -54,12 +65,12 @@ REQUIREMENTS:
    - If path param is string/UUID: use "nonexistent-id-12345" or "00000000-0000-0000-0000-000000000000"
    - Example: `self.client.get("/items/999999999", ...)` for integer ID params
 
-4. **EDGE CASE SCENARIOS** (Boundary Testing - SKIP for response-testing endpoints):
+6. **EDGE CASE SCENARIOS** (Boundary Testing - SKIP for response-testing endpoints):
    Generate 1-2 @task methods for boundaries:
    - Empty strings/zero values for actual schema fields (weight: 2)
    - Unicode/special characters in actual schema fields (weight: 2)
 
-5. **CONSTRAINTS** (CRITICAL):
+7. **CONSTRAINTS** (CRITICAL):
    - ALL test values must be SHORT: max 50 characters
    - For unicode tests in strings, use 1-5 special chars (e.g., "tëst")
    - For path parameter tests: use the correct type (int if schema says integer)
@@ -70,7 +81,7 @@ REQUIREMENTS:
      WRONG: b'tëst' (SyntaxError!)
      CORRECT: b'test' or 'tëst'.encode('utf-8')
 
-6. **CLASS STRUCTURE**:
+8. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
@@ -91,7 +102,7 @@ REQUIREMENTS:
                    response.failure(f"Expected 400/422, got {response.status_code}")
    ```
 
-7. **IMPORTANT**:
+9. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Mark success() when expected error occurs

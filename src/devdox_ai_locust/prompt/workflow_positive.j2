@@ -24,27 +24,44 @@ REQUIREMENTS:
 2. **STATE-DEPENDENT SCENARIOS** (CRITICAL for GET/PUT/DELETE with path params):
    If the endpoint has path parameters like `/{id}` or `/{user_id}/posts/{post_id}`:
    - You MUST create the resource FIRST, then use the returned ID
-   - NEVER use random/hardcoded IDs - they will return 404
+   - NEVER use random/hardcoded IDs like /users/1/posts/1 - they will return 404!
    - Extract the ID from the response using the EXACT field name from Response Schema
 
    Example for GET /items/{item_id}:
    ```python
    @task(5)
    def test_create_then_get(self):
-       # Step 1: Create a resource first (POST to parent endpoint)
-       create_data = {"name": "Test Item"}  # Use actual schema fields
-       create_resp = self.client.post("/items", json=create_data)
+       # Step 1: Create a resource first
+       create_resp = self.client.post("/items", json={"name": "Test"})
        if create_resp.status_code not in [200, 201]:
-           return  # Can't test without created resource
-
-       # Step 2: Extract ID using EXACT field name from Response Schema
-       # CHECK THE RESPONSE SCHEMA - use "id" if that's what it shows, not "item_id"
-       resource_id = create_resp.json().get("id")  # Use actual response field
+           return
+       resource_id = create_resp.json().get("id")
        if not resource_id:
            return
-
-       # Step 3: Now test the actual endpoint with the real ID
+       # Step 2: Now test with the real ID
        with self.client.get(f"/items/{resource_id}", catch_response=True) as response:
+           if response.status_code == 200:
+               response.success()
+           else:
+               response.failure(f"Expected 200, got {response.status_code}")
+   ```
+
+   Example for NESTED resources like GET /users/{user_id}/posts/{post_id}:
+   ```python
+   @task(5)
+   def test_nested_resource(self):
+       # Step 1: Create parent resource (user)
+       user_resp = self.client.post("/users", json={"name": "Test User"})
+       if user_resp.status_code not in [200, 201]:
+           return
+       user_id = user_resp.json().get("id")
+       # Step 2: Create child resource (post)
+       post_resp = self.client.post(f"/users/{user_id}/posts", json={"title": "Test"})
+       if post_resp.status_code not in [200, 201]:
+           return
+       post_id = post_resp.json().get("id")
+       # Step 3: Now test the nested endpoint
+       with self.client.get(f"/users/{user_id}/posts/{post_id}", catch_response=True) as response:
            if response.status_code == 200:
                response.success()
            else:
