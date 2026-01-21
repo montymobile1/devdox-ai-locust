@@ -363,21 +363,32 @@ class ScenarioWorkflowGenerator:
         return ""
 
     def _extract_code(self, response: str) -> str:
-        """Extract code from <code> tags"""
+        """Extract code from <code> tags with robust fallback handling"""
         import re
+
+        # Try case-insensitive match with closing tag
         pattern = r"<code>(.*?)</code>"
-        matches = re.findall(pattern, response, re.DOTALL)
+        matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
 
         if matches:
             return max(matches, key=len).strip()
 
-        # Fallback: clean up response
+        # Fallback: handle <code> without closing tag
+        code_start = re.search(r"<code>", response, re.IGNORECASE)
+        if code_start:
+            response = response[code_start.end():]
+
+        # Clean up markdown code blocks
         if response.startswith("```python"):
             response = response[9:]
         if response.startswith("```"):
             response = response[3:]
         if response.endswith("```"):
             response = response[:-3]
+
+        # Final cleanup - strip any remaining tags
+        response = re.sub(r"^</?code>", "", response, flags=re.IGNORECASE)
+        response = re.sub(r"</?code>$", "", response, flags=re.IGNORECASE)
 
         return response.strip()
 

@@ -306,7 +306,7 @@ async def _generate_scenario_based_tests(
                 if content:
                     filename = scenario_gen.SCENARIO_FILES[scenario_type]
                     file_path = tag_dir / filename
-                    file_path.write_text(content)
+                    file_path.write_text(content, encoding='utf-8')
                     created_files.append({
                         "path": str(file_path),
                         "size": len(content),
@@ -328,7 +328,7 @@ async def _generate_scenario_based_tests(
     with console.status("[bold green]Creating base files..."):
         for filename, content in base_files.items():
             file_path = output_dir / filename
-            file_path.write_text(content)
+            file_path.write_text(content, encoding='utf-8')
             created_files.append({
                 "path": str(file_path),
                 "size": len(content),
