@@ -40,7 +40,7 @@ dependencies = [
     "colorama>=0.4.0",
     "rich>=12.0.0",
     "pydantic>=1.10.0",
-    "together>=2.0.0",
+    "together>=2.0.0a0",  # Allow pre-release versions until v2 stable is released
     "jinja2>=3.0.0",
     "aiofiles>=23.0.0",
     "black==25.1.0",
