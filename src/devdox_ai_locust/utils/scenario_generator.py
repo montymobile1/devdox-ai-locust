@@ -411,15 +411,27 @@ class ScenarioWorkflowGenerator:
 
         debug_log("prompt_rendered", template=template_name)
 
-        # Call LLM with validation retry
+        # Call LLM with validation retry (error-aware on retry)
         max_validation_retries = 2
         last_error = None
         last_code = None
+        current_prompt = prompt  # Start with the original prompt
 
         for attempt in range(max_validation_retries):
             debug_log(f"llm_call_attempt_{attempt + 1}")
 
-            content = await self._call_ai_service(prompt, scenario_type.value)
+            # On retry, use error-aware fix prompt instead of original
+            if attempt > 0 and last_error and last_code:
+                debug_log("using_fix_prompt", error=last_error)
+                current_prompt = self._render_fix_prompt(last_code, last_error)
+
+                # Log the fix prompt
+                if self.debug_logger:
+                    self.debug_logger.log_rendered_prompt(
+                        tag_name, operation_id, scenario_name + "_fix", current_prompt
+                    )
+
+            content = await self._call_ai_service(current_prompt, scenario_type.value)
 
             # Log raw LLM response
             if self.debug_logger:
@@ -487,16 +499,16 @@ class ScenarioWorkflowGenerator:
                     )
                 return content
 
-            # Save for error reporting
+            # Save for error reporting and fix prompt on retry
             last_error = error
             last_code = content
 
             if attempt < max_validation_retries - 1:
                 logger.warning(
                     f"Validation failed for {scenario_type.value} [{endpoint.method} {endpoint.path}], "
-                    f"attempt {attempt + 1}/{max_validation_retries}: {error}"
+                    f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying with fix prompt..."
                 )
-                debug_log("validation_failed_retrying", error=error)
+                debug_log("validation_failed_retrying_with_fix", error=error)
                 await asyncio.sleep(1)
 
         # All retries exhausted
@@ -1012,6 +1024,40 @@ class ScenarioWorkflowGenerator:
         # Match b'...' or b"..." - non-greedy to handle multiple on same line
         pattern = r"b(['\"])([^'\"]*?)\1"
         return re.sub(pattern, fix_match, code)
+
+    def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
+        """
+        Render the fix prompt template with the failed code and error.
+
+        This is used for error-aware retries - instead of blindly retrying
+        with the same prompt, we give the LLM context about what went wrong.
+
+        Args:
+            failed_code: The code that failed validation
+            error_message: The validation error message
+
+        Returns:
+            Rendered fix prompt string
+        """
+        try:
+            template = self.prompt_env.get_template("workflow_fix.j2")
+            return template.render(
+                failed_code=failed_code,
+                error_message=error_message,
+            )
+        except Exception as e:
+            # Fallback to simple prompt if template fails
+            logger.warning(f"Failed to render fix template: {e}")
+            return f"""Fix this Python syntax error:
+
+Error: {error_message}
+
+Code:
+```python
+{failed_code}
+```
+
+Output the complete corrected Python code:"""
 
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
         """Validate Python syntax and return error details if invalid"""
