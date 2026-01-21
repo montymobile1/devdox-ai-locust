@@ -2,13 +2,11 @@
 Scenario-based Workflow Generator
 
 Generates separate workflow files for different test scenario types per endpoint:
-- Positive scenarios (happy path)
-- Negative scenarios (validation errors + error handling)
-- Edge scenarios (boundary conditions)
-- State scenarios (state-dependent tests)
+- Positive scenarios (happy path + state-dependent)
+- Negative scenarios (validation errors + edge cases + error handling)
 - Security scenarios (injection, auth bypass)
 
-Uses 5 LLM calls per endpoint for focused, non-truncated output.
+Uses 3 LLM calls per endpoint for focused, non-truncated output.
 """
 
 import asyncio
@@ -24,10 +22,8 @@ logger = logging.getLogger(__name__)
 
 class ScenarioType(Enum):
     """Types of test scenarios (all LLM-generated)"""
-    POSITIVE = "positive"      # Happy path tests
-    NEGATIVE = "negative"      # Validation errors + error handling
-    EDGE = "edge"              # Edge cases + boundary conditions
-    STATE = "state"            # State-dependent tests
+    POSITIVE = "positive"      # Happy path + state-dependent tests
+    NEGATIVE = "negative"      # Validation errors + edge cases + error handling
     SECURITY = "security"      # Injection attacks + auth bypass
 
 
@@ -82,20 +78,16 @@ class ScenarioWorkflowGenerator:
     """
     Generates scenario-based workflow files using LLM.
 
-    Uses 5 LLM calls per endpoint for focused, non-truncated output:
-    - Call 1: Positive scenarios (happy path)
-    - Call 2: Negative scenarios (validation + error handling)
-    - Call 3: Edge scenarios (boundary conditions)
-    - Call 4: State scenarios (state-dependent)
-    - Call 5: Security scenarios (injection, auth bypass)
+    Uses 3 LLM calls per endpoint for focused, non-truncated output:
+    - Call 1: Positive scenarios (happy path + state-dependent)
+    - Call 2: Negative scenarios (validation + edge cases + error handling)
+    - Call 3: Security scenarios (injection, auth bypass)
     """
 
     # Mapping of scenario types to output filenames
     SCENARIO_FILES = {
         ScenarioType.POSITIVE: "positive_workflow.py",
         ScenarioType.NEGATIVE: "negative_workflow.py",
-        ScenarioType.EDGE: "edge_workflow.py",
-        ScenarioType.STATE: "state_workflow.py",
         ScenarioType.SECURITY: "security_workflow.py",
     }
 
@@ -103,8 +95,6 @@ class ScenarioWorkflowGenerator:
     PROMPT_TEMPLATES = {
         ScenarioType.POSITIVE: "workflow_positive.j2",
         ScenarioType.NEGATIVE: "workflow_negative.j2",
-        ScenarioType.EDGE: "workflow_edge.j2",
-        ScenarioType.STATE: "workflow_state.j2",
         ScenarioType.SECURITY: "workflow_security.j2",
     }
 

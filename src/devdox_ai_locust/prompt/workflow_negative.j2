@@ -1,4 +1,4 @@
-TASK: Generate NEGATIVE and ERROR HANDLING test scenarios for a SINGLE endpoint.
+TASK: Generate NEGATIVE, EDGE CASE, and ERROR HANDLING test scenarios for a SINGLE endpoint.
 
 ENDPOINT TO TEST:
 {{ endpoint }}
@@ -17,19 +17,24 @@ TEST DATA AVAILABLE:
 REQUIREMENTS:
 
 1. **NEGATIVE TEST SCENARIOS** (Validation Errors):
-   Generate 3-5 @task methods that test error handling:
+   Generate 2-3 @task methods for error handling:
    - Missing required fields - expect 400/422 (weight: 3)
    - Invalid data types - expect 400/422 (weight: 3)
    - Non-existent resource ID - expect 404 (weight: 3)
 
-2. **CLASS STRUCTURE**:
+2. **EDGE CASE SCENARIOS** (Boundary Testing):
+   Generate 1-2 @task methods for boundaries:
+   - Empty strings/zero values (weight: 2)
+   - Unicode/special characters (weight: 2)
+
+3. **CLASS STRUCTURE**:
    ```python
    from base_workflow import BaseWorkflow
    import test_data
    import uuid
 
    class {{ class_name }}NegativeWorkflow(BaseWorkflow):
-       """Negative tests for {{ method }} {{ path }}"""
+       """Negative and edge case tests for {{ method }} {{ path }}"""
 
        @task(3)
        def test_missing_required_field(self):
@@ -39,13 +44,22 @@ REQUIREMENTS:
                    response.success()
                else:
                    response.failure(f"Expected 400/422, got {response.status_code}")
+
+       @task(2)
+       def test_edge_empty_string(self):
+           """Test with empty string"""
+           data = {"field": ""}
+           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
+               if response.status_code in [200, 201, 400, 422]:
+                   response.success()
+               else:
+                   response.failure(f"Unexpected: {response.status_code}")
    ```
 
-3. **IMPORTANT**:
+4. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
-   - Keep code concise (50-80 lines max)
+   - Keep code concise (60-100 lines max)
    - Mark success() when expected error occurs
-   - Do NOT include edge cases or security tests
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.

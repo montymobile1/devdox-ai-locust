@@ -1,4 +1,4 @@
-TASK: Generate POSITIVE (happy path) test scenarios for a SINGLE endpoint.
+TASK: Generate POSITIVE and STATE-DEPENDENT test scenarios for a SINGLE endpoint.
 
 ENDPOINT TO TEST:
 {{ endpoint }}
@@ -16,24 +16,29 @@ TEST DATA AVAILABLE:
 
 REQUIREMENTS:
 
-1. **POSITIVE TEST SCENARIOS** (Happy Path Only):
-   Generate 3-5 @task methods that test successful operations:
+1. **POSITIVE TEST SCENARIOS** (Happy Path):
+   Generate 2-3 @task methods for successful operations:
    - Valid data with all required fields (weight: 10)
    - Valid data with optional fields included (weight: 8)
-   - Different valid data combinations (weight: 5)
 
-2. **CLASS STRUCTURE**:
+2. **STATE-DEPENDENT SCENARIOS**:
+   Generate 1-2 @task methods for state interactions:
+   - Create then read/update (weight: 5)
+   - Operation on created resource (weight: 5)
+
+3. **CLASS STRUCTURE**:
    ```python
    from base_workflow import BaseWorkflow
    import test_data
 
    class {{ class_name }}PositiveWorkflow(BaseWorkflow):
-       """Positive tests for {{ method }} {{ path }}"""
+       """Positive and state tests for {{ method }} {{ path }}"""
+
+       created_ids = []
 
        @task(10)
-       def test_success_with_required_fields(self):
-           """Test successful operation with required fields only"""
-           # Use actual endpoint path and method
+       def test_success_with_valid_data(self):
+           """Test successful operation"""
            with self.client.{{ method|lower }}("{{ path }}", ..., catch_response=True) as response:
                if response.status_code in [200, 201]:
                    response.success()
@@ -41,11 +46,10 @@ REQUIREMENTS:
                    response.failure(f"Expected success, got {response.status_code}")
    ```
 
-3. **IMPORTANT**:
+4. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
-   - Keep code concise (50-80 lines max)
+   - Keep code concise (60-100 lines max)
    - Use catch_response=True for proper Locust reporting
-   - Do NOT include error handling or edge cases
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.
