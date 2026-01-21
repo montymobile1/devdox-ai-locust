@@ -130,12 +130,12 @@ class ResponseValidator:
 
         # Validate status code
         if response.status_code not in valid_status_codes:
-            logger.warning(f"Unexpected status code {response.status_code} for {method_upper} {endpoint} (expected one of {valid_status_codes})")
             # Log with traceback
             try:
                 resp_body = response.text[:1000] if response.text else None
             except Exception:
                 resp_body = None
+            logger.error(f"Request failed: {method_upper} {endpoint} - Expected {valid_status_codes}, got {response.status_code}")
             log_request_failure(request_body=request_body, response_body=resp_body)
             is_valid = False
 
@@ -259,9 +259,9 @@ class PerformanceMonitor:
             self.error_counts[endpoint_key] += 1
 
     def on_request_event(self, request_type, name, response_time, response_length, exception, context):
-        if exception:
-            logger.error(f"Request failed: {request_type} {name} - {exception}")
-            log_request_failure()
+        # Note: Detailed traceback is already logged by validate_response() or make_request()
+        # This just records the event for metrics - no need for duplicate traceback
+        pass
 
     def get_statistics(self) -> Dict[str, Any]:
         if not self.metrics:
