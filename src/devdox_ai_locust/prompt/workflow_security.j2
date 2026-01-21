@@ -28,7 +28,7 @@ REQUIREMENTS:
    - Script tags: `<script>alert('XSS')</script>`
    - Event handlers: `<img src=x onerror=alert('XSS')>`
    - SVG/iframe: `<svg onload=alert('XSS')>`
-   - Template injection: `{{constructor.constructor('alert(1)')()}}`
+   - Template injection: `{{ '{{' }}constructor.constructor('alert(1)')(){{ '}}' }}`
    - Expect sanitization or rejection
 
 3. **COMMAND INJECTION TESTS** (weight: 2):
