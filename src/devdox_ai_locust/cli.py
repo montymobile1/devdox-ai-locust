@@ -5,7 +5,7 @@ import aiofiles
 import traceback
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Tuple, Union, List, Dict, Any
+from typing import Optional, Tuple, Union, List, Dict, Any, TextIO
 from rich.console import Console
 from rich.table import Table
 from together import AsyncTogether
@@ -17,6 +17,111 @@ from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
+
+
+class TeeOutput:
+    """Tee stdout/stderr to both terminal and log file."""
+
+    def __init__(self, original: TextIO, log_file: TextIO):
+        self.original = original
+        self.log_file = log_file
+
+    def write(self, data: str) -> int:
+        self.original.write(data)
+        self.original.flush()
+        self.log_file.write(data)
+        self.log_file.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        self.original.flush()
+        self.log_file.flush()
+
+    def fileno(self) -> int:
+        return self.original.fileno()
+
+    def isatty(self) -> bool:
+        return self.original.isatty()
+
+
+def _extract_flags_from_argv() -> List[str]:
+    """Extract flag names (without values) from sys.argv for log filename."""
+    flags = []
+    argv = sys.argv[1:]  # Skip script name
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg.startswith('--'):
+            # Long flag: --output, --host, etc.
+            flag_name = arg.lstrip('-').split('=')[0]  # Handle --flag=value
+            flags.append(flag_name)
+        elif arg.startswith('-') and len(arg) == 2:
+            # Short flag: -o, -H, etc. (skip as they're duplicates of long flags)
+            pass
+        i += 1
+    return flags
+
+
+def _flags_to_camel_case(flags: List[str]) -> str:
+    """Convert flag names to camelCase string.
+
+    Example: ['output', 'host', 'auth'] -> 'OutputHostAuth'
+    """
+    if not flags:
+        return ""
+    # Capitalize each flag and join
+    return "".join(flag.replace("-", " ").title().replace(" ", "") for flag in flags)
+
+
+def _setup_logging(output_dir: Path, command_type: str, include_flags: bool = True) -> Tuple[Path, TextIO]:
+    """Setup tee logging to capture all terminal output.
+
+    Args:
+        output_dir: Directory to save the log file
+        command_type: Type of command (e.g., 'generate', 'run')
+        include_flags: Whether to include command flags in filename
+
+    Returns:
+        Tuple of (log_path, log_file)
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = output_dir.name
+
+    # Build filename with command flags
+    if include_flags:
+        flags = _extract_flags_from_argv()
+        flags_str = _flags_to_camel_case(flags)
+        if flags_str:
+            log_filename = f"{dir_name}_{command_type}{flags_str}_{timestamp}.log"
+        else:
+            log_filename = f"{dir_name}_{command_type}_{timestamp}.log"
+    else:
+        log_filename = f"{dir_name}_{command_type}_{timestamp}.log"
+
+    log_path = output_dir / log_filename
+
+    log_file = open(log_path, "w", encoding="utf-8")
+
+    # Replace stdout and stderr with tee versions
+    sys.stdout = TeeOutput(sys.__stdout__, log_file)
+    sys.stderr = TeeOutput(sys.__stderr__, log_file)
+
+    # Print the full command at the start of the log
+    full_command = " ".join(sys.argv)
+    print(f"$ {full_command}")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("-" * 60)
+    print()
+
+    return log_path, log_file
+
+
+def _teardown_logging(log_file: TextIO, log_path: Path) -> None:
+    """Restore original stdout/stderr and close log file."""
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+    print(f"\n📝 Log saved to: {log_path}")
 
 
 def _initialize_config(together_api_key: Optional[str]) -> Tuple[Settings, str]:
@@ -621,6 +726,10 @@ def generate(
 ) -> None:
     """Generate Locust test files from API documentation URL or file"""
 
+    # Setup output directory and logging
+    output_dir = _setup_output_directory(output)
+    log_path, log_file = _setup_logging(output_dir, "generate")
+
     try:
         # Run the async generation
         asyncio.run(
@@ -647,6 +756,8 @@ def generate(
 
             console.print(traceback.format_exc())
         sys.exit(1)
+    finally:
+        _teardown_logging(log_file, log_path)
 
 
 async def _async_generate(
@@ -739,11 +850,16 @@ def run(
     host: str,
     headless: bool,
 ) -> None:
-    """Run generated Locust tests"""
+    """Run generated Locust tests with automatic logging"""
+    import subprocess
+
+    test_file_path = Path(test_file)
+    test_suite_dir = test_file_path.parent
+
+    # Setup logging
+    log_path, log_file = _setup_logging(test_suite_dir, "locust_run")
 
     try:
-        import subprocess
-
         cmd = [
             "locust",
             "-f",
@@ -765,16 +881,43 @@ def run(
             console.print(f"[blue]Running command:[/blue] {' '.join(cmd)}")
 
         console.print("[green]Starting Locust test...[/green]")
-        subprocess.run(cmd, check=True)
 
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Test execution failed:[/red] {e}")
-        sys.exit(1)
+        # Run locust with real-time output capture via tee
+        # Since we've already setup tee on stdout/stderr, subprocess output
+        # needs to be captured and printed (which will tee to log)
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        # Read and display output in real-time (tee will capture it)
+        try:
+            for line in process.stdout:
+                print(line, end="", flush=True)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrupted by user[/yellow]")
+            process.terminate()
+            process.wait()
+
+        return_code = process.wait()
+
+        if return_code != 0:
+            console.print(f"[red]Test execution failed with exit code {return_code}[/red]")
+            sys.exit(return_code)
+
     except FileNotFoundError:
         console.print(
             "[red]Locust not found. Please install locust: pip install locust[/red]"
         )
         sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error running Locust:[/red] {e}")
+        sys.exit(1)
+    finally:
+        _teardown_logging(log_file, log_path)
 
 
 def main() -> None:

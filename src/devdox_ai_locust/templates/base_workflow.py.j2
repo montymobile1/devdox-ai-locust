@@ -14,18 +14,16 @@ import traceback
 from typing import Dict, Any, Optional, List
 
 from test_data import TestDataGenerator
-from utils import ResponseValidator, RequestLogger, PerformanceMonitor, log_request_failure
+from utils import RequestLogger, performance_monitor, response_validator, log_request_failure
 from config import LoadTestConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize components
+# Initialize components (singletons imported from utils)
 config = LoadTestConfig()
 data_generator = TestDataGenerator()
-response_validator = ResponseValidator()
-performance_monitor = PerformanceMonitor()
 
 
 class BaseTaskMethods:

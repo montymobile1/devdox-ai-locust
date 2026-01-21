@@ -395,5 +395,8 @@ class DataManager:
             del self.user_data[user_id]
 
 
-# Global instances
+# Global singleton instances
+# These are shared across all modules to ensure consistent state
 data_manager = DataManager()
+performance_monitor = PerformanceMonitor()
+response_validator = ResponseValidator()

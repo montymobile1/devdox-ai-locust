@@ -8,6 +8,106 @@ API Information:
 - Base URL: {{ api_info.get('base_url', 'http://localhost') }}
 """
 
+import sys
+import atexit
+from pathlib import Path
+from datetime import datetime
+from typing import TextIO
+
+
+# =============================================================================
+# AUTO-LOGGING: Captures all terminal output to a log file
+# =============================================================================
+class _TeeOutput:
+    """Tee stdout/stderr to both terminal and log file."""
+
+    def __init__(self, original: TextIO, log_file: TextIO):
+        self.original = original
+        self.log_file = log_file
+
+    def write(self, data: str) -> int:
+        self.original.write(data)
+        self.original.flush()
+        self.log_file.write(data)
+        self.log_file.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        self.original.flush()
+        self.log_file.flush()
+
+    def fileno(self) -> int:
+        return self.original.fileno()
+
+    def isatty(self) -> bool:
+        return self.original.isatty()
+
+
+def _extract_flags_from_argv():
+    """Extract flag names (without values) from sys.argv for log filename."""
+    flags = []
+    argv = sys.argv[1:]  # Skip script name
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg.startswith('--'):
+            # Long flag: --users, --host, etc.
+            flag_name = arg.lstrip('-').split('=')[0]  # Handle --flag=value
+            flags.append(flag_name)
+        i += 1
+    return flags
+
+
+def _flags_to_camel_case(flags):
+    """Convert flag names to camelCase string."""
+    if not flags:
+        return ""
+    return "".join(flag.replace("-", " ").title().replace(" ", "") for flag in flags)
+
+
+def _setup_auto_logging():
+    """Setup automatic logging when locustfile is loaded."""
+    log_dir = Path(__file__).parent
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Build filename with command flags
+    flags = _extract_flags_from_argv()
+    flags_str = _flags_to_camel_case(flags)
+    if flags_str:
+        log_filename = f"{log_dir.name}_locustRun{flags_str}_{timestamp}.log"
+    else:
+        log_filename = f"{log_dir.name}_locustRun_{timestamp}.log"
+
+    log_path = log_dir / log_filename
+
+    log_file = open(log_path, "w", encoding="utf-8")
+
+    # Replace stdout and stderr with tee versions
+    sys.stdout = _TeeOutput(sys.__stdout__, log_file)
+    sys.stderr = _TeeOutput(sys.__stderr__, log_file)
+
+    # Print the full command at the start of the log
+    full_command = " ".join(sys.argv)
+    print(f"$ {full_command}")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("-" * 60)
+    print()
+
+    def cleanup():
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        log_file.close()
+        print(f"\n📝 Log saved to: {log_path}")
+
+    atexit.register(cleanup)
+    return log_path
+
+
+# Initialize auto-logging when this file is imported
+_log_path = _setup_auto_logging()
+# =============================================================================
+
+
 from locust import HttpUser, task, between, events, TaskSet
 from locust.runners import MasterRunner
 import json
@@ -18,18 +118,16 @@ from workflows.base_workflow import BaseAPIUser, BaseTaskMethods, BaseWorkflow
 {{ import_group_tasks }}
 
 from test_data import TestDataGenerator
-from utils import ResponseValidator, RequestLogger, PerformanceMonitor
+from utils import ResponseValidator, RequestLogger, performance_monitor, response_validator
 from config import LoadTestConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize components
+# Initialize components (singletons imported from utils)
 config = LoadTestConfig()
 data_generator = TestDataGenerator()
-response_validator = ResponseValidator()
-performance_monitor = PerformanceMonitor()
 
 
 # Collect all workflow classes (TaskSet subclasses) from imported workflows
