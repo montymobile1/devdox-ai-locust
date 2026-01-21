@@ -21,31 +21,27 @@ from locust.runners import MasterRunner
 logger = logging.getLogger(__name__)
 
 
-def log_request_failure(error_msg: str, method: str = None, path: str = None,
-                        expected_status: List[int] = None, actual_status: int = None,
-                        request_body: Any = None, response_body: str = None,
-                        exception: Exception = None):
+def log_request_failure(method: str = None, path: str = None,
+                        request_body: Any = None, response_body: str = None):
     """
-    Log a request failure in Python traceback style.
+    Log a request failure with full traceback showing workflow path.
 
-    Output format mimics Python's native traceback for familiarity.
+    Output format mimics Python's native traceback.
     """
-    lines = ["", "Request failed (most recent call last):"]
+    # Build traceback section
+    lines = [
+        "",
+        "Traceback (most recent call last):"
+    ]
 
-    # Add actual Python traceback (file paths and line numbers)
-    tb_lines = traceback.format_stack()[:-1]  # Exclude this function
-    for line in tb_lines[-6:]:  # Last 6 frames to keep it readable
-        lines.append(line.rstrip())
+    # Get full stack trace with proper formatting
+    stack = traceback.extract_stack()[:-1]  # Exclude this function
+    for frame in stack:
+        lines.append(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}')
+        if frame.line:
+            lines.append(f"    {frame.line}")
 
-    # Add the error message
-    if expected_status and actual_status is not None:
-        lines.append(f"StatusMismatch: Expected {expected_status}, got {actual_status}")
-    elif exception:
-        lines.append(f"{type(exception).__name__}: {exception}")
-    else:
-        lines.append(f"RequestError: {error_msg}")
-
-    # Add request/response context (indented, simple)
+    # Add request/response context
     if method and path:
         lines.append(f"  Request: {method.upper()} {path}")
     if request_body is not None:
@@ -56,8 +52,6 @@ def log_request_failure(error_msg: str, method: str = None, path: str = None,
     if response_body:
         resp_str = response_body[:500] + "..." if len(response_body) > 500 else response_body
         lines.append(f"  Response Body: {resp_str}")
-    if actual_status == 0:
-        lines.append("  Note: Status 0 means no response (connection refused/timeout/server down)")
 
     lines.append("")
     logger.error("\n".join(lines))
@@ -146,9 +140,7 @@ class ResponseValidator:
             except Exception:
                 resp_body = None
             log_request_failure(
-                f"Unexpected status code {response.status_code}",
                 method=method_upper, path=endpoint,
-                expected_status=valid_status_codes, actual_status=response.status_code,
                 request_body=request_body, response_body=resp_body
             )
             is_valid = False
@@ -275,12 +267,7 @@ class PerformanceMonitor:
     def on_request_event(self, request_type, name, response_time, response_length, exception, context):
         if exception:
             logger.error(f"Request failed: {request_type} {name} - {exception}")
-            log_request_failure(
-                str(exception),
-                method=request_type, path=name,
-                actual_status=0,
-                exception=exception
-            )
+            log_request_failure(method=request_type, path=name)
 
     def get_statistics(self) -> Dict[str, Any]:
         if not self.metrics:

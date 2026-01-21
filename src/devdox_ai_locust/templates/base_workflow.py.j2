@@ -164,11 +164,8 @@ class BaseTaskMethods:
         except Exception as e:
             logger.error(f"Request failed {method} {path}: {e}")
             log_request_failure(
-                str(e),
                 method=method, path=path,
-                expected_status=expected_status, actual_status=0,
-                request_body=request_body,
-                exception=e
+                request_body=request_body
             )
             return None
 
