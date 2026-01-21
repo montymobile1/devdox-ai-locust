@@ -369,6 +369,9 @@ class ScenarioWorkflowGenerator:
         # Build class name from operation_id
         class_name = self._operation_to_class_name(endpoint)
 
+        # Extract expected status codes from OpenAPI spec responses
+        expected_status_codes = self._extract_expected_status_codes(endpoint)
+
         # Render prompt
         prompt = template.render(
             endpoint=endpoint_details,
@@ -379,6 +382,7 @@ class ScenarioWorkflowGenerator:
             operation_id=operation_id,
             method=endpoint.method,
             path=endpoint.path,
+            endpoint_expected_status=expected_status_codes,
         )
 
         # Call LLM with validation retry (error-aware on retry)
@@ -728,6 +732,53 @@ class ScenarioWorkflowGenerator:
             lines.append(f"{prefix}type: {schema_type}")
 
         return lines
+
+    def _extract_expected_status_codes(self, endpoint: Any) -> List[int]:
+        """
+        Extract expected HTTP status codes from the OpenAPI spec responses.
+
+        This allows per-endpoint validation instead of hardcoded method-based defaults.
+        For example, a POST endpoint that defines both 201 (created) and 422 (validation error)
+        as valid responses will return [201, 422].
+
+        Args:
+            endpoint: The endpoint object with responses attribute
+
+        Returns:
+            List of valid HTTP status codes defined in the OpenAPI spec.
+            Returns empty list if no responses defined (will fall back to method-based defaults).
+        """
+        status_codes = []
+
+        if not hasattr(endpoint, "responses") or not endpoint.responses:
+            return status_codes
+
+        responses = endpoint.responses
+
+        if isinstance(responses, dict):
+            # OpenAPI 3.x style: responses is a dict with status codes as keys
+            for status_code_str in responses.keys():
+                try:
+                    # Handle string status codes like "200", "201", "default"
+                    if status_code_str.lower() == "default":
+                        continue  # Skip default response
+                    status_code = int(status_code_str)
+                    status_codes.append(status_code)
+                except (ValueError, TypeError):
+                    # Skip non-numeric status codes
+                    pass
+        elif isinstance(responses, list):
+            # Some parsers return responses as a list with status_code attribute
+            for response in responses:
+                status_code = getattr(response, "status_code", None)
+                if status_code is not None:
+                    try:
+                        status_codes.append(int(status_code))
+                    except (ValueError, TypeError):
+                        pass
+
+        # Sort for consistency
+        return sorted(status_codes)
 
     def _format_endpoints_list(self, endpoints: List[Any]) -> str:
         """Format list of endpoints (for auth endpoints)"""

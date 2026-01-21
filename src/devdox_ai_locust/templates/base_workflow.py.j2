@@ -78,8 +78,41 @@ class BaseTaskMethods:
         if self.auth_token:
             self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
 
-    def make_request(self, method: str, path: str, **kwargs) -> Optional[Dict]:
-        """Make HTTP request with logging, validation, and monitoring"""
+    def make_request(self, method: str, path: str,
+                      expected_status: Optional[List[int]] = None,
+                      **kwargs) -> Optional[Dict]:
+        """Make HTTP request with logging, validation, and monitoring.
+
+        IMPORTANT: This method returns JSON data (dict) or None, NOT a response object.
+        Do NOT try to access .status_code on the return value.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, PATCH, DELETE)
+            path: API endpoint path
+            expected_status: Optional list of valid HTTP status codes from OpenAPI spec.
+                           If provided, these codes are considered valid responses.
+                           Example: [201, 422] for a POST that can return 201 (created) or 422 (validation error)
+                           If not provided, falls back to method-based defaults.
+            **kwargs: Additional arguments passed to the HTTP client (json, data, params, headers, etc.)
+
+        Returns:
+            Optional[Dict]: JSON response data as a dictionary, or None if:
+                - The response status code is not in expected_status
+                - The response is not valid JSON
+                - An exception occurred
+
+        Usage:
+            # Simple usage (uses method-based default status codes)
+            result = self.make_request("GET", "/items")
+            if result:
+                print(result)  # result is a dict, not a response object
+
+            # With OpenAPI spec-derived expected status codes
+            result = self.make_request("POST", "/items", expected_status=[201, 422], json=data)
+            if result:
+                # Request succeeded and returned valid JSON
+                item_id = result.get("id")
+        """
         self._initialize_attributes()
         self.request_count += 1
 
@@ -105,12 +138,14 @@ class BaseTaskMethods:
                 catch_response=True,
                 **kwargs
             ) as response:
-                # Validate and monitor
-                is_valid = response_validator.validate_response(response, method, path)
+                # Validate using caller-provided expected_status or method-based defaults
+                is_valid = response_validator.validate_response(
+                    response, method, path, expected_status=expected_status
+                )
                 performance_monitor.record_response(response, method, path)
 
                 if not is_valid:
-                    response.failure(f"Response validation failed for {method} {path}")
+                    response.failure(f"Response validation failed for {method} {path} (status: {response.status_code})")
                     return None
 
                 try:

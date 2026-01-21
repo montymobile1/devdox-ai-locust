@@ -25,6 +25,30 @@ from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
 ```
 
+=== CRITICAL: HTTP REQUEST PATTERNS FOR SECURITY TESTS ===
+
+For SECURITY tests, use the `with self.client.X(..., catch_response=True) as response:` pattern.
+This allows you to mark tests as success/failure based on the server's response to injection attempts.
+
+**IMPORTANT: The `with` block is REQUIRED when using catch_response=True!**
+```python
+# WRONG - will cause LocustError!
+response = self.client.post("/endpoint", json=data, catch_response=True)
+response.failure("error")  # ERROR! Missing 'with' block
+
+# CORRECT - always use 'with' block
+with self.client.post("/endpoint", json=data, catch_response=True) as response:
+    if response.status_code in [400, 422]:
+        response.success()  # Server properly rejected injection
+    elif response.status_code == 500:
+        response.failure("POTENTIAL VULNERABILITY: Server error from injection")
+```
+
+{% if endpoint_expected_status %}
+=== EXPECTED STATUS CODES (from OpenAPI spec) ===
+This endpoint defines these valid response status codes: {{ endpoint_expected_status }}
+{% endif %}
+
 === CRITICAL: OUTPUT REQUIREMENTS ===
 
 **ASCII ONLY**: Your output MUST contain ONLY ASCII characters (codes 0-127).
@@ -98,6 +122,8 @@ def test_sql_injection(self):
 - ALL payloads must be SHORT: max 100 characters
 - Keep total code under 80 lines
 - Use test_data_generator for valid values in non-injected fields
+- **ALWAYS use `with self.client.X(..., catch_response=True) as response:` pattern**
+- **NEVER use catch_response=True without a `with` block** - this causes LocustError
 - BYTES LITERALS MUST BE ASCII ONLY
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"

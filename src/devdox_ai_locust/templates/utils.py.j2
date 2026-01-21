@@ -36,6 +36,7 @@ class ResponseValidator:
     """Validates HTTP responses against expected criteria"""
 
     def __init__(self):
+        # Default validation rules by HTTP method (fallback when no expected_status provided)
         self.validation_rules = {
             'GET': {
                 'expected_status': [200, 202, 206],
@@ -64,16 +65,35 @@ class ResponseValidator:
             }
         }
 
-    def validate_response(self, response, method: str, endpoint: str) -> bool:
-        """Validate HTTP response against expected criteria"""
+    def validate_response(self, response, method: str, endpoint: str,
+                          expected_status: Optional[List[int]] = None) -> bool:
+        """Validate HTTP response against expected criteria.
+
+        Args:
+            response: The HTTP response object
+            method: HTTP method (GET, POST, etc.)
+            endpoint: The API endpoint path
+            expected_status: Optional list of valid status codes from OpenAPI spec.
+                           If provided, overrides the default method-based rules.
+                           This allows per-endpoint validation (e.g., POST that returns 422).
+
+        Returns:
+            bool: True if response is valid, False otherwise
+        """
         is_valid = True
         method_upper = method.upper()
         rules = self.validation_rules.get(method_upper, {})
 
+        # Use caller-provided expected_status if available (from OpenAPI spec),
+        # otherwise fall back to method-based defaults
+        if expected_status is not None:
+            valid_status_codes = expected_status
+        else:
+            valid_status_codes = rules.get('expected_status', [200])
+
         # Validate status code
-        expected_status = rules.get('expected_status', [200])
-        if response.status_code not in expected_status:
-            logger.warning(f"Unexpected status code {response.status_code} for {method_upper} {endpoint}")
+        if response.status_code not in valid_status_codes:
+            logger.warning(f"Unexpected status code {response.status_code} for {method_upper} {endpoint} (expected one of {valid_status_codes})")
             is_valid = False
 
         # Validate response time
