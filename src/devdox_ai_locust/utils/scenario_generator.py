@@ -327,22 +327,31 @@ class ScenarioWorkflowGenerator:
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             lines.append("\nRequest Body:")
             if hasattr(endpoint.request_body, "content"):
-                for content_type, media_type in endpoint.request_body.content.items():
-                    lines.append(f"  Content-Type: {content_type}")
-                    if hasattr(media_type, "schema") and media_type.schema:
-                        schema = media_type.schema
-                        if hasattr(schema, "properties") and schema.properties:
-                            lines.append("  Properties:")
-                            for prop_name, prop_schema in schema.properties.items():
-                                prop_type = getattr(prop_schema, "type", "any")
-                                lines.append(f"    - {prop_name}: {prop_type}")
+                content = endpoint.request_body.content
+                # Handle both dict and other formats
+                if isinstance(content, dict):
+                    for content_type, media_type in content.items():
+                        lines.append(f"  Content-Type: {content_type}")
+                        if hasattr(media_type, "schema") and media_type.schema:
+                            schema = media_type.schema
+                            if hasattr(schema, "properties") and schema.properties:
+                                props = schema.properties
+                                if isinstance(props, dict):
+                                    lines.append("  Properties:")
+                                    for prop_name, prop_schema in props.items():
+                                        prop_type = getattr(prop_schema, "type", "any")
+                                        lines.append(f"    - {prop_name}: {prop_type}")
+                else:
+                    lines.append(f"  Content: {type(content).__name__}")
 
         # Responses
         if hasattr(endpoint, "responses") and endpoint.responses:
-            lines.append("\nResponses:")
-            for status_code, response in endpoint.responses.items():
-                desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
-                lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+            responses = endpoint.responses
+            if isinstance(responses, dict):
+                lines.append("\nResponses:")
+                for status_code, response in responses.items():
+                    desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
+                    lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
 
         return "\n".join(lines)
 
