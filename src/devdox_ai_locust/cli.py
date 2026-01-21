@@ -200,6 +200,7 @@ async def _generate_and_create_tests(
     db_type: str = "",
     diagnostics: bool = False,
     timeout: int = 120,
+    scenario_mode: bool = False,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
@@ -207,6 +208,19 @@ async def _generate_and_create_tests(
     # Create AI config with custom timeout
     ai_config = AIEnhancementConfig(timeout=timeout)
 
+    if scenario_mode:
+        # Use scenario-based generation
+        return await _generate_scenario_based_tests(
+            together_client,
+            ai_config,
+            endpoints,
+            api_info,
+            output_dir,
+            auth,
+            db_type,
+        )
+
+    # Use original hybrid generation
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(
             ai_client=together_client,
@@ -243,6 +257,126 @@ async def _generate_and_create_tests(
                 test_files, output_dir
             )
             created_files.extend(main_files)
+
+    return created_files
+
+
+async def _generate_scenario_based_tests(
+    ai_client: AsyncTogether,
+    ai_config: AIEnhancementConfig,
+    endpoints: List[Endpoint],
+    api_info: Dict[str, Any],
+    output_dir: Path,
+    auth: bool,
+    db_type: str,
+) -> List[Dict[Any, Any]]:
+    """Generate tests using scenario-based approach (positive/negative/security per tag)"""
+    from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+    from devdox_ai_locust.locust_generator import LocustTestGenerator
+
+    # Group endpoints by tag
+    grouped_endpoints: Dict[str, List[Endpoint]] = {}
+    for ep in endpoints:
+        tag = ep.tags[0] if ep.tags else "default"
+        if tag not in grouped_endpoints:
+            grouped_endpoints[tag] = []
+        grouped_endpoints[tag].append(ep)
+
+    num_tags = len(grouped_endpoints)
+
+    # Show time estimate
+    # 2 LLM calls per tag (positive + negative), security is template-based
+    total_calls = num_tags * 2
+    # Estimate RPM (will be updated after first call)
+    estimated_rpm = 60  # Conservative default
+    estimated_minutes = total_calls / estimated_rpm
+
+    console.print(f"\n📊 [bold]Scenario-based Generation Mode[/bold]")
+    console.print(f"   Tags to process: {num_tags}")
+    console.print(f"   API calls needed: {total_calls} (2 per tag)")
+    console.print(f"   Estimated time: ~{estimated_minutes:.1f} minutes (at {estimated_rpm} RPM)")
+    console.print(f"   Files per tag: positive_workflow.py, negative_workflow.py, security_workflow.py\n")
+
+    # Setup directories
+    prompt_dir = Path(__file__).parent / "prompt"
+    template_dir = Path(__file__).parent / "templates"
+
+    # Initialize scenario generator
+    scenario_gen = ScenarioWorkflowGenerator(
+        prompt_dir=prompt_dir,
+        template_dir=template_dir,
+        ai_client=ai_client,
+        ai_config=ai_config,
+    )
+
+    # Generate base files first using template generator
+    template_gen = LocustTestGenerator()
+    base_files, _, _ = template_gen.generate_from_endpoints(
+        endpoints, api_info, include_auth=auth, db_type=db_type
+    )
+    base_files = template_gen.fix_indent(base_files)
+
+    base_workflow_content = base_files.get("base_workflow.py", "")
+    test_data_content = base_files.get("test_data.py", "")
+
+    # Get auth endpoints
+    auth_endpoints = [ep for ep in endpoints if any(
+        kw in ep.path.lower() for kw in ["auth", "login", "token", "session"]
+    )]
+
+    created_files = []
+    workflows_dir = output_dir / "workflows"
+
+    # Process each tag
+    with console.status("[bold green]Generating scenario-based workflows...") as status:
+        for idx, (tag_name, tag_endpoints) in enumerate(grouped_endpoints.items(), 1):
+            status.update(f"[bold green]Processing tag {idx}/{num_tags}: {tag_name}...")
+
+            # Create tag directory
+            tag_dir = workflows_dir / tag_name.lower().replace(" ", "_")
+            tag_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate scenario workflows
+            scenarios = await scenario_gen.generate_scenario_workflows(
+                tag_name=tag_name,
+                endpoints=tag_endpoints,
+                base_workflow_content=base_workflow_content,
+                test_data_content=test_data_content,
+                auth_endpoints=auth_endpoints if auth else None,
+            )
+
+            # Save generated files
+            for scenario_type, content in scenarios.items():
+                if content:
+                    filename = scenario_gen.SCENARIO_FILES[scenario_type]
+                    file_path = tag_dir / filename
+                    file_path.write_text(content)
+                    created_files.append({
+                        "path": str(file_path),
+                        "size": len(content),
+                        "tag": tag_name,
+                        "scenario": scenario_type.value,
+                    })
+                    console.print(f"   ✓ {tag_name}/{filename}")
+
+            # Update rate limit info after first call
+            if idx == 1:
+                rate_info = scenario_gen.get_rate_limit_info()
+                if rate_info.requests_per_minute != estimated_rpm:
+                    console.print(f"\n📊 Updated rate limit: {rate_info.requests_per_minute} RPM")
+                    remaining_calls = (num_tags - 1) * 2
+                    new_estimate = remaining_calls / rate_info.requests_per_minute
+                    console.print(f"   Revised estimate: ~{new_estimate:.1f} minutes remaining\n")
+
+    # Write base files
+    with console.status("[bold green]Creating base files..."):
+        for filename, content in base_files.items():
+            file_path = output_dir / filename
+            file_path.write_text(content)
+            created_files.append({
+                "path": str(file_path),
+                "size": len(content),
+            })
 
     return created_files
 
@@ -310,6 +444,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     default=120,
     help="Timeout in seconds for AI API calls (default: 120, increase for large APIs)",
 )
+@click.option(
+    "--scenario-mode",
+    is_flag=True,
+    default=False,
+    help="Enable scenario-based generation: splits tests into positive/negative/security files per tag",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -326,6 +466,7 @@ def generate(
     together_api_key: Optional[str],
     diagnostics: bool,
     timeout: int,
+    scenario_mode: bool,
 ) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
 
@@ -347,6 +488,7 @@ def generate(
                 together_api_key,
                 diagnostics,
                 timeout,
+                scenario_mode,
             )
         )
     except Exception as e:
@@ -373,6 +515,7 @@ async def _async_generate(
     together_api_key: Optional[str],
     diagnostics: bool = False,
     timeout: int = 120,
+    scenario_mode: bool = False,
 ) -> None:
     """Async function to handle the generation process"""
 
@@ -410,6 +553,7 @@ async def _async_generate(
             db_type,
             diagnostics,
             timeout,
+            scenario_mode,
         )
 
         # Show results
