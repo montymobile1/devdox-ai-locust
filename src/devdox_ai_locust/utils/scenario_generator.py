@@ -16,8 +16,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from jinja2 import Environment, FileSystemLoader
+from rich.console import Console
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 class ScenarioGenerationError(Exception):
@@ -422,9 +424,9 @@ class ScenarioWorkflowGenerator:
 
             if is_valid:
                 if attempt > 0:
-                    logger.info(
-                        f"Retry SUCCEEDED for {scenario_type.value} [{endpoint.method} {endpoint.path}] "
-                        f"on attempt {attempt + 1}/{max_validation_retries}"
+                    console.print(
+                        f"[green]✓ Retry SUCCEEDED[/green] for {scenario_type.value} "
+                        f"[{endpoint.method} {endpoint.path}] on attempt {attempt + 1}/{max_validation_retries}"
                     )
                 return content
 
@@ -433,15 +435,17 @@ class ScenarioWorkflowGenerator:
             last_code = content
 
             if attempt < max_validation_retries - 1:
-                logger.warning(
-                    f"Validation failed for {scenario_type.value} [{endpoint.method} {endpoint.path}], "
-                    f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying with fix prompt..."
+                console.print(
+                    f"[yellow]⚠ Validation failed[/yellow] for {scenario_type.value} "
+                    f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
+                    f"{error}. Retrying with fix prompt..."
                 )
                 await asyncio.sleep(1)
             else:
-                logger.error(
-                    f"Retry FAILED for {scenario_type.value} [{endpoint.method} {endpoint.path}] "
-                    f"after {max_validation_retries} attempts. Final error: {error}"
+                console.print(
+                    f"[red]✗ Retry FAILED[/red] for {scenario_type.value} "
+                    f"[{endpoint.method} {endpoint.path}] after {max_validation_retries} attempts. "
+                    f"Final error: {error}"
                 )
 
         # All retries exhausted
