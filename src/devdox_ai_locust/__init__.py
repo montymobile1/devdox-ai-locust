@@ -2,8 +2,8 @@
 DevDox AI Locust - AI-powered Locust load test generator
 """
 
-from .hybrid_loctus_generator import HybridLocustGenerator
 from .locust_generator import LocustTestGenerator
+from .ai_config import AIEnhancementConfig
 from .config import settings
 
-__all__ = ["HybridLocustGenerator", "LocustTestGenerator", "settings"]
+__all__ = ["LocustTestGenerator", "AIEnhancementConfig", "settings"]

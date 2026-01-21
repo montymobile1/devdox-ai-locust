@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from together import AsyncTogether
 
-from .hybrid_loctus_generator import HybridLocustGenerator, AIEnhancementConfig
+from .ai_config import AIEnhancementConfig
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
