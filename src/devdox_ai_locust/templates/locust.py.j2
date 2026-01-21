@@ -8,14 +8,14 @@ API Information:
 - Base URL: {{ api_info.get('base_url', 'http://localhost') }}
 """
 
-from locust import HttpUser, task, between, events
+from locust import HttpUser, task, between, events, TaskSet
 from locust.runners import MasterRunner
 import json
 import random
 import logging
 from typing import Dict, Any, Optional
 from urllib.parse import urljoin
-from workflows.base_workflow import BaseAPIUser, BaseTaskMethods
+from workflows.base_workflow import BaseAPIUser, BaseTaskMethods, BaseWorkflow
 {{ import_group_tasks }}
 
 from test_data import TestDataGenerator
@@ -33,13 +33,20 @@ response_validator = ResponseValidator()
 performance_monitor = PerformanceMonitor()
 
 
-class APITaskMethods:
-    """Mixin class containing all API task methods"""
+# Collect all workflow classes (TaskSet subclasses) from imported workflows
+def _collect_workflow_classes():
+    """Dynamically collect all workflow classes that inherit from BaseWorkflow"""
+    workflow_classes = []
+    for name, obj in list(globals().items()):
+        if (isinstance(obj, type) and
+            issubclass(obj, TaskSet) and
+            obj not in (TaskSet, BaseWorkflow) and
+            'Workflow' in name):
+            workflow_classes.append(obj)
+    return workflow_classes
 
-    {{ task_methods_content }}
-
-    tasks = {{ tasks_str }}
-
+# Collected workflows will be assigned to User classes
+_all_workflows = _collect_workflow_classes()
 
 {{ generated_task_classes }}
 

@@ -7,7 +7,7 @@ API Information:
 - Base URL: {{api_info.base_url}}
 """
 
-from locust import HttpUser, task, between, events, SequentialTaskSet
+from locust import HttpUser, task, between, events, SequentialTaskSet, TaskSet
 import json
 import logging
 from typing import Dict, Any, Optional, List
@@ -180,5 +180,14 @@ class BaseAPIUser(HttpUser):
             self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
 
 
-# Alias for LLM-generated workflows that inherit from this base
-BaseWorkflow = BaseTaskMethods
+class BaseWorkflow(TaskSet, BaseTaskMethods):
+    """Base class for LLM-generated workflows - extends TaskSet for proper Locust integration"""
+
+    def on_start(self):
+        """Initialize when TaskSet starts"""
+        self._initialize_attributes()
+        logger.info(f"Workflow {self.__class__.__name__} started")
+
+    def on_stop(self):
+        """Cleanup when TaskSet stops"""
+        logger.info(f"Workflow {self.__class__.__name__} stopped")
