@@ -101,18 +101,12 @@ Before writing code, you MUST reason through these steps:
 - What is the HTTP method? (GET/POST/PUT/DELETE/PATCH)
 - What is the path? Are there path parameters like {id}?
 - Does this endpoint need a request body?
-- **CRITICAL**: Is this a RESPONSE-TESTING endpoint (path contains /responses/)?
-  - Paths like /responses/404, /responses/500, /responses/206 ALWAYS return that status code
-  - This is BY DESIGN - they exist to test how clients handle different HTTP responses
-  - For /responses/405 → expect 405, NOT 200
-  - For /responses/206 → expect 206, NOT 200
-  - For /responses/500 → expect 500, NOT 200
-  - DO NOT write tests expecting 200 for these endpoints!
-- **CRITICAL**: Is this a REDIRECT endpoint (3xx like 301, 302, 307, 308)?
-  - For paths like /responses/307, /responses/301, /responses/302, /responses/308
+- **CRITICAL**: Check the OpenAPI spec's expected status codes (endpoint_expected_status)
+  - The OpenAPI spec is the ONLY source of truth for what status codes to expect
+  - Use ONLY the status codes defined in the spec - do not assume or invent others
+- **NOTE on redirects (3xx)**: If the expected status is a 3xx redirect code:
   - You MUST use allow_redirects=False to capture the actual redirect status code
-  - Example: self.client.get("/responses/307", allow_redirects=False, catch_response=True)
-  - Without allow_redirects=False, the HTTP client auto-follows redirects and you'll see 200!
+  - Without allow_redirects=False, the HTTP client auto-follows redirects
 
 **STEP 2 - EXTRACT SCHEMA FIELDS:**
 - List ALL required fields from the Schema (exact names!)
@@ -169,7 +163,7 @@ Method: [GET/POST/PUT/DELETE]
 Path: [the path]
 Has path params: [yes/no, list them]
 Needs request body: [yes/no]
-Is response-testing endpoint: [yes/no - if path contains /responses/, expect that status code]
+Expected status codes (from OpenAPI spec): [list endpoint_expected_status]
 
 STEP 2 - SCHEMA FIELDS:
 Required: [list exact field names and types]

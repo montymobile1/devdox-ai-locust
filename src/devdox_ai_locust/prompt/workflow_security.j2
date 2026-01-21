@@ -74,12 +74,12 @@ Before writing code, you MUST reason through these steps:
 
 **STEP 1 - ANALYZE THE ENDPOINT:**
 - What is the HTTP method and path?
-- **CRITICAL**: Is this a RESPONSE-TESTING endpoint (path contains /responses/)?
-  - Paths like /responses/404, /responses/500, /responses/206 ALWAYS return that status code
-  - This is BY DESIGN - they exist to test how clients handle different HTTP responses
-  - If YES: Skip security injection tests - these endpoints don't process input, they just return fixed responses
+- **CRITICAL**: Check the OpenAPI spec's expected status codes (endpoint_expected_status)
+  - The OpenAPI spec is the ONLY source of truth for what status codes to expect
+  - Use ONLY the status codes defined in the spec - do not assume or invent others
 - Does it accept a request body? (POST/PUT/PATCH usually do)
 - Does it have path parameters?
+- Does the endpoint have string fields that could be injection points?
 
 **STEP 2 - IDENTIFY INJECTION POINTS:**
 - List ALL string fields from the schema (exact names!)
@@ -93,9 +93,10 @@ For each string field, plan:
 - Include ALL required fields with valid data, only inject into ONE field at a time
 
 **STEP 4 - DETERMINE EXPECTED BEHAVIOR:**
-- 400/422: Properly rejected (good - input validation working)
-- 500: POTENTIAL VULNERABILITY (bad - server error from injection)
-- 200/201: May or may not be vulnerable (depends on if payload was sanitized)
+- Use status codes from endpoint_expected_status (OpenAPI spec) as baseline
+- Any status code defined in the spec: expected behavior (input was handled)
+- 500: POTENTIAL VULNERABILITY (bad - server error/crash from injection)
+- The goal is to verify the server doesn't crash (500) when receiving malicious input
 
 === CRITICAL: RESPONSE VALIDATION PATTERN ===
 
@@ -108,12 +109,13 @@ def test_sql_injection(self):
     payload = random.choice(SQL_PAYLOADS)
     data = {"name": payload, "other_field": "valid"}
     with self.client.post("/endpoint", json=data, catch_response=True) as response:
-        if response.status_code in [400, 422]:
-            response.success()  # Server properly rejected injection
-        elif response.status_code == 500:
+        # Check against status codes from OpenAPI spec (endpoint_expected_status)
+        if response.status_code == 500:
             response.failure("POTENTIAL VULNERABILITY: Server error from injection")
+        elif response.status_code in endpoint_expected_status:
+            response.success()  # Server handled input (rejected or sanitized)
         else:
-            response.success()  # 200/201 - payload was likely sanitized
+            response.success()  # Unexpected but not a crash
 ```
 
 **DO NOT** unconditionally call response.failure() - that marks the test as failed even when the server handles the injection correctly!
@@ -138,7 +140,7 @@ No markdown fences, no explanations outside the tags.
 STEP 1 - ENDPOINT ANALYSIS:
 Method: [method]
 Path: [path]
-Is response-testing endpoint: [yes/no - if path contains /responses/, skip security tests]
+Expected status codes (from OpenAPI spec): [list endpoint_expected_status]
 Accepts body: [yes/no]
 Path params: [list them]
 
@@ -152,7 +154,7 @@ STEP 3 - SECURITY TEST PLAN:
 - Path traversal test: [if applicable]
 
 STEP 4 - EXPECTED RESPONSES:
-400/422 = Success (proper rejection)
+Status codes from spec = Success (proper handling)
 500 = Failure (potential vulnerability)
 </analysis>
 

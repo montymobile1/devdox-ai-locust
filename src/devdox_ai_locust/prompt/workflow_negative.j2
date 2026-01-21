@@ -81,13 +81,11 @@ Before writing code, you MUST reason through these steps:
 
 **STEP 1 - ANALYZE THE ENDPOINT:**
 - What is the HTTP method and path?
-- **CRITICAL**: Is this a RESPONSE-TESTING endpoint (path contains /responses/)?
-  - Paths like /responses/404, /responses/500, /responses/206 ALWAYS return that status code
-  - This is BY DESIGN - they exist to test how clients handle different HTTP responses
-  - For /responses/405 → expect 405, NOT 200
-  - For /responses/206 → expect 206, NOT 200
-  - For /responses/500 → expect 500, NOT 200
-  - If YES: Skip normal negative tests - just verify the endpoint returns its designated status code
+- **CRITICAL**: Check the OpenAPI spec's expected status codes (endpoint_expected_status)
+  - The OpenAPI spec is the ONLY source of truth for what status codes to expect
+  - Use ONLY the status codes defined in the spec - do not assume or invent others
+  - If the spec only defines success codes (2xx), negative tests should verify the endpoint
+    rejects invalid input with one of the documented error codes
 - Does it have path parameters? What type (integer, string, UUID)?
 
 **STEP 2 - EXTRACT SCHEMA FIELDS:**
@@ -112,9 +110,10 @@ Before writing code, you MUST reason through these steps:
 - Special characters / unicode in strings
 
 **STEP 5 - DETERMINE EXPECTED STATUS CODES:**
-- Validation errors: 400 or 422
-- Not found: 404
-- Response-testing endpoints: Whatever status is in the path (e.g., /responses/404 → expect 404)
+- Use ONLY the status codes from endpoint_expected_status (extracted from OpenAPI spec)
+- The OpenAPI spec is the ONLY source of truth - do not assume status codes not in the spec
+- If the spec defines 422, test for 422; if it defines 404, test for 404
+- Do NOT hardcode status codes that are not documented in the spec
 
 === CRITICAL: RESPONSE VALIDATION PATTERN ===
 
@@ -123,21 +122,17 @@ Use this pattern - call success() when server returns expected error code:
 
 ```python
 @task(3)
-def test_missing_required_field(self):
-    data = {"optional_field": "value"}  # Missing required field
+def test_invalid_input(self):
+    data = {"invalid_field": "wrong_value"}
+    # Use status codes from endpoint_expected_status (OpenAPI spec)
+    # Example: if spec defines [200, 422], use 422 for validation errors
     with self.client.post("/endpoint", json=data, catch_response=True) as response:
-        if response.status_code in [400, 422]:
+        # Check against ONLY the error codes defined in the OpenAPI spec
+        expected_error_codes = [code for code in endpoint_expected_status if code >= 400]
+        if response.status_code in expected_error_codes:
             response.success()  # Server correctly rejected invalid input
         else:
-            response.failure(f"Expected 400/422, got {response.status_code}")
-
-@task(3)
-def test_not_found(self):
-    with self.client.get("/endpoint/999999999", catch_response=True) as response:
-        if response.status_code == 404:
-            response.success()  # Server correctly returned not found
-        else:
-            response.failure(f"Expected 404, got {response.status_code}")
+            response.failure(f"Expected one of {expected_error_codes}, got {response.status_code}")
 ```
 
 **DO NOT** unconditionally call response.failure() - that marks the test as failed even when the server behaves correctly!
@@ -164,7 +159,7 @@ No markdown fences, no explanations outside the tags.
 STEP 1 - ENDPOINT ANALYSIS:
 Method: [method]
 Path: [path]
-Is response-testing endpoint: [yes/no - check if path has /responses/]
+Expected status codes (from OpenAPI spec): [list endpoint_expected_status]
 Path params: [list with types]
 
 STEP 2 - SCHEMA FIELDS:
@@ -174,13 +169,13 @@ Enums: [list any fields with "allowed values:" and their valid values]
 Patterns: [list any fields with pattern constraints]
 
 STEP 3 - NEGATIVE TEST PLAN:
-[List what negative tests make sense for this endpoint]
+[List what negative tests make sense based on error codes in the spec]
 
 STEP 4 - EDGE CASE PLAN:
 [List edge cases to test]
 
 STEP 5 - EXPECTED STATUS CODES:
-[Map each test to expected status code]
+[Use ONLY status codes from endpoint_expected_status]
 </analysis>
 
 <code>
