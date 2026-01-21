@@ -413,7 +413,10 @@ class ScenarioWorkflowGenerator:
             # Fix bytes literals with unicode (b'tëst' → 'tëst'.encode('utf-8'))
             after_bytes_fix = self._fix_bytes_literals(after_class_fix)
 
-            content = after_bytes_fix
+            # Fix regex strings (convert to raw strings to avoid SyntaxWarnings)
+            after_regex_fix = self._fix_regex_strings(after_bytes_fix)
+
+            content = after_regex_fix
 
             is_valid, error = self._validate_python_code(content)
 
@@ -945,6 +948,51 @@ class ScenarioWorkflowGenerator:
         # Match b'...' or b"..." - non-greedy to handle multiple on same line
         pattern = r"b(['\"])([^'\"]*?)\1"
         return re.sub(pattern, fix_match, code)
+
+    def _fix_regex_strings(self, code: str) -> str:
+        """
+        Convert strings with regex escape sequences to raw strings.
+
+        LLMs sometimes generate "\\d" or "\\+" which triggers SyntaxWarnings
+        in Python 3.12+. This converts them to raw strings: r"\\d", r"\\+".
+
+        Converts: "\\d", "\\+", "\\s", etc. → r"\\d", r"\\+", r"\\s"
+        """
+        import re
+
+        # Problematic escape sequences that trigger SyntaxWarnings
+        problematic_escapes = [
+            '\\d', '\\D', '\\w', '\\W', '\\s', '\\S',
+            '\\+', '\\*', '\\?', '\\^', '\\$', '\\|',
+            '\\(', '\\)', '\\[', '\\]', '\\{', '\\}'
+        ]
+
+        lines = code.split('\n')
+        fixed_lines = []
+
+        for line in lines:
+            # Skip comments
+            if line.strip().startswith('#'):
+                fixed_lines.append(line)
+                continue
+
+            # Check if line contains problematic escape sequences in strings
+            # and doesn't already use raw strings
+            has_problematic = any(escape in line for escape in problematic_escapes)
+            already_raw = 'r"' in line or "r'" in line
+
+            if has_problematic and not already_raw:
+                # Find and fix string literals containing regex escapes
+                # Pattern matches quoted strings not preceded by 'r'
+                line = re.sub(
+                    r'(?<!r)(["\'])([^"\']*(?:\\[dDwWsS+*?^$.|\\()\[\]{}])[^"\']*)\1',
+                    lambda m: f'r{m.group(1)}{m.group(2)}{m.group(1)}',
+                    line
+                )
+
+            fixed_lines.append(line)
+
+        return '\n'.join(fixed_lines)
 
     def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
         """
