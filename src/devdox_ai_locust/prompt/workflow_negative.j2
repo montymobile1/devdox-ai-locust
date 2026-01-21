@@ -1,7 +1,7 @@
-TASK: Generate NEGATIVE and ERROR HANDLING test scenarios for the Locust workflow.
+TASK: Generate NEGATIVE and ERROR HANDLING test scenarios for a SINGLE endpoint.
 
-ENDPOINTS TO TEST:
-{{ grouped_endpoints }}
+ENDPOINT TO TEST:
+{{ endpoint }}
 
 {% if auth_endpoints %}
 AUTHENTICATION ENDPOINTS:
@@ -17,58 +17,37 @@ TEST DATA AVAILABLE:
 REQUIREMENTS:
 
 1. **NEGATIVE TEST SCENARIOS** (Validation Errors):
-   Generate @task methods that test API error handling:
-   - Missing required fields - expect 400 (weight: 3)
-   - Invalid data types (string where number expected) - expect 400/422 (weight: 3)
-   - Invalid format (bad email, phone format) - expect 400/422 (weight: 3)
-   - Out of range values (negative when positive expected) - expect 400/422 (weight: 2)
+   Generate 3-5 @task methods that test error handling:
+   - Missing required fields - expect 400/422 (weight: 3)
+   - Invalid data types - expect 400/422 (weight: 3)
+   - Non-existent resource ID - expect 404 (weight: 3)
 
-2. **ERROR HANDLING SCENARIOS** (HTTP Error Codes):
-   Generate @task methods for expected errors:
-   - 400 Bad Request scenarios (weight: 3)
-   - 401 Unauthorized - test without auth headers (weight: 2)
-   - 403 Forbidden - test restricted operations (weight: 2)
-   - 404 Not Found - test with non-existent IDs (weight: 3)
-   - 422 Validation Error scenarios (weight: 3)
-
-3. **CLASS STRUCTURE**:
+2. **CLASS STRUCTURE**:
    ```python
    from base_workflow import BaseWorkflow
    import test_data
    import uuid
 
    class {{ class_name }}NegativeWorkflow(BaseWorkflow):
-       """Negative and error handling tests for {{ tag_name }} endpoints"""
+       """Negative tests for {{ method }} {{ path }}"""
 
        @task(3)
        def test_missing_required_field(self):
-           """Test request with missing required field - expect 400"""
-           data = {"optional_field": "value"}  # Missing required fields
-           with self.client.post("/path", json=data, catch_response=True) as response:
+           """Test with missing required field - expect 400/422"""
+           with self.client.{{ method|lower }}("{{ path }}", json={}, catch_response=True) as response:
                if response.status_code in [400, 422]:
                    response.success()
                else:
                    response.failure(f"Expected 400/422, got {response.status_code}")
-
-       @task(3)
-       def test_invalid_id_not_found(self):
-           """Test with non-existent ID - expect 404"""
-           fake_id = str(uuid.uuid4())
-           with self.client.get(f"/path/{fake_id}", catch_response=True) as response:
-               if response.status_code == 404:
-                   response.success()
-               else:
-                   response.failure(f"Expected 404, got {response.status_code}")
    ```
 
-4. **IMPORTANT**:
-   - All negative tests should expect and validate error responses
-   - Use catch_response=True and mark as success() when expected error occurs
-   - Mark as failure() when unexpected status code received
-   - Do NOT include edge cases or boundary testing (separate file)
+3. **IMPORTANT**:
+   - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
+   - Keep code concise (50-80 lines max)
+   - Mark success() when expected error occurs
+   - Do NOT include edge cases or security tests
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.
-Generate ONE class with negative and error handling test methods.
 
 <code>your_complete_python_code_here</code>

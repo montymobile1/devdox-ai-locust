@@ -228,11 +228,11 @@ async def _generate_scenario_based_tests(
     auth: bool,
     db_type: str,
 ) -> List[Dict[Any, Any]]:
-    """Generate tests using scenario-based approach (positive/negative/security per tag)"""
-    from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+    """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
+    from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
     from devdox_ai_locust.locust_generator import LocustTestGenerator
 
-    # Group endpoints by tag
+    # Group endpoints by tag for directory organization
     grouped_endpoints: Dict[str, List[Endpoint]] = {}
     for ep in endpoints:
         tag = ep.tags[0] if ep.tags else "default"
@@ -241,6 +241,7 @@ async def _generate_scenario_based_tests(
         grouped_endpoints[tag].append(ep)
 
     num_tags = len(grouped_endpoints)
+    num_endpoints = len(endpoints)
 
     # Setup prompt directory
     prompt_dir = Path(__file__).parent / "prompt"
@@ -253,18 +254,19 @@ async def _generate_scenario_based_tests(
     )
 
     # Get dynamic counts from generator
-    num_scenarios = len(scenario_gen.SCENARIO_FILES)
+    num_scenarios = scenario_gen.num_scenarios
     scenario_filenames = ", ".join(scenario_gen.SCENARIO_FILES.values())
 
-    # Show time estimate (using generator's estimate_time)
-    time_estimate = scenario_gen.estimate_time(num_tags)
+    # Show time estimate (using generator's estimate_time with num_endpoints)
+    time_estimate = scenario_gen.estimate_time(num_endpoints)
     estimated_rpm = time_estimate.rpm
 
-    console.print(f"\n📊 [bold]Scenario-based Generation[/bold]")
-    console.print(f"   Tags to process: {num_tags}")
-    console.print(f"   API calls needed: {time_estimate.total_calls} ({num_scenarios} per tag)")
+    console.print(f"\n📊 [bold]Per-Endpoint Generation[/bold]")
+    console.print(f"   Tags: {num_tags}")
+    console.print(f"   Endpoints: {num_endpoints}")
+    console.print(f"   API calls needed: {time_estimate.total_calls} ({num_scenarios} per endpoint)")
     console.print(f"   Estimated time: {time_estimate}")
-    console.print(f"   Files per tag: {scenario_filenames}\n")
+    console.print(f"   Files per endpoint: {scenario_filenames}\n")
 
     # Generate base files first using template generator
     template_gen = LocustTestGenerator()
@@ -283,47 +285,56 @@ async def _generate_scenario_based_tests(
 
     created_files = []
     workflows_dir = output_dir / "workflows"
+    endpoint_idx = 0
 
-    # Process each tag
-    with console.status("[bold green]Generating scenario-based workflows...") as status:
-        for idx, (tag_name, tag_endpoints) in enumerate(grouped_endpoints.items(), 1):
-            status.update(f"[bold green]Processing tag {idx}/{num_tags}: {tag_name}...")
+    # Process each tag and endpoint
+    with console.status("[bold green]Generating per-endpoint workflows...") as status:
+        for tag_name, tag_endpoints in grouped_endpoints.items():
+            tag_dir_name = tag_name.lower().replace(" ", "_")
 
-            # Create tag directory
-            tag_dir = workflows_dir / tag_name.lower().replace(" ", "_")
-            tag_dir.mkdir(parents=True, exist_ok=True)
+            for endpoint in tag_endpoints:
+                endpoint_idx += 1
+                operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
+                status.update(
+                    f"[bold green]Processing endpoint {endpoint_idx}/{num_endpoints}: "
+                    f"{endpoint.method.upper()} {endpoint.path}..."
+                )
 
-            # Generate scenario workflows
-            scenarios = await scenario_gen.generate_scenario_workflows(
-                tag_name=tag_name,
-                endpoints=tag_endpoints,
-                base_workflow_content=base_workflow_content,
-                test_data_content=test_data_content,
-                auth_endpoints=auth_endpoints if auth else None,
-            )
+                # Create endpoint directory: workflows/{tag}/{operation_id}/
+                endpoint_dir = workflows_dir / tag_dir_name / operation_id
+                endpoint_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save generated files
-            for scenario_type, content in scenarios.items():
-                if content:
-                    filename = scenario_gen.SCENARIO_FILES[scenario_type]
-                    file_path = tag_dir / filename
-                    file_path.write_text(content, encoding='utf-8')
-                    created_files.append({
-                        "path": str(file_path),
-                        "size": len(content),
-                        "tag": tag_name,
-                        "scenario": scenario_type.value,
-                    })
-                    console.print(f"   ✓ {tag_name}/{filename}")
+                # Generate scenario workflows for this single endpoint
+                scenarios = await scenario_gen.generate_endpoint_workflows(
+                    endpoint=endpoint,
+                    base_workflow_content=base_workflow_content,
+                    test_data_content=test_data_content,
+                    auth_endpoints=auth_endpoints if auth else None,
+                )
 
-            # Update rate limit info after first call
-            if idx == 1:
-                rate_info = scenario_gen.get_rate_limit_info()
-                if rate_info.requests_per_minute != estimated_rpm:
-                    console.print(f"\n📊 Updated rate limit: {rate_info.requests_per_minute} RPM")
-                    remaining_calls = (num_tags - 1) * num_scenarios
-                    new_estimate = remaining_calls / rate_info.requests_per_minute
-                    console.print(f"   Revised estimate: ~{new_estimate:.1f} minutes remaining\n")
+                # Save generated files
+                for scenario_type, content in scenarios.items():
+                    if content:
+                        filename = scenario_gen.SCENARIO_FILES[scenario_type]
+                        file_path = endpoint_dir / filename
+                        file_path.write_text(content, encoding='utf-8')
+                        created_files.append({
+                            "path": str(file_path),
+                            "size": len(content),
+                            "tag": tag_name,
+                            "operation_id": operation_id,
+                            "scenario": scenario_type.value,
+                        })
+                        console.print(f"   ✓ {tag_dir_name}/{operation_id}/{filename}")
+
+                # Update rate limit info after first endpoint
+                if endpoint_idx == 1:
+                    rate_info = scenario_gen.get_rate_limit_info()
+                    if rate_info.requests_per_minute != estimated_rpm:
+                        console.print(f"\n📊 Updated rate limit: {rate_info.requests_per_minute} RPM")
+                        remaining_calls = (num_endpoints - 1) * num_scenarios
+                        new_estimate = remaining_calls / rate_info.requests_per_minute
+                        console.print(f"   Revised estimate: ~{new_estimate:.1f} minutes remaining\n")
 
     # Write base files
     with console.status("[bold green]Creating base files..."):

@@ -1,14 +1,14 @@
 """
 Scenario-based Workflow Generator
 
-Generates separate workflow files for different test scenario types:
+Generates separate workflow files for different test scenario types per endpoint:
 - Positive scenarios (happy path)
 - Negative scenarios (validation errors + error handling)
 - Edge scenarios (boundary conditions)
 - State scenarios (state-dependent tests)
 - Security scenarios (injection, auth bypass)
 
-Uses 5 LLM calls per API tag to generate focused, high-quality test code.
+Uses 5 LLM calls per endpoint for focused, non-truncated output.
 """
 
 import asyncio
@@ -82,7 +82,7 @@ class ScenarioWorkflowGenerator:
     """
     Generates scenario-based workflow files using LLM.
 
-    Uses 5 LLM calls per tag for focused, non-truncated output:
+    Uses 5 LLM calls per endpoint for focused, non-truncated output:
     - Call 1: Positive scenarios (happy path)
     - Call 2: Negative scenarios (validation + error handling)
     - Call 3: Edge scenarios (boundary conditions)
@@ -135,18 +135,23 @@ class ScenarioWorkflowGenerator:
             lstrip_blocks=True,
         )
 
-    def estimate_time(self, num_tags: int) -> TimeEstimate:
+    @property
+    def num_scenarios(self) -> int:
+        """Number of scenario types"""
+        return len(self.SCENARIO_FILES)
+
+    def estimate_time(self, num_endpoints: int) -> TimeEstimate:
         """
         Estimate generation time based on rate limits.
 
         Args:
-            num_tags: Number of API tags to process
+            num_endpoints: Number of endpoints to process
 
         Returns:
             TimeEstimate with calculated values
         """
-        # 5 LLM calls per tag (positive + negative + edge + state + security)
-        total_calls = num_tags * 5
+        # 5 LLM calls per endpoint (positive + negative + edge + state + security)
+        total_calls = num_endpoints * self.num_scenarios
 
         rpm = self._rate_limit_info.requests_per_minute if self._rate_limit_info else 60
         estimated_minutes = total_calls / rpm
@@ -176,20 +181,18 @@ class ScenarioWorkflowGenerator:
         """Get current rate limit info or default"""
         return self._rate_limit_info or RateLimitInfo.default()
 
-    async def generate_scenario_workflows(
+    async def generate_endpoint_workflows(
         self,
-        tag_name: str,
-        endpoints: List[Any],
+        endpoint: Any,
         base_workflow_content: str,
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
     ) -> Dict[ScenarioType, str]:
         """
-        Generate all scenario workflow files for a tag using LLM.
+        Generate all scenario workflow files for a single endpoint using LLM.
 
         Args:
-            tag_name: Name of the API tag
-            endpoints: List of endpoints for this tag
+            endpoint: Single endpoint to generate tests for
             base_workflow_content: Content of base_workflow.py
             test_data_content: Content of test_data.py
             auth_endpoints: Authentication endpoints (optional)
@@ -200,19 +203,12 @@ class ScenarioWorkflowGenerator:
         results = {}
 
         # Generate all 5 scenarios in parallel using LLM
-        scenario_types = [
-            ScenarioType.POSITIVE,
-            ScenarioType.NEGATIVE,
-            ScenarioType.EDGE,
-            ScenarioType.STATE,
-            ScenarioType.SECURITY,
-        ]
+        scenario_types = list(ScenarioType)
 
         llm_tasks = [
             self._generate_llm_scenario(
                 scenario_type,
-                tag_name,
-                endpoints,
+                endpoint,
                 base_workflow_content,
                 test_data_content,
                 auth_endpoints,
@@ -234,19 +230,17 @@ class ScenarioWorkflowGenerator:
     async def _generate_llm_scenario(
         self,
         scenario_type: ScenarioType,
-        tag_name: str,
-        endpoints: List[Any],
+        endpoint: Any,
         base_workflow_content: str,
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
     ) -> str:
         """
-        Generate a scenario using LLM.
+        Generate a scenario using LLM for a single endpoint.
 
         Args:
             scenario_type: Type of scenario to generate
-            tag_name: Name of the API tag
-            endpoints: List of endpoints
+            endpoint: Single endpoint to generate tests for
             base_workflow_content: Base workflow code
             test_data_content: Test data code
             auth_endpoints: Auth endpoints
@@ -264,20 +258,22 @@ class ScenarioWorkflowGenerator:
             logger.error(f"Failed to load template {template_name}: {e}")
             return ""
 
-        # Format endpoints for prompt
-        endpoints_str = self._format_endpoints(endpoints)
+        # Format single endpoint with full details
+        endpoint_details = self._format_single_endpoint(endpoint)
 
-        # Build class name from tag
-        class_name = self._tag_to_class_name(tag_name)
+        # Build class name from operation_id
+        class_name = self._operation_to_class_name(endpoint)
 
         # Render prompt
         prompt = template.render(
-            grouped_endpoints=endpoints_str,
-            auth_endpoints=self._format_endpoints(auth_endpoints) if auth_endpoints else "",
+            endpoint=endpoint_details,
+            auth_endpoints=self._format_endpoints_list(auth_endpoints) if auth_endpoints else "",
             base_workflow=base_workflow_content,
             test_data_content=test_data_content,
             class_name=class_name,
-            tag_name=tag_name,
+            operation_id=getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint),
+            method=endpoint.method,
+            path=endpoint.path,
         )
 
         # Call LLM
@@ -299,25 +295,86 @@ class ScenarioWorkflowGenerator:
 
         return ""
 
-    def _format_endpoints(self, endpoints: List[Any]) -> str:
-        """Format endpoints for prompt"""
+    def _format_single_endpoint(self, endpoint: Any) -> str:
+        """Format a single endpoint with full details for the prompt"""
+        lines = []
+
+        # Basic info
+        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        summary = getattr(endpoint, "summary", "") or "No summary"
+        description = getattr(endpoint, "description", "") or ""
+
+        lines.append(f"Operation: {endpoint.method.upper()} {endpoint.path}")
+        lines.append(f"Operation ID: {operation_id}")
+        lines.append(f"Summary: {summary}")
+        if description:
+            lines.append(f"Description: {description}")
+
+        # Parameters
+        if hasattr(endpoint, "parameters") and endpoint.parameters:
+            lines.append("\nParameters:")
+            for param in endpoint.parameters:
+                param_name = getattr(param, "name", "unknown")
+                param_in = getattr(param, "in_", "query")
+                param_required = getattr(param, "required", False)
+                param_type = "string"
+                if hasattr(param, "schema") and param.schema:
+                    param_type = getattr(param.schema, "type", "string")
+                required_str = "(required)" if param_required else "(optional)"
+                lines.append(f"  - {param_name} [{param_in}]: {param_type} {required_str}")
+
+        # Request body
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            lines.append("\nRequest Body:")
+            if hasattr(endpoint.request_body, "content"):
+                for content_type, media_type in endpoint.request_body.content.items():
+                    lines.append(f"  Content-Type: {content_type}")
+                    if hasattr(media_type, "schema") and media_type.schema:
+                        schema = media_type.schema
+                        if hasattr(schema, "properties") and schema.properties:
+                            lines.append("  Properties:")
+                            for prop_name, prop_schema in schema.properties.items():
+                                prop_type = getattr(prop_schema, "type", "any")
+                                lines.append(f"    - {prop_name}: {prop_type}")
+
+        # Responses
+        if hasattr(endpoint, "responses") and endpoint.responses:
+            lines.append("\nResponses:")
+            for status_code, response in endpoint.responses.items():
+                desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
+                lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+
+        return "\n".join(lines)
+
+    def _format_endpoints_list(self, endpoints: List[Any]) -> str:
+        """Format list of endpoints (for auth endpoints)"""
         if not endpoints:
             return ""
 
         lines = []
         for ep in endpoints:
-            params = f"({len(ep.parameters)} params)" if hasattr(ep, "parameters") and ep.parameters else ""
-            body = "(with body)" if hasattr(ep, "request_body") and ep.request_body else ""
             summary = getattr(ep, "summary", "") or "No summary"
-            lines.append(f"- {ep.method} {ep.path} {params} {body} - {summary}")
+            lines.append(f"- {ep.method.upper()} {ep.path} - {summary}")
 
         return "\n".join(lines)
 
-    def _tag_to_class_name(self, tag_name: str) -> str:
-        """Convert tag name to valid Python class name"""
+    def _operation_to_class_name(self, endpoint: Any) -> str:
+        """Convert operation_id to valid Python class name"""
+        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
         # Remove special characters and convert to PascalCase
-        words = tag_name.replace("-", " ").replace("_", " ").split()
+        words = operation_id.replace("-", " ").replace("_", " ").split()
         return "".join(word.capitalize() for word in words)
+
+    def _generate_operation_id(self, endpoint: Any) -> str:
+        """Generate operation_id from method and path if not present"""
+        path_parts = endpoint.path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+        return f"{endpoint.method.lower()}_{path_parts}"
+
+    def get_endpoint_dir_name(self, endpoint: Any) -> str:
+        """Get directory name for an endpoint"""
+        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        # Sanitize for filesystem
+        return operation_id.lower().replace(" ", "_").replace("-", "_")
 
     async def _call_ai_service(self, prompt: str) -> str:
         """Call AI service with retry logic"""
@@ -326,7 +383,8 @@ class ScenarioWorkflowGenerator:
                 "role": "system",
                 "content": (
                     "You are an expert Python developer specializing in Locust load testing. "
-                    "Generate clean, production-ready code. "
+                    "Generate clean, production-ready code for a SINGLE endpoint. "
+                    "Keep the code focused and concise. "
                     "Return code in <code></code> tags. Do not truncate."
                 ),
             },
