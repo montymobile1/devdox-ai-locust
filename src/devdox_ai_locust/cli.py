@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from together import AsyncTogether
 
-from .hybrid_loctus_generator import HybridLocustGenerator
+from .hybrid_loctus_generator import HybridLocustGenerator, AIEnhancementConfig
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
@@ -199,13 +199,18 @@ async def _generate_and_create_tests(
     auth: bool = False,
     db_type: str = "",
     diagnostics: bool = False,
+    timeout: int = 120,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
 
+    # Create AI config with custom timeout
+    ai_config = AIEnhancementConfig(timeout=timeout)
+
     with console.status("[bold green]Generating Locust tests with AI..."):
         generator = HybridLocustGenerator(
             ai_client=together_client,
+            ai_config=ai_config,
             output_dir=output_dir,
             diagnostics=diagnostics,
         )
@@ -299,6 +304,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     default=False,
     help="Enable diagnostics mode: saves pre/post LLM patches and prompts for debugging",
 )
+@click.option(
+    "--timeout",
+    type=int,
+    default=120,
+    help="Timeout in seconds for AI API calls (default: 120, increase for large APIs)",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -314,6 +325,7 @@ def generate(
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
     diagnostics: bool,
+    timeout: int,
 ) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
 
@@ -334,6 +346,7 @@ def generate(
                 custom_requirement,
                 together_api_key,
                 diagnostics,
+                timeout,
             )
         )
     except Exception as e:
@@ -359,6 +372,7 @@ async def _async_generate(
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
     diagnostics: bool = False,
+    timeout: int = 120,
 ) -> None:
     """Async function to handle the generation process"""
 
@@ -395,6 +409,7 @@ async def _async_generate(
             auth,
             db_type,
             diagnostics,
+            timeout,
         )
 
         # Show results
