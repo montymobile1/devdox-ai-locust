@@ -12,7 +12,6 @@ import json
 import logging
 import traceback
 from typing import Dict, Any, Optional, List
-from urllib.parse import urljoin
 
 from test_data import TestDataGenerator
 from utils import ResponseValidator, RequestLogger, PerformanceMonitor, log_request_failure
@@ -138,7 +137,7 @@ class BaseTaskMethods:
 
             with self.client.request(
                 method=method,
-                url=urljoin(config.base_url, path),
+                url=path,  # Relative path - Locust uses host from --host CLI or class attribute
                 catch_response=True,
                 **kwargs
             ) as response:
@@ -186,6 +185,8 @@ class BaseAPIUser(HttpUser):
 
     abstract = True
     wait_time = between(0.5, 1.5)
+    # Default host from config - can be overridden by --host CLI argument
+    host = config.base_url
 
     def on_start(self):
         """Initialize user session"""
