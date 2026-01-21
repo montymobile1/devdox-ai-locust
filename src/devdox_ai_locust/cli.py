@@ -516,7 +516,11 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     # Write base files
     with console.status("[bold green]Creating base files..."):
         for filename, content in base_files.items():
-            file_path = output_dir / filename
+            # base_workflow.py goes in workflows/ to match locustfile.py import
+            if filename == "base_workflow.py":
+                file_path = workflows_dir / filename
+            else:
+                file_path = output_dir / filename
             file_path.write_text(content, encoding='utf-8')
             created_files.append({
                 "path": str(file_path),
