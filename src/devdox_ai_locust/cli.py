@@ -197,7 +197,7 @@ async def _generate_and_create_tests(
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
     db_type: str = "",
-    diagnostics: bool = False,
+    debug_logger: Optional[Any] = None,
     timeout: int = 120,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
@@ -215,6 +215,7 @@ async def _generate_and_create_tests(
         output_dir,
         auth,
         db_type,
+        debug_logger,
     )
 
 
@@ -226,6 +227,7 @@ async def _generate_scenario_based_tests(
     output_dir: Path,
     auth: bool,
     db_type: str,
+    debug_logger: Optional[Any] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
@@ -250,6 +252,7 @@ async def _generate_scenario_based_tests(
         prompt_dir=prompt_dir,
         ai_client=ai_client,
         ai_config=ai_config,
+        debug_logger=debug_logger,
     )
 
     # Get dynamic counts from generator
@@ -383,6 +386,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 base_workflow_content=base_workflow_content,
                 test_data_content=test_data_content,
                 auth_endpoints=auth_endpoints if auth else None,
+                tag_name=tag_name,
             )
 
             # Save files using async I/O
@@ -603,10 +607,10 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="Together AI API key (can also be set via TOGETHER_API_KEY env var)",
 )
 @click.option(
-    "--diagnostics",
+    "--debug",
     is_flag=True,
     default=False,
-    help="Enable diagnostics mode: saves pre/post LLM patches and prompts for debugging",
+    help="Enable debug mode: saves prompts, LLM responses, and artifacts to .devdox-ai-locust/debug/",
 )
 @click.option(
     "--timeout",
@@ -628,7 +632,7 @@ def generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
-    diagnostics: bool,
+    debug: bool,
     timeout: int,
 ) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
@@ -649,7 +653,7 @@ def generate(
                 dry_run,
                 custom_requirement,
                 together_api_key,
-                diagnostics,
+                debug,
                 timeout,
             )
         )
@@ -675,12 +679,23 @@ async def _async_generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
-    diagnostics: bool = False,
+    debug: bool = False,
     timeout: int = 120,
 ) -> None:
     """Async function to handle the generation process"""
+    from devdox_ai_locust.utils.debug_logger import create_debug_logger, ensure_internal_dir_exists
 
     start_time = datetime.now(timezone.utc)
+
+    # Always ensure internal directory exists
+    ensure_internal_dir_exists()
+
+    # Create debug logger if debug mode is enabled
+    debug_logger = None
+    if debug:
+        output_path = Path(output)
+        debug_logger = create_debug_logger(output_path)
+        console.print(f"[blue]🔍[/blue] Debug mode enabled: {debug_logger.session_dir}")
 
     try:
         _, api_key = _initialize_config(together_api_key)
@@ -712,7 +727,7 @@ async def _async_generate(
             host,
             auth,
             db_type,
-            diagnostics,
+            debug_logger,
             timeout,
         )
 
