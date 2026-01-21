@@ -372,6 +372,10 @@ class ScenarioWorkflowGenerator:
             if not content:
                 raise AIServiceError(f"AI service returned empty response for {scenario_type.value}")
 
+            # Fix class name to match expected naming convention
+            # LLMs sometimes ignore the template and generate their own class names
+            content = self._fix_class_name(content, class_name, scenario_type.value)
+
             is_valid, error = self._validate_python_code(content)
             if is_valid:
                 return content
@@ -591,6 +595,43 @@ class ScenarioWorkflowGenerator:
             cleaned_lines.append(line)
 
         return '\n'.join(cleaned_lines).strip()
+
+    def _fix_class_name(self, code: str, expected_class_name: str, scenario_type: str) -> str:
+        """
+        Fix class name in generated code to match expected naming convention.
+
+        LLMs sometimes generate their own class names instead of using the template.
+        This post-processes the code to ensure the class name matches what __init__.py expects.
+        """
+        import re
+
+        # Build the expected full class name (e.g., GetStringFormatsSecurityWorkflow)
+        scenario_suffix = f"{scenario_type.capitalize()}Workflow"
+        expected_full_name = f"{expected_class_name}{scenario_suffix}"
+
+        # Find class definition that inherits from BaseWorkflow
+        # Matches: class SomeName(BaseWorkflow): or class SomeName(TaskSet, BaseWorkflow):
+        pattern = r'class\s+(\w+)\s*\([^)]*BaseWorkflow[^)]*\)\s*:'
+        match = re.search(pattern, code)
+
+        if match:
+            actual_class_name = match.group(1)
+            if actual_class_name != expected_full_name:
+                logger.debug(f"Fixing class name: {actual_class_name} -> {expected_full_name}")
+                # Replace the class name in definition and any self-references
+                code = re.sub(
+                    rf'\bclass\s+{re.escape(actual_class_name)}\s*\(',
+                    f'class {expected_full_name}(',
+                    code
+                )
+                # Also replace docstrings or comments mentioning the old name
+                code = re.sub(
+                    rf'\b{re.escape(actual_class_name)}\b',
+                    expected_full_name,
+                    code
+                )
+
+        return code
 
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
         """Validate Python syntax and return error details if invalid"""
