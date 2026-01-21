@@ -290,7 +290,7 @@ async def _generate_scenario_based_tests(
     # Helper to sanitize directory names
     def sanitize_dir_name(name: str) -> str:
         import re
-        name = name.lower().replace("-", "_").replace(" ", "_").replace(".", "_")
+        name = name.lower().replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
         name = re.sub(r'[^a-z0-9_]', '', name)
         name = re.sub(r'_+', '_', name).strip('_')
         return name or "unnamed"
