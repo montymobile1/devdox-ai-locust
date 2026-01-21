@@ -20,6 +20,25 @@ from jinja2 import Environment, FileSystemLoader
 logger = logging.getLogger(__name__)
 
 
+class ScenarioGenerationError(Exception):
+    """Raised when scenario generation fails"""
+    pass
+
+
+class CodeValidationError(ScenarioGenerationError):
+    """Raised when generated code fails syntax validation"""
+    def __init__(self, scenario_type: str, error: str, code: str):
+        self.scenario_type = scenario_type
+        self.error = error
+        self.code = code
+        super().__init__(f"Generated {scenario_type} code failed validation: {error}")
+
+
+class AIServiceError(ScenarioGenerationError):
+    """Raised when AI service fails after all retries"""
+    pass
+
+
 class ScenarioType(Enum):
     """Types of test scenarios (all LLM-generated)"""
     POSITIVE = "positive"      # Happy path + state-dependent tests
@@ -189,10 +208,12 @@ class ScenarioWorkflowGenerator:
 
         Returns:
             Dict mapping ScenarioType to generated code content
-        """
-        results = {}
 
-        # Generate all 5 scenarios in parallel using LLM
+        Raises:
+            CodeValidationError: If generated code fails syntax validation
+            AIServiceError: If AI service fails after all retries
+        """
+        # Generate all 3 scenarios in parallel using LLM
         scenario_types = list(ScenarioType)
 
         llm_tasks = [
@@ -206,16 +227,10 @@ class ScenarioWorkflowGenerator:
             for scenario_type in scenario_types
         ]
 
-        llm_results = await asyncio.gather(*llm_tasks, return_exceptions=True)
+        # Let exceptions propagate naturally - no return_exceptions=True
+        llm_results = await asyncio.gather(*llm_tasks)
 
-        for scenario_type, result in zip(scenario_types, llm_results):
-            if isinstance(result, Exception):
-                logger.error(f"Failed to generate {scenario_type.value} scenario: {result}")
-                results[scenario_type] = ""
-            else:
-                results[scenario_type] = result
-
-        return results
+        return dict(zip(scenario_types, llm_results))
 
     async def _generate_llm_scenario(
         self,
@@ -242,11 +257,8 @@ class ScenarioWorkflowGenerator:
         if not template_name:
             raise ValueError(f"No prompt template for scenario type: {scenario_type}")
 
-        try:
-            template = self.prompt_env.get_template(template_name)
-        except Exception as e:
-            logger.error(f"Failed to load template {template_name}: {e}")
-            return ""
+        # Let template loading errors propagate naturally
+        template = self.prompt_env.get_template(template_name)
 
         # Format single endpoint with full details
         endpoint_details = self._format_single_endpoint(endpoint)
@@ -267,23 +279,17 @@ class ScenarioWorkflowGenerator:
         )
 
         # Call LLM
-        content = await self._call_ai_service(prompt)
+        content = await self._call_ai_service(prompt, scenario_type.value)
 
         # Validate Python syntax
-        if content:
-            is_valid, error = self._validate_python_code(content)
-            if is_valid:
-                return content
-            logger.warning(
-                f"Generated {scenario_type.value} code failed validation: {error}"
-            )
-            # Log first few lines to help debug
-            lines = content.split('\n')[:10]
-            logger.debug(f"First 10 lines of failed code:\n" + '\n'.join(lines))
-        else:
-            logger.warning(f"Generated {scenario_type.value} code was empty")
+        if not content:
+            raise AIServiceError(f"AI service returned empty response for {scenario_type.value}")
 
-        return ""
+        is_valid, error = self._validate_python_code(content)
+        if not is_valid:
+            raise CodeValidationError(scenario_type.value, error, content)
+
+        return content
 
     def _format_single_endpoint(self, endpoint: Any) -> str:
         """Format a single endpoint with full details for the prompt"""
@@ -393,8 +399,8 @@ class ScenarioWorkflowGenerator:
         # Sanitize for filesystem
         return self._sanitize_identifier(operation_id).lower()
 
-    async def _call_ai_service(self, prompt: str) -> str:
-        """Call AI service with retry logic"""
+    async def _call_ai_service(self, prompt: str, scenario_type: str = "unknown") -> str:
+        """Call AI service with retry logic. Raises AIServiceError after all retries fail."""
         messages = [
             {
                 "role": "system",
@@ -408,6 +414,7 @@ class ScenarioWorkflowGenerator:
             {"role": "user", "content": prompt},
         ]
 
+        last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
                 async with self._api_semaphore:
@@ -429,15 +436,20 @@ class ScenarioWorkflowGenerator:
                         content = response.choices[0].message.content.strip()
                         return self._extract_code(content)
 
-            except asyncio.TimeoutError:
-                logger.warning(f"AI timeout on attempt {attempt + 1}")
+            except asyncio.TimeoutError as e:
+                last_error = e
+                logger.warning(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
             except Exception as e:
-                logger.warning(f"AI error on attempt {attempt + 1}: {e}")
+                last_error = e
+                logger.warning(f"AI error on attempt {attempt + 1} for {scenario_type}: {e}")
 
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
 
-        return ""
+        # All retries exhausted - raise exception
+        raise AIServiceError(
+            f"AI service failed after 3 attempts for {scenario_type}"
+        ) from last_error
 
     def _extract_code(self, response: str) -> str:
         """Extract code from <code> tags with robust fallback handling"""
