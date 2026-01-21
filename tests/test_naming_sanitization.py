@@ -365,6 +365,118 @@ class TestIntegration:
                 f"'{class_name}' from '{input_name}' is a Python keyword"
 
 
+class TestOpenAPIParserOperationId:
+    """Tests for OpenAPI parser operation_id generation"""
+
+    @pytest.fixture
+    def parser(self):
+        """Create an OpenAPIParser instance for testing"""
+        from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser
+        return OpenAPIParser()
+
+    @pytest.mark.parametrize("method,path,expected", [
+        # Basic cases
+        ("GET", "/users", "get_users"),
+        ("POST", "/users", "post_users"),
+        ("PUT", "/users/{id}", "put_users_id"),
+        ("DELETE", "/users/{userId}", "delete_users_userId"),
+        ("PATCH", "/api/v1/users", "patch_api_v1_users"),
+
+        # Multiple path parameters
+        ("GET", "/users/{userId}/posts/{postId}", "get_users_userId_posts_postId"),
+
+        # Dashes and dots in path
+        ("GET", "/api-gateway/v1.0/users", "get_api_gateway_v1_0_users"),
+        ("POST", "/path-with-dashes", "post_path_with_dashes"),
+
+        # Special characters
+        ("GET", "/users@domain", "get_usersdomain"),
+        ("GET", "/path/to/resource", "get_path_to_resource"),
+
+        # Empty or minimal paths - just method becomes the operation_id
+        ("GET", "/", "get"),
+        ("POST", "", "post"),
+    ])
+    def test_generate_operation_id(self, parser, method, path, expected):
+        """Test _generate_operation_id creates valid operation IDs"""
+        result = parser._generate_operation_id(method, path)
+        assert result == expected, f"{method} {path} should become '{expected}', got '{result}'"
+
+    def test_parse_endpoints_generates_operation_id(self, parser):
+        """Test that parse_endpoints generates operation_id when missing from spec"""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: Test API
+  version: "1.0"
+paths:
+  /users:
+    get:
+      summary: Get all users
+      responses:
+        '200':
+          description: Success
+    post:
+      operationId: createUser
+      summary: Create a user
+      responses:
+        '201':
+          description: Created
+  /users/{id}:
+    get:
+      summary: Get user by ID
+      responses:
+        '200':
+          description: Success
+"""
+        parser.parse_schema(spec)
+        endpoints = parser.parse_endpoints()
+
+        # Find endpoints by path and method
+        get_users = next(e for e in endpoints if e.path == "/users" and e.method == "GET")
+        post_users = next(e for e in endpoints if e.path == "/users" and e.method == "POST")
+        get_user_id = next(e for e in endpoints if e.path == "/users/{id}" and e.method == "GET")
+
+        # Verify operation_id is always present
+        assert get_users.operation_id == "get_users", "Missing operationId should be generated"
+        assert post_users.operation_id == "createUser", "Existing operationId should be preserved"
+        assert get_user_id.operation_id == "get_users_id", "Path params should be included"
+
+    def test_operation_id_is_always_string(self, parser):
+        """Test that operation_id is never None or empty after parsing"""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: Test API
+  version: "1.0"
+paths:
+  /test:
+    get:
+      responses:
+        '200':
+          description: Success
+    post:
+      responses:
+        '200':
+          description: Success
+    put:
+      responses:
+        '200':
+          description: Success
+    delete:
+      responses:
+        '200':
+          description: Success
+"""
+        parser.parse_schema(spec)
+        endpoints = parser.parse_endpoints()
+
+        for endpoint in endpoints:
+            assert endpoint.operation_id is not None, f"{endpoint.method} {endpoint.path} has None operation_id"
+            assert endpoint.operation_id != "", f"{endpoint.method} {endpoint.path} has empty operation_id"
+            assert isinstance(endpoint.operation_id, str), f"{endpoint.method} {endpoint.path} operation_id is not string"
+
+
 class TestRealWorldExamples:
     """Tests with real-world OpenAPI tag and operation names"""
 

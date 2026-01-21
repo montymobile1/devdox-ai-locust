@@ -527,5 +527,6 @@ class TestOpenAPIParserEdgeCases:
 
         endpoints = parser.parse_endpoints()
 
-        assert endpoints[0].operation_id is None
+        # operation_id is now auto-generated from method+path when missing
+        assert endpoints[0].operation_id == "get_test"
         assert endpoints[0].summary == "Test endpoint"

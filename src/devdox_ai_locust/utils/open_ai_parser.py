@@ -68,7 +68,7 @@ class Endpoint:
 
     path: str
     method: str
-    operation_id: Optional[str]
+    operation_id: str  # Required - generated from method+path if not in spec
     summary: Optional[str]
     description: Optional[str]
     parameters: List[Parameter]
@@ -84,6 +84,38 @@ class OpenAPIParser:
     def __init__(self) -> None:
         self.spec_data: Optional[Dict[str, Any]] = None
         self.components: Optional[Dict[str, Any]] = None
+
+    def _generate_operation_id(self, method: str, path: str) -> str:
+        """
+        Generate operation_id from HTTP method and path.
+
+        This is called when operationId is not present in the OpenAPI spec.
+        Produces a valid Python identifier like 'get_users_userId'.
+
+        Args:
+            method: HTTP method (e.g., 'GET', 'POST')
+            path: API path (e.g., '/users/{userId}')
+
+        Returns:
+            A valid Python identifier for the operation
+        """
+        import re
+        # Remove path parameter braces and leading slash
+        path_parts = path.strip("/").replace("{", "").replace("}", "")
+        # Combine method and path
+        raw_id = f"{method.lower()}_{path_parts.replace('/', '_')}"
+        # Sanitize: replace common separators with underscores
+        raw_id = raw_id.replace("-", "_").replace(".", "_")
+        # Remove non-alphanumeric chars except underscore
+        raw_id = re.sub(r'[^a-zA-Z0-9_]', '', raw_id)
+        # Remove consecutive underscores
+        raw_id = re.sub(r'_+', '_', raw_id)
+        # Remove leading/trailing underscores
+        raw_id = raw_id.strip('_')
+        # Ensure doesn't start with a number (shouldn't happen with method prefix)
+        if raw_id and raw_id[0].isdigit():
+            raw_id = f"n{raw_id}"
+        return raw_id or f"{method.lower()}_endpoint"
 
     def parse_schema(self, schema_content: str) -> Dict[str, Any]:
         """
@@ -172,10 +204,18 @@ class OpenAPIParser:
                 if method in path_item:
                     operation = path_item[method]
 
+                    # Get operation_id from spec, or generate from method+path
+                    operation_id = operation.get("operationId")
+                    if not operation_id:
+                        operation_id = self._generate_operation_id(method.upper(), path)
+                        logger.debug(
+                            f"Generated operation_id '{operation_id}' for {method.upper()} {path}"
+                        )
+
                     endpoint = Endpoint(
                         path=path,
                         method=method.upper(),
-                        operation_id=operation.get("operationId"),
+                        operation_id=operation_id,
                         summary=operation.get("summary"),
                         description=operation.get("description"),
                         parameters=self._extract_parameters(operation, path_parameters),
