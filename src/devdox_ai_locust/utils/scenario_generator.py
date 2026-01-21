@@ -27,11 +27,16 @@ class ScenarioGenerationError(Exception):
 
 class CodeValidationError(ScenarioGenerationError):
     """Raised when generated code fails syntax validation"""
-    def __init__(self, scenario_type: str, error: str, code: str):
+    def __init__(self, scenario_type: str, error: str, code: str, endpoint_info: str = ""):
         self.scenario_type = scenario_type
         self.error = error
         self.code = code
-        super().__init__(f"Generated {scenario_type} code failed validation: {error}")
+        self.endpoint_info = endpoint_info
+        msg = f"Generated {scenario_type} code failed validation"
+        if endpoint_info:
+            msg += f" for [{endpoint_info}]"
+        msg += f": {error}"
+        super().__init__(msg)
 
 
 class AIServiceError(ScenarioGenerationError):
@@ -374,7 +379,15 @@ class ScenarioWorkflowGenerator:
             content = await self._call_ai_service(prompt, scenario_type.value)
 
             if not content:
-                raise AIServiceError(f"AI service returned empty response for {scenario_type.value}")
+                raise AIServiceError(f"AI service returned empty response for {scenario_type.value} [{endpoint.method} {endpoint.path}]")
+
+            # Detect if API returned HTML error page instead of code
+            if content.strip().startswith('<') and '<html' in content.lower():
+                raise AIServiceError(
+                    f"API returned HTML error page instead of code for {scenario_type.value} "
+                    f"[{endpoint.method} {endpoint.path}]. "
+                    f"This may indicate an API error or rate limiting. First 200 chars: {content[:200]}"
+                )
 
             # Fix class name to match expected naming convention
             # LLMs sometimes ignore the template and generate their own class names
@@ -392,11 +405,19 @@ class ScenarioWorkflowGenerator:
             last_code = content
 
             if attempt < max_validation_retries - 1:
-                logger.warning(f"Validation failed for {scenario_type.value}, retrying: {error}")
+                logger.warning(
+                    f"Validation failed for {scenario_type.value} [{endpoint.method} {endpoint.path}], "
+                    f"attempt {attempt + 1}/{max_validation_retries}: {error}"
+                )
                 await asyncio.sleep(1)
 
         # All retries exhausted
-        raise CodeValidationError(scenario_type.value, last_error, last_code)
+        raise CodeValidationError(
+            scenario_type.value,
+            last_error,
+            last_code,
+            endpoint_info=f"{endpoint.method} {endpoint.path}"
+        )
 
     def _format_single_endpoint(self, endpoint: Any) -> str:
         """Format a single endpoint with full details for the prompt"""
