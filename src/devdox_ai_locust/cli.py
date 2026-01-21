@@ -242,19 +242,6 @@ async def _generate_scenario_based_tests(
 
     num_tags = len(grouped_endpoints)
 
-    # Show time estimate
-    # 3 LLM calls per tag (positive + negative + security)
-    total_calls = num_tags * 3
-    # Estimate RPM (will be updated after first call)
-    estimated_rpm = 60  # Conservative default
-    estimated_minutes = total_calls / estimated_rpm
-
-    console.print(f"\n📊 [bold]Scenario-based Generation[/bold]")
-    console.print(f"   Tags to process: {num_tags}")
-    console.print(f"   API calls needed: {total_calls} (3 per tag)")
-    console.print(f"   Estimated time: ~{estimated_minutes:.1f} minutes (at {estimated_rpm} RPM)")
-    console.print(f"   Files per tag: positive_workflow.py, negative_workflow.py, security_workflow.py\n")
-
     # Setup prompt directory
     prompt_dir = Path(__file__).parent / "prompt"
 
@@ -264,6 +251,20 @@ async def _generate_scenario_based_tests(
         ai_client=ai_client,
         ai_config=ai_config,
     )
+
+    # Get dynamic counts from generator
+    num_scenarios = len(scenario_gen.SCENARIO_FILES)
+    scenario_filenames = ", ".join(scenario_gen.SCENARIO_FILES.values())
+
+    # Show time estimate (using generator's estimate_time)
+    time_estimate = scenario_gen.estimate_time(num_tags)
+    estimated_rpm = time_estimate.rpm
+
+    console.print(f"\n📊 [bold]Scenario-based Generation[/bold]")
+    console.print(f"   Tags to process: {num_tags}")
+    console.print(f"   API calls needed: {time_estimate.total_calls} ({num_scenarios} per tag)")
+    console.print(f"   Estimated time: {time_estimate}")
+    console.print(f"   Files per tag: {scenario_filenames}\n")
 
     # Generate base files first using template generator
     template_gen = LocustTestGenerator()
@@ -320,7 +321,7 @@ async def _generate_scenario_based_tests(
                 rate_info = scenario_gen.get_rate_limit_info()
                 if rate_info.requests_per_minute != estimated_rpm:
                     console.print(f"\n📊 Updated rate limit: {rate_info.requests_per_minute} RPM")
-                    remaining_calls = (num_tags - 1) * 2
+                    remaining_calls = (num_tags - 1) * num_scenarios
                     new_estimate = remaining_calls / rate_info.requests_per_minute
                     console.print(f"   Revised estimate: ~{new_estimate:.1f} minutes remaining\n")
 
