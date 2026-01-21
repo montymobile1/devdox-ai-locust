@@ -790,8 +790,15 @@ class ScenarioWorkflowGenerator:
         ) from last_error
 
     def _extract_code(self, response: str) -> str:
-        """Extract code from <code> tags with robust fallback handling"""
+        """Extract code from <code> tags with robust fallback handling.
+
+        Handles chain-of-thought responses that have <analysis> before <code>.
+        Only extracts the <code> section, ignoring analysis.
+        """
         import re
+
+        # First, strip any <analysis> sections (from chain-of-thought prompts)
+        response = re.sub(r"<analysis>.*?</analysis>", "", response, flags=re.DOTALL | re.IGNORECASE)
 
         # Try case-insensitive match with closing tag (handle attributes like <code lang="python">)
         pattern = r"<code[^>]*>(.*?)</code>"
@@ -836,6 +843,13 @@ class ScenarioWorkflowGenerator:
             if stripped.startswith('This endpoint') or stripped.startswith('This is'):
                 continue
             if stripped.startswith('We ') and ('test' in stripped.lower() or 'endpoint' in stripped.lower()):
+                continue
+            # Skip chain-of-thought analysis remnants that leaked through
+            if stripped.startswith('STEP ') and ':' in stripped:
+                continue
+            if stripped.startswith('Method:') or stripped.startswith('Path:'):
+                continue
+            if stripped.startswith('Required:') or stripped.startswith('Optional:'):
                 continue
             cleaned_lines.append(line)
 

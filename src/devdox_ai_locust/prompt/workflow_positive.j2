@@ -1,4 +1,6 @@
-TASK: Generate POSITIVE and STATE-DEPENDENT test scenarios for a SINGLE endpoint.
+TASK: Generate POSITIVE and STATE-DEPENDENT test scenarios for a single API endpoint.
+
+=== CONTEXT ===
 
 ENDPOINT TO TEST:
 {{ endpoint }}
@@ -14,144 +16,90 @@ BASE WORKFLOW (inherit from this):
 TEST DATA MODULE (test_data.py):
 {{ test_data_content }}
 
-ALLOWED IMPORTS (use ONLY these - DO NOT invent or import any other modules):
+=== ALLOWED IMPORTS (use ONLY these) ===
 ```python
 from locust import task
 from workflows.base_workflow import BaseWorkflow
-from test_data import test_data_generator  # Use this for generating test values
+from test_data import test_data_generator
 ```
 
-HOW TO USE test_data_generator:
-```python
-# Generate strings
-test_data_generator.generate_string(length=10)
-test_data_generator.random_string(10)
-test_data_generator.generate_email()
+=== CHAIN OF THOUGHT INSTRUCTIONS ===
 
-# Generate numbers
-test_data_generator.generate_integer(min_val=1, max_val=100)
-test_data_generator.random_int(0, 1000)
-test_data_generator.generate_float(min_val=0.0, max_val=100.0)
+Before writing code, you MUST reason through these steps:
 
-# Generate other types
-test_data_generator.generate_boolean()
-test_data_generator.random_uuid()
-test_data_generator.random_date()
-```
+**STEP 1 - ANALYZE THE ENDPOINT:**
+- What is the HTTP method? (GET/POST/PUT/DELETE/PATCH)
+- What is the path? Are there path parameters like {id}?
+- Does this endpoint need a request body?
 
-REQUIREMENTS:
+**STEP 2 - EXTRACT SCHEMA FIELDS:**
+- List ALL required fields from the Schema (exact names!)
+- List optional fields if any
+- Note the type of each field (string, integer, boolean, etc.)
 
-1. **POSITIVE TEST SCENARIOS** (Happy Path):
-   Generate 2-3 @task methods for successful operations:
-   - Valid data with all required fields (weight: 10)
-   - Valid data with optional fields included (weight: 8)
+**STEP 3 - PLAN STATE-DEPENDENT TESTS:**
+- If endpoint has path params like {id}: you MUST create the resource first, then use the returned ID
+- If it's a simple POST with no path params: just send valid data
+- NEVER use hardcoded IDs like /items/1 - they will 404!
 
-2. **STATE-DEPENDENT SCENARIOS** (CRITICAL for GET/PUT/DELETE with path params):
-   If the endpoint has path parameters like `/{id}` or `/{user_id}/posts/{post_id}`:
-   - You MUST create the resource FIRST, then use the returned ID
-   - NEVER use random/hardcoded IDs like /users/1/posts/1 - they will return 404!
-   - Extract the ID from the response using the EXACT field name from Response Schema
+**STEP 4 - PLAN TEST DATA GENERATION:**
+- For each field, decide which test_data_generator method to use:
+  - Strings: test_data_generator.generate_string(length=10)
+  - Emails: test_data_generator.generate_email()
+  - Integers: test_data_generator.generate_integer(min_val=1, max_val=100)
+  - Floats: test_data_generator.generate_float()
+  - Booleans: test_data_generator.generate_boolean()
+  - UUIDs: test_data_generator.random_uuid()
 
-   Example for GET /items/{item_id}:
-   ```python
-   @task(5)
-   def test_create_then_get(self):
-       # Step 1: Create a resource first
-       create_resp = self.client.post("/items", json={"name": "Test"})
-       if create_resp.status_code not in [200, 201]:
-           return
-       resource_id = create_resp.json().get("id")
-       if not resource_id:
-           return
-       # Step 2: Now test with the real ID
-       with self.client.get(f"/items/{resource_id}", catch_response=True) as response:
-           if response.status_code == 200:
-               response.success()
-           else:
-               response.failure(f"Expected 200, got {response.status_code}")
-   ```
+**STEP 5 - WRITE THE CODE:**
+Based on your analysis, write the complete workflow class.
 
-   Example for NESTED resources like GET /users/{user_id}/posts/{post_id}:
-   ```python
-   @task(5)
-   def test_nested_resource(self):
-       # Step 1: Create parent resource (user)
-       user_resp = self.client.post("/users", json={"name": "Test User"})
-       if user_resp.status_code not in [200, 201]:
-           return
-       user_id = user_resp.json().get("id")
-       # Step 2: Create child resource (post)
-       post_resp = self.client.post(f"/users/{user_id}/posts", json={"title": "Test"})
-       if post_resp.status_code not in [200, 201]:
-           return
-       post_id = post_resp.json().get("id")
-       # Step 3: Now test the nested endpoint
-       with self.client.get(f"/users/{user_id}/posts/{post_id}", catch_response=True) as response:
-           if response.status_code == 200:
-               response.success()
-           else:
-               response.failure(f"Expected 200, got {response.status_code}")
-   ```
+=== CONSTRAINTS ===
+- ALL test values must be SHORT: max 50 characters per field
+- Keep total code under 100 lines
+- Use catch_response=True for proper Locust reporting
+- For file uploads: use files= parameter, NOT json=
+- BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
 
-3. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
-   - You MUST use the EXACT property names listed in the Schema section above
-   - Do NOT invent field names like "string_field", "integer_field", "field", etc.
-   - If Schema shows "name", "count", "price" - use those exact names
-   - If Schema shows required fields - include ALL of them in your test data
-   - Generate values appropriate for each field's type and constraints
+=== OUTPUT FORMAT ===
 
-4. **CONSTRAINTS**:
-   - ALL test values must be SHORT: max 50 characters per field
-   - Use realistic, representative test data matching the schema
-   - Keep total code under 100 lines
-   - NEVER generate excessively long strings
-   - For file uploads (multipart/form-data): use files= parameter, NOT json=
-   - **BYTES LITERALS MUST BE ASCII ONLY**: Never put unicode in b'...' literals
-     WRONG: b'tëst' (SyntaxError!)
-     CORRECT: b'test' or 'tëst'.encode('utf-8')
+First, show your analysis in <analysis> tags.
+Then, provide ONLY valid Python code in <code> tags.
+No markdown fences, no explanations outside the tags.
 
-5. **CLASS STRUCTURE** (use EXACTLY this import pattern):
-   ```python
-   from locust import task
-   from workflows.base_workflow import BaseWorkflow
-   from test_data import test_data_generator
+<analysis>
+STEP 1 - ENDPOINT ANALYSIS:
+Method: [GET/POST/PUT/DELETE]
+Path: [the path]
+Has path params: [yes/no, list them]
+Needs request body: [yes/no]
 
-   class {{ class_name }}PositiveWorkflow(BaseWorkflow):
-       """Positive and state tests for {{ method }} {{ path }}"""
+STEP 2 - SCHEMA FIELDS:
+Required: [list exact field names and types]
+Optional: [list exact field names and types]
 
-       created_ids = []
+STEP 3 - STATE DEPENDENCY:
+[Explain if you need to create resource first or not]
 
-       @task(10)
-       def test_success_with_valid_data(self):
-           """Test successful operation"""
-           # Use test_data_generator for values, EXACT field names from Schema
-           data = {
-               "name": test_data_generator.generate_string(length=10),
-               "email": test_data_generator.generate_email(),
-               "count": test_data_generator.generate_integer(min_val=1, max_val=100),
-               # ... all required fields from schema
-           }
-           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
-               if response.status_code in [200, 201]:
-                   response.success()
-               else:
-                   response.failure(f"Expected success, got {response.status_code}")
-   ```
+STEP 4 - DATA GENERATION PLAN:
+[Map each field to a test_data_generator method]
 
-6. **CRITICAL - DO NOT INVENT MODULES**:
-   - ONLY use imports shown in "ALLOWED IMPORTS" above
-   - DO NOT create imports like `import test_data_generator` (WRONG - it's not a module)
-   - The correct import is: `from test_data import test_data_generator`
-   - DO NOT invent helper functions or utilities that don't exist
+STEP 5 - TEST METHODS TO GENERATE:
+[List the @task methods you will create]
+</analysis>
 
-8. **IMPORTANT**:
-   - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
-   - Keep code concise (60-100 lines max)
-   - Use catch_response=True for proper Locust reporting
-   - READ THE SCHEMA CAREFULLY and use those exact field names
+<code>
+from locust import task
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator
 
-OUTPUT:
-Return ONLY valid Python code. No markdown, no explanations, no ``` code fences.
-Wrap your code in <code></code> tags.
+class {{ class_name }}PositiveWorkflow(BaseWorkflow):
+    """Positive and state tests for {{ method }} {{ path }}"""
 
-<code>your_complete_python_code_here</code>
+    created_ids = []
+
+    @task(10)
+    def test_success_with_valid_data(self):
+        # Your implementation based on analysis...
+        pass
+</code>

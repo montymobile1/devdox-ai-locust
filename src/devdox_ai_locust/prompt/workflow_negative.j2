@@ -1,4 +1,6 @@
-TASK: Generate NEGATIVE, EDGE CASE, and ERROR HANDLING test scenarios for a SINGLE endpoint.
+TASK: Generate NEGATIVE, EDGE CASE, and ERROR HANDLING test scenarios for a single API endpoint.
+
+=== CONTEXT ===
 
 ENDPOINT TO TEST:
 {{ endpoint }}
@@ -14,134 +16,88 @@ BASE WORKFLOW (inherit from this):
 TEST DATA MODULE (test_data.py):
 {{ test_data_content }}
 
-ALLOWED IMPORTS (use ONLY these - DO NOT invent or import any other modules):
+=== ALLOWED IMPORTS (use ONLY these) ===
 ```python
 from locust import task
 from workflows.base_workflow import BaseWorkflow
-from test_data import test_data_generator  # Use this for generating test values
+from test_data import test_data_generator
 ```
 
-HOW TO USE test_data_generator:
-```python
-# Generate strings
-test_data_generator.generate_string(length=10)
-test_data_generator.random_string(10)
-test_data_generator.generate_email()
+=== CHAIN OF THOUGHT INSTRUCTIONS ===
 
-# Generate numbers
-test_data_generator.generate_integer(min_val=1, max_val=100)
-test_data_generator.random_int(0, 1000)
-test_data_generator.generate_float(min_val=0.0, max_val=100.0)
+Before writing code, you MUST reason through these steps:
 
-# Generate other types
-test_data_generator.generate_boolean()
-test_data_generator.random_uuid()
-test_data_generator.random_date()
-```
+**STEP 1 - ANALYZE THE ENDPOINT:**
+- What is the HTTP method and path?
+- Is this a RESPONSE-TESTING endpoint (path contains /responses/4xx or /responses/5xx)?
+  - If YES: This endpoint ALWAYS returns that status code - don't test for validation errors!
+- Does it have path parameters? What type (integer, string, UUID)?
 
-REQUIREMENTS:
+**STEP 2 - EXTRACT SCHEMA FIELDS:**
+- List ALL required fields (exact names!)
+- List optional fields
+- Note field types - these determine what "invalid" means
 
-1. **CRITICAL - DETECT RESPONSE-TESTING ENDPOINTS**:
-   If the endpoint path contains `/responses/` followed by a status code (e.g., `/responses/404`, `/responses/401`),
-   or if the endpoint's purpose is to RETURN a specific HTTP status code for testing:
-   - This is a MOCK/TEST endpoint that ALWAYS returns that specific status code
-   - Do NOT test for 400/422 validation errors - the endpoint ignores input validation
-   - Instead, test that it correctly returns its designated status code
-   - Example for `/responses/404`: expect 404, NOT 400/422
+**STEP 3 - PLAN NEGATIVE TESTS (skip if response-testing endpoint):**
+- Missing required field test: Only if there ARE required fields
+- Invalid type test: Send wrong type for a field (string where int expected)
+- Non-existent ID test: For endpoints with path params, use obviously fake IDs:
+  - Integer params: use 999999999 (very large number)
+  - String/UUID params: use "nonexistent-id-12345"
 
-   ```python
-   @task(3)
-   def test_expected_status_code(self):
-       """Test that endpoint returns its designated status code"""
-       with self.client.get("/api/v1/comprehensive/responses/404", catch_response=True) as response:
-           if response.status_code == 404:  # Expected status from the endpoint
-               response.success()
-           else:
-               response.failure(f"Expected 404, got {response.status_code}")
-   ```
+**STEP 4 - PLAN EDGE CASE TESTS:**
+- Empty string for string fields
+- Zero for numeric fields
+- Special characters / unicode in strings
 
-2. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
-   - You MUST use the EXACT property names listed in the Schema section above
-   - Do NOT invent field names like "field", "string_field", "data", etc.
-   - Use the actual field names when testing invalid values
-   - Check if the endpoint has required fields before testing "missing required field"
-   - If Schema shows "Required fields: none", skip the missing-field test
+**STEP 5 - DETERMINE EXPECTED STATUS CODES:**
+- Validation errors: 400 or 422
+- Not found: 404
+- Response-testing endpoints: Whatever status is in the path (e.g., /responses/404 → expect 404)
 
-3. **CRITICAL - OPTIONAL FIELDS DON'T CAUSE VALIDATION ERRORS**:
-   - If endpoint name/path contains "optional" (e.g., `/upload/single-optional`), omitting the field succeeds (200)
-   - Do NOT expect 400/422 for missing optional fields - the request will succeed!
-   - Only test validation errors for REQUIRED fields
-   - For optional file uploads: test with malformed files, not missing files
+=== CONSTRAINTS ===
+- ALL test values must be SHORT: max 50 characters
+- Keep total code under 100 lines
+- For integer path params, use integers (999999), not UUIDs
+- BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
 
-4. **CRITICAL - ARRAY/INDEX ENDPOINTS RETURN 404 FOR MISSING INDEX**:
-   - If endpoint path contains array index (e.g., `/arrays/constrained/0`, `/items/{index}`):
-   - Accessing non-existent index returns 404 (not found), NOT 400/422 (validation error)
-   - Test for 404 when accessing non-existent indices, not 400/422
+=== OUTPUT FORMAT ===
 
-5. **NEGATIVE TEST SCENARIOS** (Validation Errors - SKIP for response-testing endpoints):
-   Generate 2-3 @task methods for error handling:
-   - Missing required fields (ONLY if schema has required fields) - expect 400/422 (weight: 3)
-   - Invalid data types for actual schema fields - expect 400/422 (weight: 3)
-   - Non-existent resource ID (for endpoints with path params) - expect 404 (weight: 3)
+First, show your analysis in <analysis> tags.
+Then, provide ONLY valid Python code in <code> tags.
+No markdown fences, no explanations outside the tags.
 
-   **IMPORTANT for 404 testing with path params**:
-   - Use obviously non-existent IDs that WON'T accidentally exist in the database
-   - If path param is integer: use very large numbers like 999999999
-   - If path param is string/UUID: use "nonexistent-id-12345" or "00000000-0000-0000-0000-000000000000"
-   - Example: `self.client.get("/items/999999999", ...)` for integer ID params
+<analysis>
+STEP 1 - ENDPOINT ANALYSIS:
+Method: [method]
+Path: [path]
+Is response-testing endpoint: [yes/no - check if path has /responses/]
+Path params: [list with types]
 
-6. **EDGE CASE SCENARIOS** (Boundary Testing - SKIP for response-testing endpoints):
-   Generate 1-2 @task methods for boundaries:
-   - Empty strings/zero values for actual schema fields (weight: 2)
-   - Unicode/special characters in actual schema fields (weight: 2)
+STEP 2 - SCHEMA FIELDS:
+Required: [list exact names and types, or "none"]
+Optional: [list exact names and types, or "none"]
 
-7. **CONSTRAINTS** (CRITICAL):
-   - ALL test values must be SHORT: max 50 characters
-   - For unicode tests in strings, use 1-5 special chars (e.g., "tëst")
-   - For path parameter tests: use the correct type (int if schema says integer)
-   - NEVER generate strings longer than 100 characters
-   - Keep total code under 100 lines
-   - For file uploads: use files= parameter, NOT json=
-   - **BYTES LITERALS MUST BE ASCII ONLY**: Never put unicode in b'...' literals
-     WRONG: b'tëst' (SyntaxError!)
-     CORRECT: b'test' or 'tëst'.encode('utf-8')
+STEP 3 - NEGATIVE TEST PLAN:
+[List what negative tests make sense for this endpoint]
 
-8. **CLASS STRUCTURE** (use EXACTLY this import pattern):
-   ```python
-   from locust import task
-   from workflows.base_workflow import BaseWorkflow
-   from test_data import test_data_generator
+STEP 4 - EDGE CASE PLAN:
+[List edge cases to test]
 
-   class {{ class_name }}NegativeWorkflow(BaseWorkflow):
-       """Negative and edge case tests for {{ method }} {{ path }}"""
+STEP 5 - EXPECTED STATUS CODES:
+[Map each test to expected status code]
+</analysis>
 
-       @task(3)
-       def test_invalid_data_type(self):
-           """Test with invalid data type for a schema field - expect 400/422"""
-           # Use an ACTUAL field name from the schema with wrong type
-           data = {"actual_field_from_schema": test_data_generator.generate_integer()}
-           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
-               if response.status_code in [400, 422]:
-                   response.success()
-               else:
-                   response.failure(f"Expected 400/422, got {response.status_code}")
-   ```
+<code>
+from locust import task
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator
 
-9. **CRITICAL - DO NOT INVENT MODULES**:
-   - ONLY use imports shown in "ALLOWED IMPORTS" above
-   - DO NOT create imports like `import test_data_generator` (WRONG - it's not a module)
-   - The correct import is: `from test_data import test_data_generator`
-   - DO NOT invent helper functions or utilities that don't exist
+class {{ class_name }}NegativeWorkflow(BaseWorkflow):
+    """Negative and edge case tests for {{ method }} {{ path }}"""
 
-11. **IMPORTANT**:
-   - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
-   - Keep code concise (60-100 lines max)
-   - Mark success() when expected error occurs
-   - READ THE SCHEMA CAREFULLY - use those exact field names
-   - Check parameter types: if path param is int, use int (e.g., 999999 not uuid)
-
-OUTPUT:
-Return ONLY valid Python code. No markdown, no explanations, no ``` code fences.
-Wrap your code in <code></code> tags.
-
-<code>your_complete_python_code_here</code>
+    @task(3)
+    def test_invalid_type(self):
+        # Your implementation based on analysis...
+        pass
+</code>

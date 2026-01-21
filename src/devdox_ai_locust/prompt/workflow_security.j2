@@ -1,4 +1,6 @@
-TASK: Generate SECURITY test scenarios for a SINGLE endpoint.
+TASK: Generate SECURITY test scenarios for a single API endpoint.
+
+=== CONTEXT ===
 
 ENDPOINT TO TEST:
 {{ endpoint }}
@@ -14,98 +16,93 @@ BASE WORKFLOW (inherit from this):
 TEST DATA MODULE (test_data.py):
 {{ test_data_content }}
 
-ALLOWED IMPORTS (use ONLY these - DO NOT invent or import any other modules):
+=== ALLOWED IMPORTS (use ONLY these) ===
 ```python
 from locust import task
 from workflows.base_workflow import BaseWorkflow
-from test_data import test_data_generator  # Use this for generating test values
-import random  # For selecting random payloads
+from test_data import test_data_generator
+import random
 ```
 
-HOW TO USE test_data_generator:
+=== SECURITY PAYLOADS ===
 ```python
-# Generate valid values for non-injected fields
-test_data_generator.generate_string(length=10)
-test_data_generator.generate_integer(min_val=1, max_val=100)
-test_data_generator.generate_email()
+SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --", "1; SELECT * FROM users"]
+XSS_PAYLOADS = ["<script>alert('XSS')</script>", "<img src=x onerror=alert(1)>"]
+PATH_TRAVERSAL = ["../../../etc/passwd", "..\\..\\..\\windows\\system32"]
 ```
 
-REQUIREMENTS:
+=== CHAIN OF THOUGHT INSTRUCTIONS ===
 
-1. **CRITICAL - USE EXACT FIELD NAMES FROM SCHEMA**:
-   - You MUST use the EXACT property names listed in the Schema section above
-   - Do NOT use generic names like "field", "data", "input", etc.
-   - Inject payloads into ACTUAL string fields from the schema
-   - Include ALL required fields with valid data, only inject into ONE field at a time
+Before writing code, you MUST reason through these steps:
 
-2. **SECURITY TEST SCENARIOS**:
-   Generate 3-5 @task methods for security testing:
-   - SQL injection in string fields from schema (weight: 3)
-   - XSS payloads in string fields from schema (weight: 3)
-   - Path traversal attempts (weight: 2)
-   - Missing/invalid auth (weight: 2)
+**STEP 1 - ANALYZE THE ENDPOINT:**
+- What is the HTTP method and path?
+- Does it accept a request body? (POST/PUT/PATCH usually do)
+- Does it have path parameters?
 
-3. **PAYLOADS TO USE**:
-   - SQL: `' OR '1'='1`, `'; DROP TABLE users; --`
-   - XSS: `<script>alert('XSS')</script>`, `<img src=x onerror=alert(1)>`
-   - Path: `../../../etc/passwd`, `%2e%2e%2f`
+**STEP 2 - IDENTIFY INJECTION POINTS:**
+- List ALL string fields from the schema (exact names!)
+- These are where we inject payloads
+- Path parameters can also be injection points
 
-4. **CONSTRAINTS** (CRITICAL):
-   - ALL payloads must be SHORT: max 100 characters
-   - Use the exact payloads shown above
-   - Keep total code under 80 lines
-   - For file uploads: use files= parameter, NOT json=
-   - **BYTES LITERALS MUST BE ASCII ONLY**: Never put unicode in b'...' literals
-     WRONG: b'tëst' (SyntaxError!)
-     CORRECT: b'test' or 'tëst'.encode('utf-8')
+**STEP 3 - PLAN SECURITY TESTS:**
+For each string field, plan:
+- SQL injection test: inject SQL_PAYLOAD into that field
+- XSS test: inject XSS_PAYLOAD into that field
+- Include ALL required fields with valid data, only inject into ONE field at a time
 
-5. **CLASS STRUCTURE** (use EXACTLY this import pattern):
-   ```python
-   from locust import task
-   from workflows.base_workflow import BaseWorkflow
-   from test_data import test_data_generator
-   import random
+**STEP 4 - DETERMINE EXPECTED BEHAVIOR:**
+- 400/422: Properly rejected (good - input validation working)
+- 500: POTENTIAL VULNERABILITY (bad - server error from injection)
+- 200/201: May or may not be vulnerable (depends on if payload was sanitized)
 
-   SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --"]
-   XSS_PAYLOADS = ["<script>alert('XSS')</script>"]
+=== CONSTRAINTS ===
+- ALL payloads must be SHORT: max 100 characters
+- Keep total code under 80 lines
+- Use test_data_generator for valid values in non-injected fields
+- BYTES LITERALS MUST BE ASCII ONLY
 
-   class {{ class_name }}SecurityWorkflow(BaseWorkflow):
-       """Security tests for {{ method }} {{ path }}"""
+=== OUTPUT FORMAT ===
 
-       @task(3)
-       def test_sql_injection(self):
-           """SQL injection test"""
-           payload = random.choice(SQL_PAYLOADS)
-           # Use ACTUAL field names from schema, inject payload into a string field
-           # Use test_data_generator for valid values in other fields
-           data = {
-               "actual_string_field": payload,
-               "another_required_field": test_data_generator.generate_string(length=10),
-           }
-           with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
-               if response.status_code in [400, 422]:
-                   response.success()  # Properly rejected
-               elif response.status_code == 500:
-                   response.failure("SECURITY: Possible SQL injection vulnerability")
-               else:
-                   response.success()
-   ```
+First, show your analysis in <analysis> tags.
+Then, provide ONLY valid Python code in <code> tags.
+No markdown fences, no explanations outside the tags.
 
-6. **CRITICAL - DO NOT INVENT MODULES**:
-   - ONLY use imports shown in "ALLOWED IMPORTS" above
-   - DO NOT create imports like `import test_data_generator` (WRONG - it's not a module)
-   - The correct import is: `from test_data import test_data_generator`
-   - DO NOT invent helper functions or utilities that don't exist
+<analysis>
+STEP 1 - ENDPOINT ANALYSIS:
+Method: [method]
+Path: [path]
+Accepts body: [yes/no]
+Path params: [list them]
 
-8. **IMPORTANT**:
-   - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
-   - Keep code concise (50-80 lines max)
-   - Flag 500 errors as potential vulnerabilities
-   - 400/422 rejections are success (proper validation)
-   - READ THE SCHEMA - use exact field names for injections
+STEP 2 - INJECTION POINTS:
+String fields from schema: [list exact field names]
+Path params that accept strings: [list them]
 
-OUTPUT:
-Return ONLY valid Python code. No markdown, no explanations, no ``` code fences.
-Wrap your code in <code></code> tags.
+STEP 3 - SECURITY TEST PLAN:
+- SQL injection in field: [field name]
+- XSS injection in field: [field name]
+- Path traversal test: [if applicable]
 
-<code>your_complete_python_code_here</code>
+STEP 4 - EXPECTED RESPONSES:
+400/422 = Success (proper rejection)
+500 = Failure (potential vulnerability)
+</analysis>
+
+<code>
+from locust import task
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator
+import random
+
+SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --"]
+XSS_PAYLOADS = ["<script>alert('XSS')</script>"]
+
+class {{ class_name }}SecurityWorkflow(BaseWorkflow):
+    """Security tests for {{ method }} {{ path }}"""
+
+    @task(3)
+    def test_sql_injection(self):
+        # Your implementation based on analysis...
+        pass
+</code>
