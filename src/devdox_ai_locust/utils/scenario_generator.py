@@ -282,10 +282,19 @@ class ScenarioWorkflowGenerator:
         content = await self._call_ai_service(prompt)
 
         # Validate Python syntax
-        if content and self._validate_python_code(content):
-            return content
+        if content:
+            is_valid, error = self._validate_python_code(content)
+            if is_valid:
+                return content
+            logger.warning(
+                f"Generated {scenario_type.value} code failed validation: {error}"
+            )
+            # Log first few lines to help debug
+            lines = content.split('\n')[:10]
+            logger.debug(f"First 10 lines of failed code:\n" + '\n'.join(lines))
+        else:
+            logger.warning(f"Generated {scenario_type.value} code was empty")
 
-        logger.warning(f"Generated {scenario_type.value} code failed validation")
         return ""
 
     def _format_endpoints(self, endpoints: List[Any]) -> str:
@@ -372,10 +381,10 @@ class ScenarioWorkflowGenerator:
 
         return response.strip()
 
-    def _validate_python_code(self, content: str) -> bool:
-        """Validate Python syntax"""
+    def _validate_python_code(self, content: str) -> Tuple[bool, str]:
+        """Validate Python syntax and return error details if invalid"""
         try:
             compile(content, "<string>", "exec")
-            return True
-        except SyntaxError:
-            return False
+            return True, ""
+        except SyntaxError as e:
+            return False, f"Line {e.lineno}: {e.msg} - {e.text.strip() if e.text else ''}"
