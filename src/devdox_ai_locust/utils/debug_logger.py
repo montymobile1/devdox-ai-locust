@@ -7,26 +7,33 @@ for debugging and troubleshooting purposes.
 Structure:
 .devdox-ai-locust/
 └── debug/
-    └── 2024-01-19_14-30-00/
+    └── {timestamp}/
+        ├── session.json
         └── {tag}/
             └── {operation_id}/
-                ├── positive/
-                │   ├── 1_endpoint_info.json
-                │   ├── 2_rendered_prompt.txt
-                │   ├── 3_llm_response_raw.txt
-                │   ├── 4_extracted_code.py
-                │   ├── 5_after_fixes.py
-                │   ├── 6_validation_result.json
-                │   └── generation.log
-                ├── negative/
-                └── security/
+                └── {scenario}/
+                    ├── endpoint.json      # Input: endpoint info
+                    ├── prompt.txt         # What we sent to LLM
+                    ├── attempts/
+                    │   ├── 1/
+                    │   │   ├── llm_response.txt
+                    │   │   ├── extracted.py
+                    │   │   ├── processed.py
+                    │   │   ├── validation.json
+                    │   │   └── FAILED.py (with line numbers)
+                    │   └── 2/
+                    │       └── ...
+                    ├── final.py           # Final output
+                    ├── outcome.json       # Summary
+                    └── events.log         # Timeline
 """
 
 import json
+import shutil
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,9 @@ class DebugLogger:
         self.session_id = session_id
         self.session_dir = base_dir / "debug" / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.has_failures = False
+        self.failure_count = 0
+        self.success_count = 0
 
         # Write session info
         session_info = {
@@ -58,15 +68,21 @@ class DebugLogger:
             "started_at": datetime.now().isoformat(),
             "status": "in_progress"
         }
-        self._write_json(self.session_dir / "session_info.json", session_info)
+        self._write_json(self.session_dir / "session.json", session_info)
 
         logger.info(f"Debug session started: {self.session_dir}")
 
-    def get_endpoint_dir(self, tag: str, operation_id: str, scenario_type: str) -> Path:
+    def get_scenario_dir(self, tag: str, operation_id: str, scenario_type: str) -> Path:
         """Get the directory for a specific endpoint/scenario combination."""
-        endpoint_dir = self.session_dir / self._sanitize(tag) / self._sanitize(operation_id) / scenario_type
-        endpoint_dir.mkdir(parents=True, exist_ok=True)
-        return endpoint_dir
+        scenario_dir = self.session_dir / self._sanitize(tag) / self._sanitize(operation_id) / scenario_type
+        scenario_dir.mkdir(parents=True, exist_ok=True)
+        return scenario_dir
+
+    def get_attempt_dir(self, tag: str, operation_id: str, scenario_type: str, attempt: int) -> Path:
+        """Get the directory for a specific attempt."""
+        attempt_dir = self.get_scenario_dir(tag, operation_id, scenario_type) / "attempts" / str(attempt)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        return attempt_dir
 
     def log_endpoint_info(
         self,
@@ -75,9 +91,9 @@ class DebugLogger:
         scenario_type: str,
         endpoint_data: Dict[str, Any]
     ) -> None:
-        """Step 1: Log the endpoint information being processed."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
-        self._write_json(dir_path / "1_endpoint_info.json", endpoint_data)
+        """Log the endpoint information being processed."""
+        dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
+        self._write_json(dir_path / "endpoint.json", endpoint_data)
 
     def log_rendered_prompt(
         self,
@@ -86,9 +102,9 @@ class DebugLogger:
         scenario_type: str,
         prompt: str
     ) -> None:
-        """Step 2: Log the rendered prompt sent to the LLM."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
-        self._write_text(dir_path / "2_rendered_prompt.txt", prompt)
+        """Log the rendered prompt sent to the LLM."""
+        dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
+        self._write_text(dir_path / "prompt.txt", prompt)
 
     def log_llm_response(
         self,
@@ -98,10 +114,9 @@ class DebugLogger:
         response: str,
         attempt: int = 1
     ) -> None:
-        """Step 3: Log the raw LLM response."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
-        filename = f"3_llm_response_raw_attempt{attempt}.txt"
-        self._write_text(dir_path / filename, response)
+        """Log the raw LLM response."""
+        dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
+        self._write_text(dir_path / "llm_response.txt", response)
 
     def log_extracted_code(
         self,
@@ -111,10 +126,9 @@ class DebugLogger:
         code: str,
         attempt: int = 1
     ) -> None:
-        """Step 4: Log the code after extraction from LLM response."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
-        filename = f"4_extracted_code_attempt{attempt}.py"
-        self._write_text(dir_path / filename, code)
+        """Log the code after extraction from LLM response."""
+        dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
+        self._write_text(dir_path / "extracted.py", code)
 
     def log_after_fixes(
         self,
@@ -122,19 +136,16 @@ class DebugLogger:
         operation_id: str,
         scenario_type: str,
         code: str,
-        fixes_applied: list,
+        fixes_applied: List[str],
         attempt: int = 1
     ) -> None:
-        """Step 5: Log the code after post-processing fixes."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
+        """Log the code after post-processing fixes."""
+        dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
+        self._write_text(dir_path / "processed.py", code)
 
-        # Log the fixed code
-        filename = f"5_after_fixes_attempt{attempt}.py"
-        self._write_text(dir_path / filename, code)
-
-        # Log what fixes were applied
-        fixes_filename = f"5_fixes_applied_attempt{attempt}.json"
-        self._write_json(dir_path / fixes_filename, {"fixes": fixes_applied})
+        # Also log what fixes were applied in the validation.json later
+        # Store fixes temporarily
+        self._current_fixes = fixes_applied
 
     def log_validation_result(
         self,
@@ -146,23 +157,20 @@ class DebugLogger:
         code: str,
         attempt: int = 1
     ) -> None:
-        """Step 6: Log the validation result."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
+        """Log the validation result."""
+        dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
 
         result = {
-            "attempt": attempt,
-            "is_valid": is_valid,
+            "valid": is_valid,
             "error": error,
+            "fixes_applied": getattr(self, '_current_fixes', []),
         }
+        self._write_json(dir_path / "validation.json", result)
 
-        filename = f"6_validation_result_attempt{attempt}.json"
-        self._write_json(dir_path / filename, result)
-
-        # If validation failed, save the failing code with line numbers for easy debugging
+        # If validation failed, save the failing code with line numbers
         if not is_valid:
             numbered_code = self._add_line_numbers(code)
-            fail_filename = f"6_FAILED_code_attempt{attempt}.py"
-            self._write_text(dir_path / fail_filename, numbered_code)
+            self._write_text(dir_path / "FAILED.py", numbered_code)
 
     def log_final_outcome(
         self,
@@ -174,18 +182,25 @@ class DebugLogger:
         final_code: Optional[str],
         error_message: Optional[str] = None
     ) -> None:
-        """Step 7: Log the final outcome of generation."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
+        """Log the final outcome of generation."""
+        dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
+
+        # Track success/failure counts
+        if success:
+            self.success_count += 1
+        else:
+            self.failure_count += 1
+            self.has_failures = True
 
         outcome = {
             "success": success,
             "used_fallback": used_fallback,
-            "error_message": error_message,
+            "error": error_message,
         }
-        self._write_json(dir_path / "7_final_outcome.json", outcome)
+        self._write_json(dir_path / "outcome.json", outcome)
 
         if final_code:
-            self._write_text(dir_path / "7_final_output.py", final_code)
+            self._write_text(dir_path / "final.py", final_code)
 
     def log_generation_event(
         self,
@@ -196,10 +211,10 @@ class DebugLogger:
         details: Optional[Dict[str, Any]] = None
     ) -> None:
         """Append an event to the generation log."""
-        dir_path = self.get_endpoint_dir(tag, operation_id, scenario_type)
-        log_file = dir_path / "generation.log"
+        dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
+        log_file = dir_path / "events.log"
 
-        timestamp = datetime.now().isoformat()
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         log_entry = f"[{timestamp}] {event}"
         if details:
             log_entry += f" | {json.dumps(details)}"
@@ -212,6 +227,7 @@ class DebugLogger:
         """Mark the session as complete with summary stats."""
         session_info = {
             "session_id": self.session_id,
+            "started_at": self._get_session_start_time(),
             "completed_at": datetime.now().isoformat(),
             "status": "completed",
             "summary": {
@@ -221,8 +237,34 @@ class DebugLogger:
                 "success_rate": f"{(successful / total_endpoints * 100):.1f}%" if total_endpoints > 0 else "N/A"
             }
         }
-        self._write_json(self.session_dir / "session_info.json", session_info)
-        logger.info(f"Debug session completed: {self.session_dir}")
+        self._write_json(self.session_dir / "session.json", session_info)
+
+    def _get_session_start_time(self) -> str:
+        """Get the session start time from session.json."""
+        try:
+            session_file = self.session_dir / "session.json"
+            if session_file.exists():
+                with open(session_file, "r") as f:
+                    data = json.load(f)
+                    return data.get("started_at", datetime.now().isoformat())
+        except Exception:
+            pass
+        return datetime.now().isoformat()
+
+    def delete_session(self) -> bool:
+        """Delete the entire debug session directory."""
+        try:
+            if self.session_dir.exists():
+                shutil.rmtree(self.session_dir)
+                logger.info(f"Deleted debug session: {self.session_dir}")
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to delete debug session: {e}")
+        return False
+
+    def get_session_path(self) -> Path:
+        """Get the path to the session directory."""
+        return self.session_dir
 
     def _sanitize(self, name: str) -> str:
         """Sanitize a name for use as a directory name."""
@@ -235,9 +277,11 @@ class DebugLogger:
     def _add_line_numbers(self, code: str) -> str:
         """Add line numbers to code for easy debugging."""
         lines = code.split('\n')
+        max_line_num = len(lines)
+        width = len(str(max_line_num))
         numbered_lines = []
         for i, line in enumerate(lines, 1):
-            numbered_lines.append(f"{i:4d} | {line}")
+            numbered_lines.append(f"{i:>{width}} | {line}")
         return '\n'.join(numbered_lines)
 
     def _write_json(self, path: Path, data: Dict[str, Any]) -> None:

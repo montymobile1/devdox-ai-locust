@@ -439,6 +439,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     "fallback": True,
                 })
 
+                # Log to debug logger if available (for exceptions that bypass normal logging)
+                if debug_logger:
+                    debug_logger.log_final_outcome(
+                        tag_name, operation_id, scenario_type,
+                        success=False, used_fallback=True, final_code=fallback_content,
+                        error_message=f"{type(e).__name__}: {str(e)}"
+                    )
+
             async with file_write_lock:
                 failed_count += 1
                 failed_endpoints.append({
@@ -743,6 +751,29 @@ async def _async_generate(
             run_time,
             host,
         )
+
+        # If debug mode was enabled, prompt user about keeping debug files
+        if debug_logger and debug_logger.has_failures:
+            console.print()
+            console.print(f"[bold yellow]Debug files saved to:[/bold yellow] {debug_logger.get_session_path()}")
+            console.print(f"[dim]Contains detailed logs for {debug_logger.failure_count} failed generations[/dim]")
+            console.print()
+
+            # Ask user if they want to keep the files
+            try:
+                keep = console.input("[bold]Keep debug files for sharing with developers?[/bold] [y/N]: ")
+                if keep.lower().strip() in ('y', 'yes'):
+                    console.print(f"[green]✓[/green] Debug files kept at: {debug_logger.get_session_path()}")
+                else:
+                    debug_logger.delete_session()
+                    console.print("[dim]Debug files deleted[/dim]")
+            except (EOFError, KeyboardInterrupt):
+                # Non-interactive mode or user cancelled - keep files by default
+                console.print(f"\n[dim]Debug files kept at: {debug_logger.get_session_path()}[/dim]")
+        elif debug_logger and not debug_logger.has_failures:
+            # No failures but debug was enabled - delete since not needed
+            debug_logger.delete_session()
+            console.print("[dim]No failures - debug files not needed, cleaned up[/dim]")
 
     except Exception as e:
         end_time = datetime.now(timezone.utc)
