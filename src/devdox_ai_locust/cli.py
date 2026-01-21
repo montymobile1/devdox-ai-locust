@@ -214,6 +214,7 @@ async def _generate_and_create_tests(
         output_dir,
         auth,
         db_type,
+        host,
     )
 
 
@@ -225,6 +226,7 @@ async def _generate_scenario_based_tests(
     output_dir: Path,
     auth: bool,
     db_type: str,
+    host: Optional[str] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
@@ -266,7 +268,7 @@ async def _generate_scenario_based_tests(
     # Generate base files first using template generator
     template_gen = LocustTestGenerator()
     base_files, _, _ = template_gen.generate_from_endpoints(
-        endpoints, api_info, include_auth=auth, db_type=db_type
+        endpoints, api_info, include_auth=auth, target_host=host, db_type=db_type
     )
     base_files = template_gen.fix_indent(base_files)
 
