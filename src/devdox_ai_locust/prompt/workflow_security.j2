@@ -37,6 +37,10 @@ Before writing code, you MUST reason through these steps:
 
 **STEP 1 - ANALYZE THE ENDPOINT:**
 - What is the HTTP method and path?
+- **CRITICAL**: Is this a RESPONSE-TESTING endpoint (path contains /responses/)?
+  - Paths like /responses/404, /responses/500, /responses/206 ALWAYS return that status code
+  - This is BY DESIGN - they exist to test how clients handle different HTTP responses
+  - If YES: Skip security injection tests - these endpoints don't process input, they just return fixed responses
 - Does it accept a request body? (POST/PUT/PATCH usually do)
 - Does it have path parameters?
 
@@ -93,6 +97,7 @@ No markdown fences, no explanations outside the tags.
 STEP 1 - ENDPOINT ANALYSIS:
 Method: [method]
 Path: [path]
+Is response-testing endpoint: [yes/no - if path contains /responses/, skip security tests]
 Accepts body: [yes/no]
 Path params: [list them]
 

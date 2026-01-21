@@ -30,8 +30,13 @@ Before writing code, you MUST reason through these steps:
 
 **STEP 1 - ANALYZE THE ENDPOINT:**
 - What is the HTTP method and path?
-- Is this a RESPONSE-TESTING endpoint (path contains /responses/4xx or /responses/5xx)?
-  - If YES: This endpoint ALWAYS returns that status code - don't test for validation errors!
+- **CRITICAL**: Is this a RESPONSE-TESTING endpoint (path contains /responses/)?
+  - Paths like /responses/404, /responses/500, /responses/206 ALWAYS return that status code
+  - This is BY DESIGN - they exist to test how clients handle different HTTP responses
+  - For /responses/405 → expect 405, NOT 200
+  - For /responses/206 → expect 206, NOT 200
+  - For /responses/500 → expect 500, NOT 200
+  - If YES: Skip normal negative tests - just verify the endpoint returns its designated status code
 - Does it have path parameters? What type (integer, string, UUID)?
 
 **STEP 2 - EXTRACT SCHEMA FIELDS:**
