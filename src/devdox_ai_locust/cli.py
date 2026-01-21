@@ -198,12 +198,17 @@ async def _generate_and_create_tests(
     host: Optional[str] = "0.0.0.0",
     auth: bool = False,
     db_type: str = "",
+    diagnostics: bool = False,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using AI and create test files"""
     together_client = AsyncTogether(api_key=api_key)
 
     with console.status("[bold green]Generating Locust tests with AI..."):
-        generator = HybridLocustGenerator(ai_client=together_client)
+        generator = HybridLocustGenerator(
+            ai_client=together_client,
+            output_dir=output_dir,
+            diagnostics=diagnostics,
+        )
         test_files, test_directories = await generator.generate_from_endpoints(
             endpoints=endpoints,
             api_info=api_info,
@@ -288,6 +293,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     envvar="TOGETHER_API_KEY",
     help="Together AI API key (can also be set via TOGETHER_API_KEY env var)",
 )
+@click.option(
+    "--diagnostics",
+    is_flag=True,
+    default=False,
+    help="Enable diagnostics mode: saves pre/post LLM patches and prompts for debugging",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -302,6 +313,7 @@ def generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
+    diagnostics: bool,
 ) -> None:  # Added return type annotation
     """Generate Locust test files from API documentation URL or file"""
 
@@ -321,6 +333,7 @@ def generate(
                 dry_run,
                 custom_requirement,
                 together_api_key,
+                diagnostics,
             )
         )
     except Exception as e:
@@ -345,6 +358,7 @@ async def _async_generate(
     dry_run: bool,
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
+    diagnostics: bool = False,
 ) -> None:
     """Async function to handle the generation process"""
 
@@ -380,6 +394,7 @@ async def _async_generate(
             host,
             auth,
             db_type,
+            diagnostics,
         )
 
         # Show results

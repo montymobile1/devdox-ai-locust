@@ -19,6 +19,7 @@ import shutil
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
+from devdox_ai_locust.utils.patch_generator import PatchGenerator
 from together import AsyncTogether
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,20 @@ class HybridLocustGenerator:
         ai_config: Optional[AIEnhancementConfig] = None,
         test_config: Optional[TestDataConfig] = None,
         prompt_dir: str = "prompt",
+        output_dir: Optional[Path] = None,
+        diagnostics: bool = False,
     ):
+        """
+        Initialize the hybrid generator.
+
+        Args:
+            ai_client: Together AI client for LLM calls.
+            ai_config: Configuration for AI enhancement.
+            test_config: Configuration for test data generation.
+            prompt_dir: Directory containing Jinja2 prompt templates.
+            output_dir: Output directory for generated tests (used for diagnostics).
+            diagnostics: If True, saves pre/post LLM patches and prompts for debugging.
+        """
         self.ai_client = ai_client
         self.ai_config = ai_config or AIEnhancementConfig()
         self.template_generator = LocustTestGenerator(test_config)
@@ -297,6 +311,14 @@ class HybridLocustGenerator:
             "invalid token",
         ]
         self.RATE_LIMIT_INDICATORS = ["429", "rate limit"]
+
+        # Diagnostics support
+        self.diagnostics = diagnostics
+        self.output_dir = output_dir
+        self.patch_generator: Optional[PatchGenerator] = None
+        if diagnostics and output_dir:
+            self.patch_generator = PatchGenerator(output_dir)
+            logger.info("Diagnostics mode enabled - will save patches and prompts")
 
     def _find_project_root(self) -> Path:
         """Find the project root by looking for setup.py, pyproject.toml, or .git"""
@@ -363,13 +385,21 @@ class HybridLocustGenerator:
         db_type: str = "",
     ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
         """
-        Generate Locust tests using hybrid approach
+        Generate Locust tests using hybrid approach.
 
         1. Generate reliable base structure with templates
         2. Enhance with AI for domain-specific improvements
         3. Validate and merge results
+
+        If diagnostics mode is enabled, saves pre-LLM and post-LLM patches
+        for debugging purposes.
         """
         start_time = asyncio.get_event_loop().time()
+
+        # Start diagnostics session if enabled
+        if self.patch_generator:
+            self.patch_generator.start_session()
+            logger.info("Diagnostics session started")
 
         try:
             # Step 1: Generate reliable base structure
@@ -385,6 +415,12 @@ class HybridLocustGenerator:
             )
 
             base_files = self.template_generator.fix_indent(base_files)
+
+            # Save pre-LLM patch if diagnostics enabled
+            if self.patch_generator:
+                self.patch_generator.save_pre_llm_patch(base_files, directory_files)
+                logger.info("Saved pre-LLM patch")
+
             # Step 2: Enhance with AI if available
             if self.ai_client and self._should_enhance(endpoints, api_info):
                 logger.info("🤖 Enhancing tests with AI...")
@@ -402,6 +438,18 @@ class HybridLocustGenerator:
                     logger.info(
                         f"✅ AI enhancements applied: {', '.join(enhancement_result.enhancements_applied)}"
                     )
+
+                    # Save post-LLM patch if diagnostics enabled
+                    if self.patch_generator:
+                        self.patch_generator.save_post_llm_patch(
+                            pre_files=base_files,
+                            post_files=enhancement_result.enhanced_files,
+                            pre_directory_files=directory_files,
+                            post_directory_files=enhancement_result.enhanced_directory_files,
+                        )
+                        self.patch_generator.save_prompts_log()
+                        logger.info("Saved post-LLM patch and prompts log")
+
                     return (
                         enhancement_result.enhanced_files,
                         enhancement_result.enhanced_directory_files,
@@ -410,6 +458,9 @@ class HybridLocustGenerator:
                     logger.warning(
                         f"⚠️ AI enhancement failed, using template base: {', '.join(enhancement_result.errors)}"
                     )
+                    # Still save prompts log even on failure
+                    if self.patch_generator:
+                        self.patch_generator.save_prompts_log()
             else:
                 logger.info("📋 Using template-based generation only")
 
@@ -420,6 +471,9 @@ class HybridLocustGenerator:
 
         except Exception as e:
             logger.error(f"Hybrid generation failed line 267 : {e}")
+            # Save prompts log even on error
+            if self.patch_generator:
+                self.patch_generator.save_prompts_log()
 
             return {}, []
 
@@ -493,7 +547,9 @@ class HybridLocustGenerator:
             }
             # Render enhanced content
             prompt = template.render(**context)
-            enhanced_content = await self._call_ai_service(prompt)
+            enhanced_content = await self._call_ai_service(
+                prompt, file_context="locustfile.py"
+            )
 
             # Validate the generated Python code
             if enhanced_content and self._validate_python_code(enhanced_content):
@@ -648,7 +704,9 @@ class HybridLocustGenerator:
                 endpoints=self._format_endpoints_for_prompt(endpoints),
             )
 
-            enhanced_content = await self._call_ai_service(prompt)
+            enhanced_content = await self._call_ai_service(
+                prompt, file_context="domain_flows.py"
+            )
 
             # Validate the generated Python code
             if enhanced_content and self._validate_python_code(enhanced_content):
@@ -783,6 +841,9 @@ class HybridLocustGenerator:
         Returns:
             Enhanced workflow content if valid, empty string otherwise.
         """
+        # Get workflow key for logging
+        workflow_key = list(grouped_enpoints.keys())[0] if grouped_enpoints else "unknown"
+
         prompt = template.render(
             grouped_enpoints=grouped_enpoints,
             test_data_content=test_data_content,
@@ -792,7 +853,9 @@ class HybridLocustGenerator:
             db_type=db_type,
         )
 
-        enhanced_content = await self._call_ai_service(prompt)
+        enhanced_content = await self._call_ai_service(
+            prompt, file_context=f"workflows/{workflow_key}_workflow.py"
+        )
 
         # Validate the generated Python code
         if enhanced_content and self._validate_python_code(enhanced_content):
@@ -854,7 +917,9 @@ class HybridLocustGenerator:
                 db_type=db_type,
             )
 
-            enhanced_content = await self._call_ai_service(prompt)
+            enhanced_content = await self._call_ai_service(
+                prompt, file_context=f"workflows/{workflow_key}_workflow_batch{batch_idx}.py"
+            )
 
             # Validate with retry using smaller batches
             if not enhanced_content or not self._validate_python_code(enhanced_content):
@@ -949,7 +1014,9 @@ class HybridLocustGenerator:
                     db_type=db_type,
                 )
 
-                content = await self._call_ai_service(prompt)
+                content = await self._call_ai_service(
+                    prompt, file_context=f"workflows/{workflow_key}_workflow_retry.py"
+                )
                 if content and self._validate_python_code(content):
                     batch_results.append(content)
                 else:
@@ -1096,7 +1163,9 @@ class HybridLocustGenerator:
 
             # Render enhanced content
             prompt = template.render(**context)
-            enhanced_content = await self._call_ai_service(prompt)
+            enhanced_content = await self._call_ai_service(
+                prompt, file_context="test_data.py"
+            )
             if enhanced_content and self._validate_python_code(enhanced_content):
                 return enhanced_content
         except Exception as e:
@@ -1128,7 +1197,9 @@ class HybridLocustGenerator:
             prompt = template.render(
                 base_content=base_content, validation_patterns=validation_patterns
             )
-            enhanced_content = await self._call_ai_service(prompt)
+            enhanced_content = await self._call_ai_service(
+                prompt, file_context="utils.py"
+            )
 
             # Validate the generated Python code
             if enhanced_content and self._validate_python_code(enhanced_content):
@@ -1181,8 +1252,23 @@ class HybridLocustGenerator:
 
         return None
 
-    async def _call_ai_service(self, prompt: str) -> Optional[str]:
-        """Call AI service with retry logic and validation"""
+    async def _call_ai_service(
+        self, prompt: str, file_context: str = "unknown"
+    ) -> Optional[str]:
+        """
+        Call AI service with retry logic and validation.
+
+        Args:
+            prompt: The prompt to send to the LLM.
+            file_context: Context about which file is being enhanced (for diagnostics).
+
+        Returns:
+            The LLM response content, or empty string on failure.
+        """
+        # Log prompt for diagnostics if enabled
+        if self.patch_generator:
+            self.patch_generator.log_prompt(file_context, prompt)
+
         messages = self._build_messages(prompt)
 
         for attempt in range(self.MAX_RETRIES):  # Retry logic
