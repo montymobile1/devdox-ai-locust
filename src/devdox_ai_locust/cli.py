@@ -17,7 +17,30 @@ from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
 from .schemas.processing_result import SwaggerProcessingRequest
 
-console = Console()
+# Console with recording enabled for log capture
+console = Console(record=True)
+
+
+def _save_console_log(output_dir: Path, command_type: str) -> Path:
+    """Save recorded console output to a log file.
+
+    Args:
+        output_dir: Directory to save the log file
+        command_type: Type of command (e.g., 'generate', 'locust_run')
+
+    Returns:
+        Path to the saved log file
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = output_dir.name
+    log_filename = f"{dir_name}_{command_type}_{timestamp}.log"
+    log_path = output_dir / log_filename
+
+    # Export recorded text (strips Rich formatting for plain text log)
+    log_content = console.export_text()
+    log_path.write_text(log_content, encoding="utf-8")
+
+    return log_path
 
 
 def _initialize_config(together_api_key: Optional[str]) -> Tuple[Settings, str]:
@@ -720,12 +743,23 @@ async def _async_generate(
             host,
         )
 
+        # Save console output to log file
+        log_path = _save_console_log(output_dir, "generate")
+        console.print(f"\n[dim]📝 Log saved to: {log_path}[/dim]")
+
     except Exception as e:
         end_time = datetime.now(timezone.utc)
         processing_time = (end_time - start_time).total_seconds()
         console.print(
             f"[red]✗[/red] Generation failed after {processing_time:.2f}s: {e}"
         )
+        # Still save the log on failure
+        try:
+            output_dir = _setup_output_directory(output)
+            log_path = _save_console_log(output_dir, "generate")
+            console.print(f"\n[dim]📝 Log saved to: {log_path}[/dim]")
+        except Exception:
+            pass  # Don't fail if we can't save the log
         raise
 
 
@@ -746,11 +780,21 @@ def run(
     host: str,
     headless: bool,
 ) -> None:
-    """Run generated Locust tests"""
+    """Run generated Locust tests with automatic logging"""
+    import subprocess
+    import threading
+    import io
+
+    test_file_path = Path(test_file)
+    test_suite_dir = test_file_path.parent
+
+    # Create log file path
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = test_suite_dir.name
+    log_filename = f"{dir_name}_locust_run_{timestamp}.log"
+    log_path = test_suite_dir / log_filename
 
     try:
-        import subprocess
-
         cmd = [
             "locust",
             "-f",
@@ -772,15 +816,61 @@ def run(
             console.print(f"[blue]Running command:[/blue] {' '.join(cmd)}")
 
         console.print("[green]Starting Locust test...[/green]")
-        subprocess.run(cmd, check=True)
+        console.print(f"[dim]📝 Logging to: {log_path}[/dim]\n")
 
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Test execution failed:[/red] {e}")
-        sys.exit(1)
+        # Open log file for writing
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            # Write header to log
+            log_file.write(f"Locust Run Log\n")
+            log_file.write(f"{'=' * 50}\n")
+            log_file.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            log_file.write(f"Command: {' '.join(cmd)}\n")
+            log_file.write(f"{'=' * 50}\n\n")
+            log_file.flush()
+
+            # Run locust with real-time output capture
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                text=True,
+                bufsize=1,  # Line buffered
+            )
+
+            # Read and display output in real-time
+            try:
+                for line in process.stdout:
+                    # Print to terminal
+                    print(line, end="", flush=True)
+                    # Write to log file
+                    log_file.write(line)
+                    log_file.flush()
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Interrupted by user[/yellow]")
+                process.terminate()
+                process.wait()
+
+            # Wait for process to complete
+            return_code = process.wait()
+
+            # Write footer to log
+            log_file.write(f"\n{'=' * 50}\n")
+            log_file.write(f"Completed: {datetime.now().isoformat()}\n")
+            log_file.write(f"Exit code: {return_code}\n")
+
+        console.print(f"\n[dim]📝 Log saved to: {log_path}[/dim]")
+
+        if return_code != 0:
+            console.print(f"[red]Test execution failed with exit code {return_code}[/red]")
+            sys.exit(return_code)
+
     except FileNotFoundError:
         console.print(
             "[red]Locust not found. Please install locust: pip install locust[/red]"
         )
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error running Locust:[/red] {e}")
         sys.exit(1)
 
 
