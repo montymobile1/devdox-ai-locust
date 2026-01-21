@@ -306,9 +306,9 @@ async def _generate_scenario_based_tests(
         words = sanitized.replace("_", " ").split()
         return "".join(word.capitalize() for word in words) or "Unnamed"
 
-    # Generate pre-LLM fallback template when LLM fails
-    def generate_fallback_workflow(endpoint: Any, scenario_type: str) -> str:
-        """Generate a pre-LLM fallback workflow using template generator"""
+    # Generate pre-LLM template for a single endpoint and scenario
+    def generate_pre_llm_workflow(endpoint: Any, scenario_type: str) -> str:
+        """Generate a pre-LLM workflow using template generator"""
         operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
         class_name = to_class_name(operation_id)
         method = endpoint.method.lower()
@@ -323,8 +323,8 @@ async def _generate_scenario_based_tests(
         )
 
         return f'''"""
-Pre-LLM fallback workflow for {method.upper()} {path}
-Generated using template generator (LLM enhancement failed).
+Pre-LLM workflow for {method.upper()} {path}
+Generated using template generator.
 """
 from locust import task
 from base_workflow import BaseWorkflow
@@ -339,6 +339,17 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 
 {indented_task}
 '''
+
+    # Generate all pre-LLM templates upfront (before LLM processing)
+    console.print("[bold cyan]📝 Generating pre-LLM templates...[/bold cyan]")
+    pre_llm_templates: Dict[Tuple[int, str], str] = {}
+    scenario_types = ["positive", "negative", "security"]
+    for endpoint in endpoints:
+        for scenario_type in scenario_types:
+            pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
+                endpoint, scenario_type
+            )
+    console.print(f"   Generated {len(pre_llm_templates)} pre-LLM templates\n")
 
     # Build endpoint to tag mapping
     endpoint_to_tag = {}
@@ -396,10 +407,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             return local_files
 
         except Exception as e:
-            # Generate fallback templates and continue processing
+            # Use pre-generated pre-LLM templates as fallback
             fallback_files = []
             for scenario_type in ["positive", "negative", "security"]:
-                fallback_content = generate_fallback_workflow(endpoint, scenario_type)
+                # Get pre-generated template (already exists before LLM processing)
+                fallback_content = pre_llm_templates.get((id(endpoint), scenario_type), "")
+                if not fallback_content:
+                    # Should never happen, but generate on-the-fly as last resort
+                    fallback_content = generate_pre_llm_workflow(endpoint, scenario_type)
                 filename = f"{scenario_type}_workflow.py"
                 file_path = endpoint_dir / filename
                 async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
@@ -421,11 +436,11 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     "error": str(e),
                     "error_type": type(e).__name__,
                 })
-                created_files.extend(fallback_files)  # Still add fallback files
+                created_files.extend(fallback_files)  # Use pre-LLM templates
                 progress.update(task_id, completed=completed_count + failed_count)
                 # Print error immediately so user sees it
                 progress.console.print(
-                    f"   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id}: {type(e).__name__} - using fallback template"
+                    f"   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id}: {type(e).__name__} - using pre-LLM template"
                 )
             return fallback_files
 
