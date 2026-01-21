@@ -117,11 +117,16 @@ class ScenarioWorkflowGenerator:
         ScenarioType.SECURITY: "workflow_security.j2",
     }
 
+    # Default and max concurrency limits
+    DEFAULT_CONCURRENCY = 10
+    MAX_CONCURRENCY = 50
+
     def __init__(
         self,
         prompt_dir: Path,
         ai_client: Any,
         ai_config: Any,
+        max_concurrency: int = MAX_CONCURRENCY,
     ):
         """
         Initialize the scenario generator.
@@ -130,12 +135,15 @@ class ScenarioWorkflowGenerator:
             prompt_dir: Directory containing LLM prompt templates
             ai_client: Together AI client for LLM calls
             ai_config: AI configuration (model, timeout, etc.)
+            max_concurrency: Maximum concurrent API calls
         """
         self.prompt_dir = prompt_dir
         self.ai_client = ai_client
         self.ai_config = ai_config
         self._rate_limit_info: Optional[RateLimitInfo] = None
-        self._api_semaphore = asyncio.Semaphore(5)
+        self._max_concurrency = max_concurrency
+        self._current_concurrency = self.DEFAULT_CONCURRENCY
+        self._api_semaphore = asyncio.Semaphore(self._current_concurrency)
 
         # Setup Jinja environment for prompts
         self.prompt_env = Environment(
@@ -143,6 +151,23 @@ class ScenarioWorkflowGenerator:
             trim_blocks=True,
             lstrip_blocks=True,
         )
+
+    def _update_concurrency(self, rpm: int) -> None:
+        """
+        Update concurrency based on rate limit.
+
+        Args:
+            rpm: Requests per minute from rate limit headers
+        """
+        # Target: stay at ~80% of rate limit to avoid hitting it
+        # Divide by 60 to get per-second, multiply by avg response time (~3s)
+        optimal = min(int(rpm * 0.8 / 20), self._max_concurrency)  # ~3 req/s sustained
+        new_concurrency = max(self.DEFAULT_CONCURRENCY, optimal)
+
+        if new_concurrency != self._current_concurrency:
+            logger.info(f"Adjusting concurrency: {self._current_concurrency} → {new_concurrency} (based on {rpm} RPM)")
+            self._current_concurrency = new_concurrency
+            self._api_semaphore = asyncio.Semaphore(new_concurrency)
 
     @property
     def num_scenarios(self) -> int:
@@ -175,7 +200,7 @@ class ScenarioWorkflowGenerator:
 
     def update_rate_limit(self, headers: Dict[str, str]) -> RateLimitInfo:
         """
-        Update rate limit info from API response headers.
+        Update rate limit info from API response headers and adjust concurrency.
 
         Args:
             headers: Response headers from API call
@@ -184,11 +209,69 @@ class ScenarioWorkflowGenerator:
             Updated RateLimitInfo
         """
         self._rate_limit_info = RateLimitInfo.from_headers(headers)
+        self._update_concurrency(self._rate_limit_info.requests_per_minute)
         return self._rate_limit_info
 
     def get_rate_limit_info(self) -> RateLimitInfo:
         """Get current rate limit info or default"""
         return self._rate_limit_info or RateLimitInfo.default()
+
+    @property
+    def current_concurrency(self) -> int:
+        """Current concurrency level"""
+        return self._current_concurrency
+
+    async def generate_all_endpoints(
+        self,
+        endpoints: List[Any],
+        base_workflow_content: str,
+        test_data_content: str,
+        auth_endpoints: Optional[List[Any]] = None,
+        progress_callback: Optional[Any] = None,
+    ) -> Dict[str, Dict[ScenarioType, str]]:
+        """
+        Generate workflows for ALL endpoints in parallel (bounded by concurrency).
+
+        This is the main entry point for batch generation. It processes
+        multiple endpoints concurrently, respecting rate limits.
+
+        Args:
+            endpoints: List of all endpoints to process
+            base_workflow_content: Content of base_workflow.py
+            test_data_content: Content of test_data.py
+            auth_endpoints: Authentication endpoints (optional)
+            progress_callback: Optional async callback(endpoint, results) for progress updates
+
+        Returns:
+            Dict mapping operation_id to scenario results
+
+        Raises:
+            CodeValidationError: If generated code fails syntax validation
+            AIServiceError: If AI service fails after all retries
+        """
+        results: Dict[str, Dict[ScenarioType, str]] = {}
+
+        # Create tasks for all endpoints
+        async def process_endpoint(endpoint: Any) -> Tuple[str, Dict[ScenarioType, str]]:
+            operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+            scenarios = await self.generate_endpoint_workflows(
+                endpoint=endpoint,
+                base_workflow_content=base_workflow_content,
+                test_data_content=test_data_content,
+                auth_endpoints=auth_endpoints,
+            )
+            if progress_callback:
+                await progress_callback(endpoint, scenarios)
+            return operation_id, scenarios
+
+        # Process all endpoints concurrently (semaphore limits actual API calls)
+        tasks = [process_endpoint(ep) for ep in endpoints]
+        completed = await asyncio.gather(*tasks)
+
+        for operation_id, scenarios in completed:
+            results[operation_id] = scenarios
+
+        return results
 
     async def generate_endpoint_workflows(
         self,

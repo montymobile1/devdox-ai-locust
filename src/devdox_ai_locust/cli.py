@@ -1,11 +1,13 @@
 import click
 import sys
 import asyncio
+import aiofiles
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from together import AsyncTogether
 
 from .ai_config import AIEnhancementConfig
@@ -283,9 +285,10 @@ async def _generate_scenario_based_tests(
         kw in ep.path.lower() for kw in ["auth", "login", "token", "session"]
     )]
 
-    created_files = []
+    created_files: List[Dict[str, Any]] = []
     workflows_dir = output_dir / "workflows"
-    endpoint_idx = 0
+    completed_count = 0
+    file_write_lock = asyncio.Lock()
 
     # Helper to sanitize directory names
     def sanitize_dir_name(name: str) -> str:
@@ -295,54 +298,89 @@ async def _generate_scenario_based_tests(
         name = re.sub(r'_+', '_', name).strip('_')
         return name or "unnamed"
 
-    # Process each tag and endpoint
-    with console.status("[bold green]Generating per-endpoint workflows...") as status:
-        for tag_name, tag_endpoints in grouped_endpoints.items():
-            tag_dir_name = sanitize_dir_name(tag_name)
+    # Build endpoint to tag mapping
+    endpoint_to_tag = {}
+    for tag_name, tag_endpoints in grouped_endpoints.items():
+        for ep in tag_endpoints:
+            endpoint_to_tag[id(ep)] = tag_name
 
-            for endpoint in tag_endpoints:
-                endpoint_idx += 1
-                operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
-                status.update(
-                    f"[bold green]Processing endpoint {endpoint_idx}/{num_endpoints}: "
-                    f"{endpoint.method.upper()} {endpoint.path}..."
-                )
+    # Process endpoint and save files
+    async def process_and_save_endpoint(
+        endpoint: Any,
+        progress: Progress,
+        task_id: Any,
+    ) -> List[Dict[str, Any]]:
+        nonlocal completed_count
+        tag_name = endpoint_to_tag.get(id(endpoint), "default")
+        tag_dir_name = sanitize_dir_name(tag_name)
+        operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
 
-                # Create endpoint directory: workflows/{tag}/{operation_id}/
-                endpoint_dir = workflows_dir / tag_dir_name / operation_id
-                endpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Create endpoint directory
+        endpoint_dir = workflows_dir / tag_dir_name / operation_id
+        endpoint_dir.mkdir(parents=True, exist_ok=True)
 
-                # Generate scenario workflows for this single endpoint
-                scenarios = await scenario_gen.generate_endpoint_workflows(
-                    endpoint=endpoint,
-                    base_workflow_content=base_workflow_content,
-                    test_data_content=test_data_content,
-                    auth_endpoints=auth_endpoints if auth else None,
-                )
+        # Generate scenario workflows
+        scenarios = await scenario_gen.generate_endpoint_workflows(
+            endpoint=endpoint,
+            base_workflow_content=base_workflow_content,
+            test_data_content=test_data_content,
+            auth_endpoints=auth_endpoints if auth else None,
+        )
 
-                # Save generated files
-                for scenario_type, content in scenarios.items():
-                    if content:
-                        filename = scenario_gen.SCENARIO_FILES[scenario_type]
-                        file_path = endpoint_dir / filename
-                        file_path.write_text(content, encoding='utf-8')
-                        created_files.append({
-                            "path": str(file_path),
-                            "size": len(content),
-                            "tag": tag_name,
-                            "operation_id": operation_id,
-                            "scenario": scenario_type.value,
-                        })
-                        console.print(f"   ✓ {tag_dir_name}/{operation_id}/{filename}")
+        # Save files using async I/O
+        local_files = []
+        for scenario_type, content in scenarios.items():
+            if content:
+                filename = scenario_gen.SCENARIO_FILES[scenario_type]
+                file_path = endpoint_dir / filename
+                async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                    await f.write(content)
+                local_files.append({
+                    "path": str(file_path),
+                    "size": len(content),
+                    "tag": tag_name,
+                    "operation_id": operation_id,
+                    "scenario": scenario_type.value,
+                })
 
-                # Update rate limit info after first endpoint
-                if endpoint_idx == 1:
-                    rate_info = scenario_gen.get_rate_limit_info()
-                    if rate_info.requests_per_minute != estimated_rpm:
-                        console.print(f"\n📊 Updated rate limit: {rate_info.requests_per_minute} RPM")
-                        remaining_calls = (num_endpoints - 1) * num_scenarios
-                        new_estimate = remaining_calls / rate_info.requests_per_minute
-                        console.print(f"   Revised estimate: ~{new_estimate:.1f} minutes remaining\n")
+        # Update progress
+        async with file_write_lock:
+            completed_count += 1
+            created_files.extend(local_files)
+            progress.update(task_id, completed=completed_count)
+
+        return local_files
+
+    # Process all endpoints in parallel with progress bar
+    console.print(f"\n[bold cyan]🚀 Processing {num_endpoints} endpoints in parallel[/bold cyan]")
+    console.print(f"   Concurrency: {scenario_gen.current_concurrency} concurrent API calls\n")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("[cyan]{task.completed}/{task.total}[/cyan]"),
+        console=console,
+    ) as progress:
+        task_id = progress.add_task(
+            "[green]Generating workflows...",
+            total=num_endpoints,
+        )
+
+        # Create all tasks
+        tasks = [
+            process_and_save_endpoint(ep, progress, task_id)
+            for ep in endpoints
+        ]
+
+        # Run all concurrently (semaphore in generator limits actual API calls)
+        await asyncio.gather(*tasks)
+
+    # Show final concurrency used
+    rate_info = scenario_gen.get_rate_limit_info()
+    console.print(f"\n[dim]Final rate limit: {rate_info.requests_per_minute} RPM, "
+                  f"Concurrency used: {scenario_gen.current_concurrency}[/dim]")
 
     # Write base files
     with console.status("[bold green]Creating base files..."):

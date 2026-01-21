@@ -26,7 +26,13 @@ REQUIREMENTS:
    - Create then read/update (weight: 5)
    - Operation on created resource (weight: 5)
 
-3. **CLASS STRUCTURE**:
+3. **CONSTRAINTS** (CRITICAL):
+   - ALL test values must be SHORT: max 50 characters per field
+   - Use realistic, representative test data
+   - Keep total code under 100 lines
+   - NEVER generate excessively long strings
+
+4. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from base_workflow import BaseWorkflow
@@ -47,7 +53,7 @@ REQUIREMENTS:
                    response.failure(f"Expected success, got {response.status_code}")
    ```
 
-4. **IMPORTANT**:
+5. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Use catch_response=True for proper Locust reporting

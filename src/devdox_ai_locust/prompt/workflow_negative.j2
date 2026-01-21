@@ -27,7 +27,14 @@ REQUIREMENTS:
    - Empty strings/zero values (weight: 2)
    - Unicode/special characters (weight: 2)
 
-3. **CLASS STRUCTURE**:
+3. **CONSTRAINTS** (CRITICAL - DO NOT VIOLATE):
+   - ALL test values must be SHORT: max 50 characters
+   - For unicode tests, use 1-5 special chars, NOT thousands (e.g., "tëst" not "üüüü...×1000")
+   - For boundary tests, use small representative values
+   - NEVER generate strings longer than 100 characters
+   - Keep total code under 100 lines
+
+4. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from base_workflow import BaseWorkflow
@@ -57,10 +64,11 @@ REQUIREMENTS:
                    response.failure(f"Unexpected: {response.status_code}")
    ```
 
-4. **IMPORTANT**:
+5. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Mark success() when expected error occurs
+   - NEVER use excessively long strings in test data
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.

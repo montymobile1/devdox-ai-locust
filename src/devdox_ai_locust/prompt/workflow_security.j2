@@ -28,7 +28,13 @@ REQUIREMENTS:
    - XSS: `<script>alert('XSS')</script>`, `<img src=x onerror=alert(1)>`
    - Path: `../../../etc/passwd`, `%2e%2e%2f`
 
-3. **CLASS STRUCTURE**:
+3. **CONSTRAINTS** (CRITICAL):
+   - ALL payloads must be SHORT: max 100 characters
+   - Use the exact payloads shown above, do not generate longer variants
+   - Keep total code under 80 lines
+   - NEVER generate excessively long injection strings
+
+4. **CLASS STRUCTURE**:
    ```python
    from locust import task
    from base_workflow import BaseWorkflow
@@ -53,7 +59,7 @@ REQUIREMENTS:
                    response.success()
    ```
 
-4. **IMPORTANT**:
+5. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (50-80 lines max)
    - Flag 500 errors as potential vulnerabilities
