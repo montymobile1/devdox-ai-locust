@@ -300,6 +300,41 @@ async def _generate_scenario_based_tests(
         name = re.sub(r'_+', '_', name).strip('_')
         return name or "unnamed"
 
+    # Helper to convert to PascalCase class name
+    def to_class_name(name: str) -> str:
+        sanitized = sanitize_dir_name(name)
+        words = sanitized.replace("_", " ").split()
+        return "".join(word.capitalize() for word in words) or "Unnamed"
+
+    # Generate fallback template when LLM fails
+    def generate_fallback_workflow(endpoint: Any, scenario_type: str) -> str:
+        """Generate a basic fallback workflow when LLM generation fails"""
+        operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
+        class_name = to_class_name(operation_id)
+        method = endpoint.method.lower()
+        path = endpoint.path
+
+        return f'''"""
+Fallback {scenario_type} workflow for {method.upper()} {path}
+Generated because LLM generation failed - please customize manually.
+"""
+from locust import task
+from base_workflow import BaseWorkflow
+
+
+class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
+    """{scenario_type.capitalize()} tests for {method.upper()} {path}"""
+
+    @task(1)
+    def test_{scenario_type}(self):
+        """Basic {scenario_type} test - customize as needed"""
+        with self.client.{method}("{path}", catch_response=True) as response:
+            if response.status_code < 400:
+                response.success()
+            else:
+                response.failure(f"Status {{response.status_code}}")
+'''
+
     # Build endpoint to tag mapping
     endpoint_to_tag = {}
     for tag_name, tag_endpoints in grouped_endpoints.items():
@@ -356,7 +391,23 @@ async def _generate_scenario_based_tests(
             return local_files
 
         except Exception as e:
-            # Track failure but continue processing other endpoints
+            # Generate fallback templates and continue processing
+            fallback_files = []
+            for scenario_type in ["positive", "negative", "security"]:
+                fallback_content = generate_fallback_workflow(endpoint, scenario_type)
+                filename = f"{scenario_type}_workflow.py"
+                file_path = endpoint_dir / filename
+                async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                    await f.write(fallback_content)
+                fallback_files.append({
+                    "path": str(file_path),
+                    "size": len(fallback_content),
+                    "tag": tag_name,
+                    "operation_id": operation_id,
+                    "scenario": scenario_type,
+                    "fallback": True,
+                })
+
             async with file_write_lock:
                 failed_count += 1
                 failed_endpoints.append({
@@ -365,12 +416,13 @@ async def _generate_scenario_based_tests(
                     "error": str(e),
                     "error_type": type(e).__name__,
                 })
+                created_files.extend(fallback_files)  # Still add fallback files
                 progress.update(task_id, completed=completed_count + failed_count)
                 # Print error immediately so user sees it
                 progress.console.print(
-                    f"   [red]✗[/red] {tag_dir_name}/{operation_id}: {type(e).__name__}: {str(e)[:100]}"
+                    f"   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id}: {type(e).__name__} - using fallback template"
                 )
-            return []
+            return fallback_files
 
     # Process all endpoints in parallel with progress bar
     console.print(f"\n[bold cyan]🚀 Processing {num_endpoints} endpoints in parallel[/bold cyan]")
@@ -419,6 +471,33 @@ async def _generate_scenario_based_tests(
             console.print(f"   ... and {len(failed_endpoints) - 10} more failures")
     else:
         console.print(f"\n[bold green]✓ All {num_endpoints} endpoints generated successfully[/bold green]")
+
+    # Generate __init__.py files for each tag directory to enable imports
+    with console.status("[bold green]Creating workflow __init__.py files..."):
+        # Create main workflows/__init__.py
+        workflows_init = workflows_dir / "__init__.py"
+        tag_imports = []
+        for tag_name in grouped_endpoints.keys():
+            tag_dir_name = sanitize_dir_name(tag_name)
+            tag_imports.append(f"from .{tag_dir_name} import *")
+        workflows_init.write_text("\n".join(tag_imports) + "\n", encoding='utf-8')
+
+        # Create __init__.py for each tag directory
+        for tag_name, tag_endpoints in grouped_endpoints.items():
+            tag_dir_name = sanitize_dir_name(tag_name)
+            tag_dir = workflows_dir / tag_dir_name
+            if tag_dir.exists():
+                init_lines = ['"""Auto-generated workflow exports"""']
+                for ep in tag_endpoints:
+                    op_id = scenario_gen.get_endpoint_dir_name(ep)
+                    class_name = to_class_name(op_id)
+                    # Import all three scenario types
+                    for scenario in ["positive", "negative", "security"]:
+                        init_lines.append(
+                            f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
+                        )
+                tag_init = tag_dir / "__init__.py"
+                tag_init.write_text("\n".join(init_lines) + "\n", encoding='utf-8')
 
     # Write base files
     with console.status("[bold green]Creating base files..."):

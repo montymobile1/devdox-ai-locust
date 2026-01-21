@@ -354,15 +354,12 @@ class LocustTestGenerator:
     def _build_locustfile_template(
         self, api_info: Dict[str, Any], task_methods_content: str, groups: List[str]
     ) -> str:
-        import_group_tasks = ""
+        # Import all workflows from the workflows package (uses __init__.py exports)
+        import_group_tasks = "from workflows import *  # Imports all workflow classes\n"
+        # Tasks will be empty since workflows are imported via __init__.py
+        # The actual task classes are defined in the per-endpoint workflow files
         tasks = []
-        for group in groups:
-            # Sanitize for file names and class names
-            file_name = self._sanitize_identifier(group).lower()
-            class_name = self._to_class_name(group)
-            import_group_tasks += f"""from workflows.{file_name}_workflow import {class_name}TaskMethods\n"""
-            tasks.append(f"{class_name}TaskMethods")
-        tasks_str = "[" + ",".join(tasks) + "]"
+        tasks_str = "[]  # Tasks are loaded dynamically from workflow imports"
         template = self.jinja_env.get_template("locust.py.j2")
 
         # Prepare template context
