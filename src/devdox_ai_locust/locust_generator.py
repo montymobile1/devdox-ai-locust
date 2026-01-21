@@ -332,8 +332,10 @@ class LocustTestGenerator:
         import_group_tasks = ""
         tasks = []
         for group in groups:
-            file_name = group.lower().replace("-", "_")
-            class_name = group.capitalize().replace("-", "")
+            # Sanitize for file names: lowercase, replace spaces and dashes with underscores
+            file_name = group.lower().replace(" ", "_").replace("-", "_")
+            # Sanitize for class names: PascalCase, remove spaces and dashes
+            class_name = "".join(word.capitalize() for word in group.replace("-", " ").split())
             import_group_tasks += f"""from workflows.{file_name}_workflow import {class_name}TaskMethods\n"""
             tasks.append(f"{class_name}TaskMethods")
         tasks_str = "[" + ",".join(tasks) + "]"
