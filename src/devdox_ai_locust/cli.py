@@ -333,8 +333,8 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 {indented_task}
 '''
 
-    # Generate all pre-LLM templates upfront (before LLM processing)
-    with console.status("[bold cyan]Preparing fallback templates...[/bold cyan]"):
+    # Generate base templates first (LLM will enhance these)
+    with console.status("[bold cyan]Generating base templates...[/bold cyan]"):
         pre_llm_templates: Dict[Tuple[int, str], str] = {}
         scenario_types = ["positive", "negative", "security"]
         for endpoint in endpoints:
@@ -342,7 +342,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
                     endpoint, scenario_type
                 )
-    console.print("[green]✓[/green] Fallback templates ready")
+    console.print("[green]✓[/green] Base templates generated")
 
     # Build endpoint to tag mapping
     endpoint_to_tag = {}
@@ -431,9 +431,10 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 })
                 created_files.extend(fallback_files)  # Use pre-LLM templates
                 progress.update(task_id, completed=completed_count + failed_count)
-                # Print error immediately so user sees it
+                # Print error with details so user can debug
+                error_msg = str(e)[:200]  # Truncate very long errors
                 progress.console.print(
-                    f"   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id}: {type(e).__name__} - using pre-LLM template"
+                    f"   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id}: [red]{type(e).__name__}[/red]: {error_msg}"
                 )
             return fallback_files
 
