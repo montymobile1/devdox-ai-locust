@@ -793,31 +793,28 @@ class ScenarioWorkflowGenerator:
         """Extract code from <code> tags with robust fallback handling"""
         import re
 
-        # Try case-insensitive match with closing tag
-        pattern = r"<code>(.*?)</code>"
+        # Try case-insensitive match with closing tag (handle attributes like <code lang="python">)
+        pattern = r"<code[^>]*>(.*?)</code>"
         matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
 
         if matches:
             code = max(matches, key=len).strip()
         else:
             # Fallback: handle <code> without closing tag
-            code_start = re.search(r"<code>", response, re.IGNORECASE)
+            code_start = re.search(r"<code[^>]*>", response, re.IGNORECASE)
             if code_start:
                 code = response[code_start.end():]
             else:
                 code = response
 
-            # Clean up markdown code blocks
-            if code.startswith("```python"):
-                code = code[9:]
-            if code.startswith("```"):
-                code = code[3:]
-            if code.endswith("```"):
-                code = code[:-3]
+        # Aggressively strip ALL markdown code fence variations (anywhere in content)
+        # Handles: ```python, ```code, ```py, ``` with any language identifier
+        code = re.sub(r"```[\w]*\s*\n?", "", code)  # Opening fences with optional language
+        code = re.sub(r"\n?```\s*$", "", code)  # Trailing fence at end
+        code = re.sub(r"\n?```\s*\n", "\n", code)  # Fences in middle of content
 
-            # Final cleanup - strip any remaining tags
-            code = re.sub(r"^</?code>", "", code, flags=re.IGNORECASE)
-            code = re.sub(r"</?code>$", "", code, flags=re.IGNORECASE)
+        # Strip HTML code tags that may remain (with or without attributes)
+        code = re.sub(r"</?code[^>]*>", "", code, flags=re.IGNORECASE)
 
         # Clean up garbage lines that aren't valid Python
         lines = code.split('\n')

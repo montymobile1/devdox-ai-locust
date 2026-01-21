@@ -11,8 +11,24 @@ AUTHENTICATION ENDPOINTS:
 BASE WORKFLOW (inherit from this):
 {{ base_workflow }}
 
-TEST DATA AVAILABLE:
+TEST DATA MODULE (test_data.py):
 {{ test_data_content }}
+
+ALLOWED IMPORTS (use ONLY these - DO NOT invent or import any other modules):
+```python
+from locust import task
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator  # Use this for generating test values
+import random  # For selecting random payloads
+```
+
+HOW TO USE test_data_generator:
+```python
+# Generate valid values for non-injected fields
+test_data_generator.generate_string(length=10)
+test_data_generator.generate_integer(min_val=1, max_val=100)
+test_data_generator.generate_email()
+```
 
 REQUIREMENTS:
 
@@ -43,10 +59,11 @@ REQUIREMENTS:
      WRONG: b'tëst' (SyntaxError!)
      CORRECT: b'test' or 'tëst'.encode('utf-8')
 
-5. **CLASS STRUCTURE**:
+5. **CLASS STRUCTURE** (use EXACTLY this import pattern):
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
+   from test_data import test_data_generator
    import random
 
    SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --"]
@@ -60,9 +77,10 @@ REQUIREMENTS:
            """SQL injection test"""
            payload = random.choice(SQL_PAYLOADS)
            # Use ACTUAL field names from schema, inject payload into a string field
+           # Use test_data_generator for valid values in other fields
            data = {
                "actual_string_field": payload,
-               # Include other required fields with valid values
+               "another_required_field": test_data_generator.generate_string(length=10),
            }
            with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
                if response.status_code in [400, 422]:
@@ -73,7 +91,13 @@ REQUIREMENTS:
                    response.success()
    ```
 
-6. **IMPORTANT**:
+6. **CRITICAL - DO NOT INVENT MODULES**:
+   - ONLY use imports shown in "ALLOWED IMPORTS" above
+   - DO NOT create imports like `import test_data_generator` (WRONG - it's not a module)
+   - The correct import is: `from test_data import test_data_generator`
+   - DO NOT invent helper functions or utilities that don't exist
+
+8. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (50-80 lines max)
    - Flag 500 errors as potential vulnerabilities
@@ -81,6 +105,7 @@ REQUIREMENTS:
    - READ THE SCHEMA - use exact field names for injections
 
 OUTPUT:
-Return ONLY valid Python code in <code></code> tags.
+Return ONLY valid Python code. No markdown, no explanations, no ``` code fences.
+Wrap your code in <code></code> tags.
 
 <code>your_complete_python_code_here</code>

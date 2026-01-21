@@ -11,8 +11,33 @@ AUTHENTICATION ENDPOINTS:
 BASE WORKFLOW (inherit from this):
 {{ base_workflow }}
 
-TEST DATA AVAILABLE:
+TEST DATA MODULE (test_data.py):
 {{ test_data_content }}
+
+ALLOWED IMPORTS (use ONLY these - DO NOT invent or import any other modules):
+```python
+from locust import task
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator  # Use this for generating test values
+```
+
+HOW TO USE test_data_generator:
+```python
+# Generate strings
+test_data_generator.generate_string(length=10)
+test_data_generator.random_string(10)
+test_data_generator.generate_email()
+
+# Generate numbers
+test_data_generator.generate_integer(min_val=1, max_val=100)
+test_data_generator.random_int(0, 1000)
+test_data_generator.generate_float(min_val=0.0, max_val=100.0)
+
+# Generate other types
+test_data_generator.generate_boolean()
+test_data_generator.random_uuid()
+test_data_generator.random_date()
+```
 
 REQUIREMENTS:
 
@@ -85,11 +110,11 @@ REQUIREMENTS:
      WRONG: b'tëst' (SyntaxError!)
      CORRECT: b'test' or 'tëst'.encode('utf-8')
 
-5. **CLASS STRUCTURE**:
+5. **CLASS STRUCTURE** (use EXACTLY this import pattern):
    ```python
    from locust import task
    from workflows.base_workflow import BaseWorkflow
-   import test_data
+   from test_data import test_data_generator
 
    class {{ class_name }}PositiveWorkflow(BaseWorkflow):
        """Positive and state tests for {{ method }} {{ path }}"""
@@ -99,9 +124,11 @@ REQUIREMENTS:
        @task(10)
        def test_success_with_valid_data(self):
            """Test successful operation"""
-           # Use EXACT field names from the Schema above
+           # Use test_data_generator for values, EXACT field names from Schema
            data = {
-               "actual_field_name": "appropriate_value",
+               "name": test_data_generator.generate_string(length=10),
+               "email": test_data_generator.generate_email(),
+               "count": test_data_generator.generate_integer(min_val=1, max_val=100),
                # ... all required fields from schema
            }
            with self.client.{{ method|lower }}("{{ path }}", json=data, catch_response=True) as response:
@@ -111,13 +138,20 @@ REQUIREMENTS:
                    response.failure(f"Expected success, got {response.status_code}")
    ```
 
-6. **IMPORTANT**:
+6. **CRITICAL - DO NOT INVENT MODULES**:
+   - ONLY use imports shown in "ALLOWED IMPORTS" above
+   - DO NOT create imports like `import test_data_generator` (WRONG - it's not a module)
+   - The correct import is: `from test_data import test_data_generator`
+   - DO NOT invent helper functions or utilities that don't exist
+
+8. **IMPORTANT**:
    - Generate tests ONLY for this endpoint: {{ method }} {{ path }}
    - Keep code concise (60-100 lines max)
    - Use catch_response=True for proper Locust reporting
    - READ THE SCHEMA CAREFULLY and use those exact field names
 
 OUTPUT:
-Return ONLY valid Python code in <code></code> tags.
+Return ONLY valid Python code. No markdown, no explanations, no ``` code fences.
+Wrap your code in <code></code> tags.
 
 <code>your_complete_python_code_here</code>
