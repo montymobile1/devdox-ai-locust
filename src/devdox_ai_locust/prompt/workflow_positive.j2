@@ -24,6 +24,18 @@ from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
 ```
 
+=== CRITICAL: OUTPUT REQUIREMENTS ===
+
+**ASCII ONLY**: Your output MUST contain ONLY ASCII characters (codes 0-127).
+- NO Unicode characters (Chinese, Arabic, emoji, etc.)
+- NO special characters outside standard ASCII
+- NO non-English text anywhere in the code
+- Variable names: a-z, A-Z, 0-9, underscore ONLY
+- Strings: Use only ASCII printable characters
+- Use RAW STRINGS for regex patterns: r"pattern" not "pattern"
+
+If you output ANY non-ASCII character, the code will FAIL to parse.
+
 === CHAIN OF THOUGHT INSTRUCTIONS ===
 
 Before writing code, you MUST reason through these steps:
@@ -78,6 +90,8 @@ Based on your analysis, write the complete workflow class.
 - Use catch_response=True for proper Locust reporting
 - For file uploads: use files= parameter, NOT json=
 - BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
+- OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
+- Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
 === OUTPUT FORMAT ===
 

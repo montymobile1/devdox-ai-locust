@@ -408,9 +408,12 @@ class ScenarioWorkflowGenerator:
             # Extract code from response
             extracted = self._extract_code(content)
 
+            # Sanitize any non-ASCII Unicode characters the LLM may have injected
+            sanitized = self._sanitize_unicode(extracted)
+
             # Fix class name to match expected naming convention
             # LLMs sometimes ignore the template and generate their own class names
-            after_class_fix = self._fix_class_name(extracted, class_name, scenario_type.value)
+            after_class_fix = self._fix_class_name(sanitized, class_name, scenario_type.value)
 
             # Fix bytes literals with unicode (b'tëst' → 'tëst'.encode('utf-8'))
             after_bytes_fix = self._fix_bytes_literals(after_class_fix)
@@ -929,6 +932,23 @@ class ScenarioWorkflowGenerator:
 
         return code
 
+    def _sanitize_unicode(self, code: str) -> str:
+        """
+        Remove non-ASCII characters that LLMs sometimes inject into code.
+
+        LLMs occasionally output random Unicode characters (Chinese, Arabic, emoji)
+        which corrupt variable names and cause ImportError/SyntaxError.
+        This strips any non-ASCII characters from the generated code.
+
+        Preserves ASCII printable characters (0x20-0x7E) and whitespace.
+        """
+        cleaned_lines = []
+        for line in code.split('\n'):
+            # Keep only ASCII characters (codes 0-127)
+            cleaned = ''.join(c for c in line if ord(c) < 128)
+            cleaned_lines.append(cleaned)
+        return '\n'.join(cleaned_lines)
+
     def _fix_bytes_literals(self, code: str) -> str:
         """
         Fix bytes literals containing non-ASCII characters.
@@ -968,7 +988,8 @@ class ScenarioWorkflowGenerator:
         problematic_escapes = [
             '\\d', '\\D', '\\w', '\\W', '\\s', '\\S',
             '\\+', '\\*', '\\?', '\\^', '\\$', '\\|',
-            '\\(', '\\)', '\\[', '\\]', '\\{', '\\}'
+            '\\(', '\\)', '\\[', '\\]', '\\{', '\\}',
+            '\\.'  # Escaped dot in regex patterns like \.
         ]
 
         lines = code.split('\n')

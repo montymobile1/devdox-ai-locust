@@ -24,6 +24,18 @@ from test_data import test_data_generator
 import random
 ```
 
+=== CRITICAL: OUTPUT REQUIREMENTS ===
+
+**ASCII ONLY**: Your output MUST contain ONLY ASCII characters (codes 0-127).
+- NO Unicode characters (Chinese, Arabic, emoji, etc.)
+- NO special characters outside standard ASCII
+- NO non-English text anywhere in the code
+- Variable names: a-z, A-Z, 0-9, underscore ONLY
+- Strings: Use only ASCII printable characters
+- Use RAW STRINGS for regex patterns: r"pattern" not "pattern"
+
+If you output ANY non-ASCII character, the code will FAIL to parse.
+
 === SECURITY PAYLOADS ===
 ```python
 SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --", "1; SELECT * FROM users"]
@@ -86,6 +98,8 @@ def test_sql_injection(self):
 - Keep total code under 80 lines
 - Use test_data_generator for valid values in non-injected fields
 - BYTES LITERALS MUST BE ASCII ONLY
+- OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
+- Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
 === OUTPUT FORMAT ===
 

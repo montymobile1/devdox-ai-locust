@@ -27,6 +27,11 @@ Requirements:
 - The code must be valid Python that passes `ast.parse()`
 - Keep all imports, class definitions, and methods intact
 - Do not add comments explaining the fix
+- **ASCII ONLY**: Output ONLY ASCII characters (codes 0-127)
+  - NO Unicode characters (Chinese, Arabic, emoji, etc.)
+  - NO special characters outside standard ASCII
+  - Variable names: a-z, A-Z, 0-9, underscore ONLY
+  - Use RAW STRINGS for regex patterns: r"pattern" not "pattern"
 
 Output the complete corrected code below:
 </code>
