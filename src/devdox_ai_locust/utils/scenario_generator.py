@@ -968,7 +968,7 @@ class ScenarioWorkflowGenerator:
             )
         except Exception as e:
             # Fallback to simple prompt if template fails
-            logger.warning(f"Failed to render fix template: {e}")
+            logger.warning(f"Failed to render fix template: {e}. Falling back to inline prompt.")
             return f"""Fix this Python syntax error:
 
 Error: {error_message}
