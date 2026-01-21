@@ -320,7 +320,7 @@ Pre-LLM workflow for {method.upper()} {path}
 Generated using template generator.
 """
 from locust import task
-from ...base_workflow import BaseWorkflow
+from base_workflow import BaseWorkflow
 
 import logging
 
@@ -514,11 +514,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     # Write base files
     with console.status("[bold green]Creating base files..."):
         for filename, content in base_files.items():
-            # base_workflow.py goes in workflows/ for proper import resolution
-            if filename == "base_workflow.py":
-                file_path = workflows_dir / filename
-            else:
-                file_path = output_dir / filename
+            file_path = output_dir / filename
             file_path.write_text(content, encoding='utf-8')
             created_files.append({
                 "path": str(file_path),
