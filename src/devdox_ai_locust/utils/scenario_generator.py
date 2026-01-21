@@ -4,9 +4,9 @@ Scenario-based Workflow Generator
 Generates separate workflow files for different test scenario types:
 - Positive + State scenarios (LLM-generated)
 - Negative + Edge + Error scenarios (LLM-generated)
-- Security scenarios (Template-generated, no LLM)
+- Security scenarios (LLM-generated)
 
-This approach reduces API calls while maintaining comprehensive test coverage.
+Uses 3 LLM calls per API tag to generate focused, high-quality test code.
 """
 
 import asyncio
@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class ScenarioType(Enum):
-    """Types of test scenarios"""
+    """Types of test scenarios (all LLM-generated)"""
     POSITIVE = "positive"      # Happy path + state-dependent
     NEGATIVE = "negative"      # Validation errors + edge cases + error handling
-    SECURITY = "security"      # Injection attacks (template-based)
+    SECURITY = "security"      # Injection attacks + auth bypass
 
 
 @dataclass
@@ -76,14 +76,12 @@ class TimeEstimate:
 
 class ScenarioWorkflowGenerator:
     """
-    Generates scenario-based workflow files.
+    Generates scenario-based workflow files using LLM.
 
-    Uses 2 LLM calls per tag:
+    Uses 3 LLM calls per tag:
     - Call 1: Positive + State scenarios
     - Call 2: Negative + Edge + Error scenarios
-
-    Plus 1 template-based generation (no LLM):
-    - Security scenarios
+    - Call 3: Security scenarios (injection, auth bypass)
     """
 
     # Mapping of scenario types to output filenames
@@ -97,12 +95,12 @@ class ScenarioWorkflowGenerator:
     PROMPT_TEMPLATES = {
         ScenarioType.POSITIVE: "workflow_positive.j2",
         ScenarioType.NEGATIVE: "workflow_negative.j2",
+        ScenarioType.SECURITY: "workflow_security.j2",
     }
 
     def __init__(
         self,
         prompt_dir: Path,
-        template_dir: Path,
         ai_client: Any,
         ai_config: Any,
     ):
@@ -111,30 +109,18 @@ class ScenarioWorkflowGenerator:
 
         Args:
             prompt_dir: Directory containing LLM prompt templates
-            template_dir: Directory containing code generation templates
             ai_client: Together AI client for LLM calls
             ai_config: AI configuration (model, timeout, etc.)
         """
         self.prompt_dir = prompt_dir
-        self.template_dir = template_dir
         self.ai_client = ai_client
         self.ai_config = ai_config
         self._rate_limit_info: Optional[RateLimitInfo] = None
         self._api_semaphore = asyncio.Semaphore(5)
 
-        # Setup Jinja environments
-        self._setup_jinja_envs()
-
-    def _setup_jinja_envs(self) -> None:
-        """Setup Jinja2 environments for prompts and templates"""
+        # Setup Jinja environment for prompts
         self.prompt_env = Environment(
             loader=FileSystemLoader(str(self.prompt_dir)),
-            trim_blocks=True,
-            lstrip_blocks=True,
-        )
-
-        self.template_env = Environment(
-            loader=FileSystemLoader(str(self.template_dir)),
             trim_blocks=True,
             lstrip_blocks=True,
         )
@@ -149,9 +135,8 @@ class ScenarioWorkflowGenerator:
         Returns:
             TimeEstimate with calculated values
         """
-        # 2 LLM calls per tag (positive + negative)
-        # Security is template-based, no LLM call needed
-        total_calls = num_tags * 2
+        # 3 LLM calls per tag (positive + negative + security)
+        total_calls = num_tags * 3
 
         rpm = self._rate_limit_info.requests_per_minute if self._rate_limit_info else 60
         estimated_minutes = total_calls / rpm
@@ -190,7 +175,7 @@ class ScenarioWorkflowGenerator:
         auth_endpoints: Optional[List[Any]] = None,
     ) -> Dict[ScenarioType, str]:
         """
-        Generate all scenario workflow files for a tag.
+        Generate all scenario workflow files for a tag using LLM.
 
         Args:
             tag_name: Name of the API tag
@@ -204,7 +189,7 @@ class ScenarioWorkflowGenerator:
         """
         results = {}
 
-        # Generate LLM-based scenarios in parallel
+        # Generate all scenarios in parallel using LLM
         llm_tasks = [
             self._generate_llm_scenario(
                 ScenarioType.POSITIVE,
@@ -222,22 +207,25 @@ class ScenarioWorkflowGenerator:
                 test_data_content,
                 auth_endpoints,
             ),
+            self._generate_llm_scenario(
+                ScenarioType.SECURITY,
+                tag_name,
+                endpoints,
+                base_workflow_content,
+                test_data_content,
+                auth_endpoints,
+            ),
         ]
 
+        scenario_types = [ScenarioType.POSITIVE, ScenarioType.NEGATIVE, ScenarioType.SECURITY]
         llm_results = await asyncio.gather(*llm_tasks, return_exceptions=True)
 
-        for scenario_type, result in zip([ScenarioType.POSITIVE, ScenarioType.NEGATIVE], llm_results):
+        for scenario_type, result in zip(scenario_types, llm_results):
             if isinstance(result, Exception):
                 logger.error(f"Failed to generate {scenario_type.value} scenario: {result}")
                 results[scenario_type] = ""
             else:
                 results[scenario_type] = result
-
-        # Generate template-based security scenario (no LLM)
-        results[ScenarioType.SECURITY] = self._generate_security_scenario(
-            tag_name,
-            endpoints,
-        )
 
         return results
 
@@ -299,44 +287,6 @@ class ScenarioWorkflowGenerator:
 
         logger.warning(f"Generated {scenario_type.value} code failed validation")
         return ""
-
-    def _generate_security_scenario(
-        self,
-        tag_name: str,
-        endpoints: List[Any],
-    ) -> str:
-        """
-        Generate security scenario using template (no LLM).
-
-        Args:
-            tag_name: Name of the API tag
-            endpoints: List of endpoints
-
-        Returns:
-            Generated Python code
-        """
-        try:
-            template = self.template_env.get_template("security_workflow.j2")
-        except Exception as e:
-            logger.error(f"Failed to load security template: {e}")
-            return ""
-
-        class_name = self._tag_to_class_name(tag_name)
-
-        # Convert endpoints to template-friendly format
-        endpoints_data = []
-        for ep in endpoints:
-            endpoints_data.append({
-                "path": ep.path,
-                "method": ep.method,
-                "operation_id": getattr(ep, "operation_id", None),
-            })
-
-        return template.render(
-            tag_name=tag_name,
-            class_name=class_name,
-            endpoints=endpoints_data,
-        )
 
     def _format_endpoints(self, endpoints: List[Any]) -> str:
         """Format endpoints for prompt"""

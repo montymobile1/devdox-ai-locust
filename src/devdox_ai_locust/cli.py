@@ -243,26 +243,24 @@ async def _generate_scenario_based_tests(
     num_tags = len(grouped_endpoints)
 
     # Show time estimate
-    # 2 LLM calls per tag (positive + negative), security is template-based
-    total_calls = num_tags * 2
+    # 3 LLM calls per tag (positive + negative + security)
+    total_calls = num_tags * 3
     # Estimate RPM (will be updated after first call)
     estimated_rpm = 60  # Conservative default
     estimated_minutes = total_calls / estimated_rpm
 
-    console.print(f"\n📊 [bold]Scenario-based Generation Mode[/bold]")
+    console.print(f"\n📊 [bold]Scenario-based Generation[/bold]")
     console.print(f"   Tags to process: {num_tags}")
-    console.print(f"   API calls needed: {total_calls} (2 per tag)")
+    console.print(f"   API calls needed: {total_calls} (3 per tag)")
     console.print(f"   Estimated time: ~{estimated_minutes:.1f} minutes (at {estimated_rpm} RPM)")
     console.print(f"   Files per tag: positive_workflow.py, negative_workflow.py, security_workflow.py\n")
 
-    # Setup directories
+    # Setup prompt directory
     prompt_dir = Path(__file__).parent / "prompt"
-    template_dir = Path(__file__).parent / "templates"
 
     # Initialize scenario generator
     scenario_gen = ScenarioWorkflowGenerator(
         prompt_dir=prompt_dir,
-        template_dir=template_dir,
         ai_client=ai_client,
         ai_config=ai_config,
     )
