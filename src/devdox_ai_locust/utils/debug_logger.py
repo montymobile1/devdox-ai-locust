@@ -9,23 +9,21 @@ Structure:
 └── debug/
     └── {timestamp}/
         ├── session.json
+        ├── exceptions_summary.json    # All failures in one place
         └── {tag}/
             └── {operation_id}/
                 └── {scenario}/
-                    ├── endpoint.json      # Input: endpoint info
-                    ├── prompt.txt         # What we sent to LLM
-                    ├── attempts/
-                    │   ├── 1/
-                    │   │   ├── llm_response.txt
-                    │   │   ├── extracted.py
-                    │   │   ├── processed.py
-                    │   │   ├── validation.json
-                    │   │   └── FAILED.py (with line numbers)
-                    │   └── 2/
-                    │       └── ...
-                    ├── final.py           # Final output
-                    ├── outcome.json       # Summary
-                    └── events.log         # Timeline
+                    ├── input_endpoint.json
+                    ├── llm_prompt.txt
+                    ├── attempt_1/
+                    │   ├── llm_raw_response.txt
+                    │   ├── code_after_extraction.py
+                    │   ├── code_after_fixes.py
+                    │   ├── validation_result.json
+                    │   └── VALIDATION_FAILED.py (with line numbers)
+                    ├── final_output.py
+                    ├── generation_outcome.json
+                    └── generation_timeline.log
 """
 
 import json
@@ -46,27 +44,31 @@ class DebugLogger:
     with artifacts saved at each step.
     """
 
-    def __init__(self, base_dir: Path, session_id: str):
+    def __init__(self, base_dir: Path, session_id: str, always_keep: bool = False):
         """
         Initialize the debug logger.
 
         Args:
             base_dir: The .devdox-ai-locust directory
             session_id: Timestamp-based session identifier
+            always_keep: If True, files are kept without prompting (--debug mode)
         """
         self.base_dir = base_dir
         self.session_id = session_id
         self.session_dir = base_dir / "debug" / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.always_keep = always_keep
         self.has_failures = False
         self.failure_count = 0
         self.success_count = 0
+        self.exceptions: List[Dict[str, Any]] = []  # Track all exceptions
 
         # Write session info
         session_info = {
             "session_id": session_id,
             "started_at": datetime.now().isoformat(),
-            "status": "in_progress"
+            "status": "in_progress",
+            "mode": "explicit_debug" if always_keep else "auto_collect"
         }
         self._write_json(self.session_dir / "session.json", session_info)
 
@@ -80,7 +82,7 @@ class DebugLogger:
 
     def get_attempt_dir(self, tag: str, operation_id: str, scenario_type: str, attempt: int) -> Path:
         """Get the directory for a specific attempt."""
-        attempt_dir = self.get_scenario_dir(tag, operation_id, scenario_type) / "attempts" / str(attempt)
+        attempt_dir = self.get_scenario_dir(tag, operation_id, scenario_type) / f"attempt_{attempt}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
         return attempt_dir
 
@@ -93,7 +95,7 @@ class DebugLogger:
     ) -> None:
         """Log the endpoint information being processed."""
         dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
-        self._write_json(dir_path / "endpoint.json", endpoint_data)
+        self._write_json(dir_path / "input_endpoint.json", endpoint_data)
 
     def log_rendered_prompt(
         self,
@@ -104,7 +106,7 @@ class DebugLogger:
     ) -> None:
         """Log the rendered prompt sent to the LLM."""
         dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
-        self._write_text(dir_path / "prompt.txt", prompt)
+        self._write_text(dir_path / "llm_prompt.txt", prompt)
 
     def log_llm_response(
         self,
@@ -116,7 +118,7 @@ class DebugLogger:
     ) -> None:
         """Log the raw LLM response."""
         dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
-        self._write_text(dir_path / "llm_response.txt", response)
+        self._write_text(dir_path / "llm_raw_response.txt", response)
 
     def log_extracted_code(
         self,
@@ -128,7 +130,7 @@ class DebugLogger:
     ) -> None:
         """Log the code after extraction from LLM response."""
         dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
-        self._write_text(dir_path / "extracted.py", code)
+        self._write_text(dir_path / "code_after_extraction.py", code)
 
     def log_after_fixes(
         self,
@@ -141,10 +143,7 @@ class DebugLogger:
     ) -> None:
         """Log the code after post-processing fixes."""
         dir_path = self.get_attempt_dir(tag, operation_id, scenario_type, attempt)
-        self._write_text(dir_path / "processed.py", code)
-
-        # Also log what fixes were applied in the validation.json later
-        # Store fixes temporarily
+        self._write_text(dir_path / "code_after_fixes.py", code)
         self._current_fixes = fixes_applied
 
     def log_validation_result(
@@ -165,12 +164,12 @@ class DebugLogger:
             "error": error,
             "fixes_applied": getattr(self, '_current_fixes', []),
         }
-        self._write_json(dir_path / "validation.json", result)
+        self._write_json(dir_path / "validation_result.json", result)
 
         # If validation failed, save the failing code with line numbers
         if not is_valid:
             numbered_code = self._add_line_numbers(code)
-            self._write_text(dir_path / "FAILED.py", numbered_code)
+            self._write_text(dir_path / "VALIDATION_FAILED.py", numbered_code)
 
     def log_final_outcome(
         self,
@@ -192,15 +191,25 @@ class DebugLogger:
             self.failure_count += 1
             self.has_failures = True
 
+            # Track exception for summary
+            self.exceptions.append({
+                "tag": tag,
+                "operation_id": operation_id,
+                "scenario": scenario_type,
+                "error": error_message,
+                "used_fallback": used_fallback,
+                "timestamp": datetime.now().isoformat(),
+            })
+
         outcome = {
             "success": success,
             "used_fallback": used_fallback,
             "error": error_message,
         }
-        self._write_json(dir_path / "outcome.json", outcome)
+        self._write_json(dir_path / "generation_outcome.json", outcome)
 
         if final_code:
-            self._write_text(dir_path / "final.py", final_code)
+            self._write_text(dir_path / "final_output.py", final_code)
 
     def log_generation_event(
         self,
@@ -212,7 +221,7 @@ class DebugLogger:
     ) -> None:
         """Append an event to the generation log."""
         dir_path = self.get_scenario_dir(tag, operation_id, scenario_type)
-        log_file = dir_path / "events.log"
+        log_file = dir_path / "generation_timeline.log"
 
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         log_entry = f"[{timestamp}] {event}"
@@ -225,11 +234,21 @@ class DebugLogger:
 
     def finalize_session(self, total_endpoints: int, successful: int, failed: int) -> None:
         """Mark the session as complete with summary stats."""
+        # Write exceptions summary
+        if self.exceptions:
+            exceptions_summary = {
+                "total_failures": len(self.exceptions),
+                "failures": self.exceptions
+            }
+            self._write_json(self.session_dir / "exceptions_summary.json", exceptions_summary)
+
+        # Update session info
         session_info = {
             "session_id": self.session_id,
             "started_at": self._get_session_start_time(),
             "completed_at": datetime.now().isoformat(),
             "status": "completed",
+            "mode": "explicit_debug" if self.always_keep else "auto_collect",
             "summary": {
                 "total_endpoints": total_endpoints,
                 "successful": successful,
@@ -301,30 +320,27 @@ class DebugLogger:
             logger.warning(f"Failed to write debug file {path}: {e}")
 
 
-def create_debug_logger(output_dir: Path) -> DebugLogger:
+def create_debug_logger(always_keep: bool = False) -> DebugLogger:
     """
     Create a DebugLogger with a new session.
 
     Args:
-        output_dir: The output directory (debug files go in .devdox-ai-locust relative to cwd)
+        always_keep: If True, files are kept without prompting (--debug mode)
 
     Returns:
         Configured DebugLogger instance
     """
-    # .devdox-ai-locust lives in the current working directory
     internal_dir = Path.cwd() / ".devdox-ai-locust"
     internal_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create session ID from timestamp
     session_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    return DebugLogger(internal_dir, session_id)
+    return DebugLogger(internal_dir, session_id, always_keep=always_keep)
 
 
 def ensure_internal_dir_exists() -> Path:
     """
     Ensure the .devdox-ai-locust directory exists.
-    Called regardless of whether --debug is used.
 
     Returns:
         Path to the internal directory

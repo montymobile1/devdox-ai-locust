@@ -691,18 +691,15 @@ async def _async_generate(
     timeout: int = 120,
 ) -> None:
     """Async function to handle the generation process"""
-    from devdox_ai_locust.utils.debug_logger import create_debug_logger, ensure_internal_dir_exists
+    from devdox_ai_locust.utils.debug_logger import create_debug_logger
 
     start_time = datetime.now(timezone.utc)
 
-    # Always ensure internal directory exists
-    ensure_internal_dir_exists()
-
-    # Create debug logger if debug mode is enabled
-    debug_logger = None
+    # Always create debug logger to capture artifacts for debugging
+    # When --debug is passed: files are kept silently (always_keep=True)
+    # When --debug is NOT passed: we ask at the end if there were failures
+    debug_logger = create_debug_logger(always_keep=debug)
     if debug:
-        output_path = Path(output)
-        debug_logger = create_debug_logger(output_path)
         console.print(f"[blue]🔍[/blue] Debug mode enabled: {debug_logger.session_dir}")
 
     try:
@@ -739,6 +736,13 @@ async def _async_generate(
             timeout,
         )
 
+        # Finalize debug session with stats
+        debug_logger.finalize_session(
+            total_endpoints=len(endpoints),
+            successful=debug_logger.success_count,
+            failed=debug_logger.failure_count,
+        )
+
         # Show results
         _show_results(
             created_files,
@@ -752,16 +756,23 @@ async def _async_generate(
             host,
         )
 
-        # If debug mode was enabled, prompt user about keeping debug files
-        if debug_logger and debug_logger.has_failures:
+        # Handle debug file retention based on --debug flag and failures
+        if debug_logger.always_keep:
+            # --debug was passed: keep files silently
+            if debug_logger.has_failures:
+                console.print(f"\n[blue]🔍[/blue] Debug artifacts saved to: {debug_logger.get_session_path()}")
+                console.print(f"   [dim]{debug_logger.failure_count} failures logged in exceptions_summary.json[/dim]")
+            else:
+                console.print(f"\n[dim]Debug artifacts saved to: {debug_logger.get_session_path()}[/dim]")
+        elif debug_logger.has_failures:
+            # --debug was NOT passed but there were failures: ask user
             console.print()
-            console.print(f"[bold yellow]Debug files saved to:[/bold yellow] {debug_logger.get_session_path()}")
+            console.print(f"[bold yellow]Debug files available:[/bold yellow] {debug_logger.get_session_path()}")
             console.print(f"[dim]Contains detailed logs for {debug_logger.failure_count} failed generations[/dim]")
             console.print()
 
-            # Ask user if they want to keep the files
             try:
-                keep = console.input("[bold]Keep debug files for sharing with developers?[/bold] [y/N]: ")
+                keep = console.input("[bold]Keep debug files for review?[/bold] [y/N]: ")
                 if keep.lower().strip() in ('y', 'yes'):
                     console.print(f"[green]✓[/green] Debug files kept at: {debug_logger.get_session_path()}")
                 else:
@@ -770,10 +781,9 @@ async def _async_generate(
             except (EOFError, KeyboardInterrupt):
                 # Non-interactive mode or user cancelled - keep files by default
                 console.print(f"\n[dim]Debug files kept at: {debug_logger.get_session_path()}[/dim]")
-        elif debug_logger and not debug_logger.has_failures:
-            # No failures but debug was enabled - delete since not needed
+        else:
+            # --debug was NOT passed and no failures: clean up silently
             debug_logger.delete_session()
-            console.print("[dim]No failures - debug files not needed, cleaned up[/dim]")
 
     except Exception as e:
         end_time = datetime.now(timezone.utc)
