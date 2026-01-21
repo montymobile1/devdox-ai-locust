@@ -286,8 +286,10 @@ async def _generate_scenario_based_tests(
     )]
 
     created_files: List[Dict[str, Any]] = []
+    failed_endpoints: List[Dict[str, Any]] = []  # Track failures
     workflows_dir = output_dir / "workflows"
     completed_count = 0
+    failed_count = 0
     file_write_lock = asyncio.Lock()
 
     # Helper to sanitize directory names
@@ -304,52 +306,71 @@ async def _generate_scenario_based_tests(
         for ep in tag_endpoints:
             endpoint_to_tag[id(ep)] = tag_name
 
-    # Process endpoint and save files
+    # Process endpoint and save files (resilient - catches and tracks errors)
     async def process_and_save_endpoint(
         endpoint: Any,
         progress: Progress,
         task_id: Any,
     ) -> List[Dict[str, Any]]:
-        nonlocal completed_count
+        nonlocal completed_count, failed_count
         tag_name = endpoint_to_tag.get(id(endpoint), "default")
         tag_dir_name = sanitize_dir_name(tag_name)
         operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
+        endpoint_info = f"{endpoint.method} {endpoint.path}"
 
-        # Create endpoint directory
-        endpoint_dir = workflows_dir / tag_dir_name / operation_id
-        endpoint_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Create endpoint directory
+            endpoint_dir = workflows_dir / tag_dir_name / operation_id
+            endpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate scenario workflows
-        scenarios = await scenario_gen.generate_endpoint_workflows(
-            endpoint=endpoint,
-            base_workflow_content=base_workflow_content,
-            test_data_content=test_data_content,
-            auth_endpoints=auth_endpoints if auth else None,
-        )
+            # Generate scenario workflows
+            scenarios = await scenario_gen.generate_endpoint_workflows(
+                endpoint=endpoint,
+                base_workflow_content=base_workflow_content,
+                test_data_content=test_data_content,
+                auth_endpoints=auth_endpoints if auth else None,
+            )
 
-        # Save files using async I/O
-        local_files = []
-        for scenario_type, content in scenarios.items():
-            if content:
-                filename = scenario_gen.SCENARIO_FILES[scenario_type]
-                file_path = endpoint_dir / filename
-                async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-                    await f.write(content)
-                local_files.append({
-                    "path": str(file_path),
-                    "size": len(content),
-                    "tag": tag_name,
+            # Save files using async I/O
+            local_files = []
+            for scenario_type, content in scenarios.items():
+                if content:
+                    filename = scenario_gen.SCENARIO_FILES[scenario_type]
+                    file_path = endpoint_dir / filename
+                    async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                        await f.write(content)
+                    local_files.append({
+                        "path": str(file_path),
+                        "size": len(content),
+                        "tag": tag_name,
+                        "operation_id": operation_id,
+                        "scenario": scenario_type.value,
+                    })
+
+            # Update progress (success)
+            async with file_write_lock:
+                completed_count += 1
+                created_files.extend(local_files)
+                progress.update(task_id, completed=completed_count + failed_count)
+
+            return local_files
+
+        except Exception as e:
+            # Track failure but continue processing other endpoints
+            async with file_write_lock:
+                failed_count += 1
+                failed_endpoints.append({
+                    "endpoint": endpoint_info,
                     "operation_id": operation_id,
-                    "scenario": scenario_type.value,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
                 })
-
-        # Update progress
-        async with file_write_lock:
-            completed_count += 1
-            created_files.extend(local_files)
-            progress.update(task_id, completed=completed_count)
-
-        return local_files
+                progress.update(task_id, completed=completed_count + failed_count)
+                # Print error immediately so user sees it
+                progress.console.print(
+                    f"   [red]✗[/red] {tag_dir_name}/{operation_id}: {type(e).__name__}: {str(e)[:100]}"
+                )
+            return []
 
     # Process all endpoints in parallel with progress bar
     console.print(f"\n[bold cyan]🚀 Processing {num_endpoints} endpoints in parallel[/bold cyan]")
@@ -377,10 +398,27 @@ async def _generate_scenario_based_tests(
         # Run all concurrently (semaphore in generator limits actual API calls)
         await asyncio.gather(*tasks)
 
-    # Show final concurrency used
+    # Show summary
     rate_info = scenario_gen.get_rate_limit_info()
     console.print(f"\n[dim]Final rate limit: {rate_info.requests_per_minute} RPM, "
                   f"Concurrency used: {scenario_gen.current_concurrency}[/dim]")
+
+    # Report results
+    if failed_endpoints:
+        console.print(f"\n[bold yellow]⚠ Generation completed with {failed_count} failures[/bold yellow]")
+        console.print(f"   [green]✓ Succeeded:[/green] {completed_count}/{num_endpoints}")
+        console.print(f"   [red]✗ Failed:[/red] {failed_count}/{num_endpoints}")
+
+        # Show failure details
+        console.print(f"\n[bold red]Failed Endpoints:[/bold red]")
+        for failure in failed_endpoints[:10]:  # Show first 10
+            console.print(f"   • {failure['endpoint']}")
+            console.print(f"     [dim]{failure['error_type']}: {failure['error'][:200]}[/dim]")
+
+        if len(failed_endpoints) > 10:
+            console.print(f"   ... and {len(failed_endpoints) - 10} more failures")
+    else:
+        console.print(f"\n[bold green]✓ All {num_endpoints} endpoints generated successfully[/bold green]")
 
     # Write base files
     with console.status("[bold green]Creating base files..."):
