@@ -10,11 +10,12 @@ API Information:
 from locust import HttpUser, task, between, events, SequentialTaskSet, TaskSet
 import json
 import logging
+import traceback
 from typing import Dict, Any, Optional, List
 from urllib.parse import urljoin
 
 from test_data import TestDataGenerator
-from utils import ResponseValidator, RequestLogger, PerformanceMonitor
+from utils import ResponseValidator, RequestLogger, PerformanceMonitor, log_request_failure
 from config import LoadTestConfig
 
 # Configure logging
@@ -116,6 +117,9 @@ class BaseTaskMethods:
         self._initialize_attributes()
         self.request_count += 1
 
+        # Capture request body for error logging
+        request_body = kwargs.get("json") or kwargs.get("data")
+
         try:
             # Merge headers
             request_headers = {**self.default_headers, **kwargs.get("headers", {})}
@@ -140,7 +144,8 @@ class BaseTaskMethods:
             ) as response:
                 # Validate using caller-provided expected_status or method-based defaults
                 is_valid = response_validator.validate_response(
-                    response, method, path, expected_status=expected_status
+                    response, method, path, expected_status=expected_status,
+                    request_body=request_body
                 )
                 performance_monitor.record_response(response, method, path)
 
@@ -158,6 +163,13 @@ class BaseTaskMethods:
 
         except Exception as e:
             logger.error(f"Request failed {method} {path}: {e}")
+            log_request_failure(
+                str(e),
+                method=method, path=path,
+                expected_status=expected_status, actual_status=0,
+                request_body=request_body,
+                exception=e
+            )
             return None
 
     def _store_response_data(self, method_name: str, data: Dict):
