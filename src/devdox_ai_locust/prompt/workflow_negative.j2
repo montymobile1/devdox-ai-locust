@@ -1,4 +1,4 @@
-TASK: Generate NEGATIVE, EDGE CASE, and ERROR HANDLING test scenarios for the Locust workflow.
+TASK: Generate NEGATIVE and ERROR HANDLING test scenarios for the Locust workflow.
 
 ENDPOINTS TO TEST:
 {{ grouped_endpoints }}
@@ -22,34 +22,23 @@ REQUIREMENTS:
    - Invalid data types (string where number expected) - expect 400/422 (weight: 3)
    - Invalid format (bad email, phone format) - expect 400/422 (weight: 3)
    - Out of range values (negative when positive expected) - expect 400/422 (weight: 2)
-   - Excessively long strings - expect 400/422 (weight: 2)
 
-2. **EDGE CASE SCENARIOS** (Boundary Testing):
-   Generate @task methods for boundary conditions:
-   - Empty strings in optional fields (weight: 2)
-   - Null/None values where not expected - expect 400/422 (weight: 2)
-   - Zero values in numeric fields (weight: 2)
-   - Maximum length strings (weight: 2)
-   - Unicode and special characters (weight: 2)
-   - Empty arrays/objects (weight: 2)
-
-3. **ERROR HANDLING SCENARIOS** (HTTP Error Codes):
+2. **ERROR HANDLING SCENARIOS** (HTTP Error Codes):
    Generate @task methods for expected errors:
    - 400 Bad Request scenarios (weight: 3)
    - 401 Unauthorized - test without auth headers (weight: 2)
    - 403 Forbidden - test restricted operations (weight: 2)
    - 404 Not Found - test with non-existent IDs (weight: 3)
-   - 409 Conflict - test duplicate operations (weight: 2)
    - 422 Validation Error scenarios (weight: 3)
 
-4. **CLASS STRUCTURE**:
+3. **CLASS STRUCTURE**:
    ```python
    from base_workflow import BaseWorkflow
    import test_data
    import uuid
 
    class {{ class_name }}NegativeWorkflow(BaseWorkflow):
-       """Negative, edge case, and error handling tests for {{ tag_name }} endpoints"""
+       """Negative and error handling tests for {{ tag_name }} endpoints"""
 
        @task(3)
        def test_missing_required_field(self):
@@ -70,28 +59,16 @@ REQUIREMENTS:
                    response.success()
                else:
                    response.failure(f"Expected 404, got {response.status_code}")
-
-       @task(2)
-       def test_unauthorized_access(self):
-           """Test without auth - expect 401"""
-           original_headers = dict(self.client.headers)
-           self.client.headers.clear()
-           with self.client.get("/protected/path", catch_response=True) as response:
-               if response.status_code == 401:
-                   response.success()
-               else:
-                   response.failure(f"Expected 401, got {response.status_code}")
-           self.client.headers.update(original_headers)
    ```
 
-5. **IMPORTANT**:
+4. **IMPORTANT**:
    - All negative tests should expect and validate error responses
    - Use catch_response=True and mark as success() when expected error occurs
    - Mark as failure() when unexpected status code received
-   - Test both the error status code AND that the API handles it gracefully
+   - Do NOT include edge cases or boundary testing (separate file)
 
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.
-Generate ONE class with all negative, edge case, and error handling test methods.
+Generate ONE class with negative and error handling test methods.
 
 <code>your_complete_python_code_here</code>

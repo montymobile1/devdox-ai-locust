@@ -2,11 +2,13 @@
 Scenario-based Workflow Generator
 
 Generates separate workflow files for different test scenario types:
-- Positive + State scenarios (LLM-generated)
-- Negative + Edge + Error scenarios (LLM-generated)
-- Security scenarios (LLM-generated)
+- Positive scenarios (happy path)
+- Negative scenarios (validation errors + error handling)
+- Edge scenarios (boundary conditions)
+- State scenarios (state-dependent tests)
+- Security scenarios (injection, auth bypass)
 
-Uses 3 LLM calls per API tag to generate focused, high-quality test code.
+Uses 5 LLM calls per API tag to generate focused, high-quality test code.
 """
 
 import asyncio
@@ -22,8 +24,10 @@ logger = logging.getLogger(__name__)
 
 class ScenarioType(Enum):
     """Types of test scenarios (all LLM-generated)"""
-    POSITIVE = "positive"      # Happy path + state-dependent
-    NEGATIVE = "negative"      # Validation errors + edge cases + error handling
+    POSITIVE = "positive"      # Happy path tests
+    NEGATIVE = "negative"      # Validation errors + error handling
+    EDGE = "edge"              # Edge cases + boundary conditions
+    STATE = "state"            # State-dependent tests
     SECURITY = "security"      # Injection attacks + auth bypass
 
 
@@ -78,16 +82,20 @@ class ScenarioWorkflowGenerator:
     """
     Generates scenario-based workflow files using LLM.
 
-    Uses 3 LLM calls per tag:
-    - Call 1: Positive + State scenarios
-    - Call 2: Negative + Edge + Error scenarios
-    - Call 3: Security scenarios (injection, auth bypass)
+    Uses 5 LLM calls per tag for focused, non-truncated output:
+    - Call 1: Positive scenarios (happy path)
+    - Call 2: Negative scenarios (validation + error handling)
+    - Call 3: Edge scenarios (boundary conditions)
+    - Call 4: State scenarios (state-dependent)
+    - Call 5: Security scenarios (injection, auth bypass)
     """
 
     # Mapping of scenario types to output filenames
     SCENARIO_FILES = {
         ScenarioType.POSITIVE: "positive_workflow.py",
         ScenarioType.NEGATIVE: "negative_workflow.py",
+        ScenarioType.EDGE: "edge_workflow.py",
+        ScenarioType.STATE: "state_workflow.py",
         ScenarioType.SECURITY: "security_workflow.py",
     }
 
@@ -95,6 +103,8 @@ class ScenarioWorkflowGenerator:
     PROMPT_TEMPLATES = {
         ScenarioType.POSITIVE: "workflow_positive.j2",
         ScenarioType.NEGATIVE: "workflow_negative.j2",
+        ScenarioType.EDGE: "workflow_edge.j2",
+        ScenarioType.STATE: "workflow_state.j2",
         ScenarioType.SECURITY: "workflow_security.j2",
     }
 
@@ -135,8 +145,8 @@ class ScenarioWorkflowGenerator:
         Returns:
             TimeEstimate with calculated values
         """
-        # 3 LLM calls per tag (positive + negative + security)
-        total_calls = num_tags * 3
+        # 5 LLM calls per tag (positive + negative + edge + state + security)
+        total_calls = num_tags * 5
 
         rpm = self._rate_limit_info.requests_per_minute if self._rate_limit_info else 60
         estimated_minutes = total_calls / rpm
@@ -189,35 +199,27 @@ class ScenarioWorkflowGenerator:
         """
         results = {}
 
-        # Generate all scenarios in parallel using LLM
-        llm_tasks = [
-            self._generate_llm_scenario(
-                ScenarioType.POSITIVE,
-                tag_name,
-                endpoints,
-                base_workflow_content,
-                test_data_content,
-                auth_endpoints,
-            ),
-            self._generate_llm_scenario(
-                ScenarioType.NEGATIVE,
-                tag_name,
-                endpoints,
-                base_workflow_content,
-                test_data_content,
-                auth_endpoints,
-            ),
-            self._generate_llm_scenario(
-                ScenarioType.SECURITY,
-                tag_name,
-                endpoints,
-                base_workflow_content,
-                test_data_content,
-                auth_endpoints,
-            ),
+        # Generate all 5 scenarios in parallel using LLM
+        scenario_types = [
+            ScenarioType.POSITIVE,
+            ScenarioType.NEGATIVE,
+            ScenarioType.EDGE,
+            ScenarioType.STATE,
+            ScenarioType.SECURITY,
         ]
 
-        scenario_types = [ScenarioType.POSITIVE, ScenarioType.NEGATIVE, ScenarioType.SECURITY]
+        llm_tasks = [
+            self._generate_llm_scenario(
+                scenario_type,
+                tag_name,
+                endpoints,
+                base_workflow_content,
+                test_data_content,
+                auth_endpoints,
+            )
+            for scenario_type in scenario_types
+        ]
+
         llm_results = await asyncio.gather(*llm_tasks, return_exceptions=True)
 
         for scenario_type, result in zip(scenario_types, llm_results):

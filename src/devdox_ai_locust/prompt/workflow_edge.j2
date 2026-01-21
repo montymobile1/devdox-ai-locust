@@ -1,0 +1,95 @@
+TASK: Generate EDGE CASE and BOUNDARY test scenarios for the Locust workflow.
+
+ENDPOINTS TO TEST:
+{{ grouped_endpoints }}
+
+{% if auth_endpoints %}
+AUTHENTICATION ENDPOINTS:
+{{ auth_endpoints }}
+{% endif %}
+
+BASE WORKFLOW (inherit from this):
+{{ base_workflow }}
+
+TEST DATA AVAILABLE:
+{{ test_data_content }}
+
+REQUIREMENTS:
+
+1. **EDGE CASE SCENARIOS** (Boundary Testing):
+   Generate @task methods for boundary conditions:
+   - Empty strings in optional fields (weight: 2)
+   - Null/None values where allowed (weight: 2)
+   - Zero values in numeric fields (weight: 2)
+   - Maximum length strings (weight: 2)
+   - Minimum valid values (weight: 2)
+   - Maximum valid values (weight: 2)
+
+2. **SPECIAL CHARACTER HANDLING**:
+   Generate @task methods for special inputs:
+   - Unicode characters in text fields (weight: 2)
+   - Special characters (!@#$%^&*) (weight: 2)
+   - Whitespace-only strings (weight: 2)
+   - Leading/trailing whitespace (weight: 2)
+   - Newlines and tabs in text (weight: 2)
+
+3. **COLLECTION BOUNDARIES**:
+   Generate @task methods for array/object boundaries:
+   - Empty arrays where allowed (weight: 2)
+   - Empty objects where allowed (weight: 2)
+   - Single-element arrays (weight: 2)
+   - Large but valid collections (weight: 2)
+
+4. **CLASS STRUCTURE**:
+   ```python
+   from base_workflow import BaseWorkflow
+   import test_data
+
+   class {{ class_name }}EdgeWorkflow(BaseWorkflow):
+       """Edge case and boundary tests for {{ tag_name }} endpoints"""
+
+       @task(2)
+       def test_empty_optional_string(self):
+           """Test with empty string in optional field"""
+           data = test_data.get_valid_data()
+           data["optional_field"] = ""
+           with self.client.post("/path", json=data, catch_response=True) as response:
+               if response.status_code in [200, 201, 400, 422]:
+                   response.success()  # Either accepted or properly rejected
+               else:
+                   response.failure(f"Unexpected status: {response.status_code}")
+
+       @task(2)
+       def test_unicode_characters(self):
+           """Test with unicode characters"""
+           data = test_data.get_valid_data()
+           data["name"] = "Test Name"
+           with self.client.post("/path", json=data, catch_response=True) as response:
+               if response.status_code in [200, 201]:
+                   response.success()
+               else:
+                   response.failure(f"Unicode not accepted: {response.status_code}")
+
+       @task(2)
+       def test_zero_numeric_value(self):
+           """Test with zero in numeric field"""
+           data = test_data.get_valid_data()
+           data["quantity"] = 0
+           with self.client.post("/path", json=data, catch_response=True) as response:
+               if response.status_code in [200, 201, 400, 422]:
+                   response.success()
+               else:
+                   response.failure(f"Unexpected status: {response.status_code}")
+   ```
+
+5. **IMPORTANT**:
+   - Edge cases may succeed or fail - both are valid outcomes
+   - Focus on boundary conditions, not validation errors
+   - Use catch_response=True for proper Locust reporting
+   - Do NOT include security tests or state-dependent tests
+
+OUTPUT:
+Return ONLY valid Python code in <code></code> tags.
+Generate ONE class with edge case test methods.
+
+<code>your_complete_python_code_here</code>

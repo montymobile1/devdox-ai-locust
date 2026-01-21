@@ -1,4 +1,4 @@
-TASK: Generate POSITIVE and STATE-DEPENDENT test scenarios for the Locust workflow.
+TASK: Generate POSITIVE (happy path) test scenarios for the Locust workflow.
 
 ENDPOINTS TO TEST:
 {{ grouped_endpoints }}
@@ -16,29 +16,20 @@ TEST DATA AVAILABLE:
 
 REQUIREMENTS:
 
-1. **POSITIVE TEST SCENARIOS** (Happy Path):
+1. **POSITIVE TEST SCENARIOS** (Happy Path Only):
    Generate @task methods that test successful API operations:
    - Valid data with all required fields (weight: 10)
    - Valid data with optional fields included (weight: 8)
-   - Boundary value testing with valid min/max values (weight: 5)
-   - Different valid data formats (weight: 5)
+   - Different valid data combinations (weight: 5)
+   - Various valid input formats accepted by the API (weight: 5)
 
-2. **STATE-DEPENDENT SCENARIOS**:
-   Generate @task methods that test resource state interactions:
-   - Operations that depend on previously created resources (weight: 5)
-   - Sequential operations (create -> read -> update -> delete) (weight: 5)
-   - Duplicate creation attempts expecting 409 Conflict (weight: 3)
-   - Operations on resources in specific states (weight: 3)
-
-3. **CLASS STRUCTURE**:
+2. **CLASS STRUCTURE**:
    ```python
    from base_workflow import BaseWorkflow
    import test_data
 
    class {{ class_name }}PositiveWorkflow(BaseWorkflow):
-       """Positive and state-dependent tests for {{ tag_name }} endpoints"""
-
-       created_resources = []  # Store IDs for state-dependent tests
+       """Positive (happy path) tests for {{ tag_name }} endpoints"""
 
        def on_start(self):
            super().on_start()
@@ -46,28 +37,27 @@ REQUIREMENTS:
 
        @task(10)
        def test_endpoint_success(self):
-           """Test successful operation"""
+           """Test successful operation with valid data"""
            data = test_data.get_valid_data()
            with self.client.post("/path", json=data, catch_response=True) as response:
-               if response.status_code == 201:
-                   self.created_resources.append(response.json().get('id'))
+               if response.status_code in [200, 201]:
                    response.success()
                else:
-                   response.failure(f"Expected 201, got {response.status_code}")
+                   response.failure(f"Expected 200/201, got {response.status_code}")
    ```
 
-4. **DATA FLOW**:
-   - Store created resource IDs in instance variables
-   - Use stored IDs in subsequent operations
-   - Clean up resources in on_stop() if needed
-
-5. **VALIDATION**:
+3. **VALIDATION**:
    - Check expected success status codes (200, 201, 204)
    - Validate response structure when applicable
    - Use catch_response=True for proper Locust reporting
 
+4. **FOCUS**:
+   - ONLY generate happy path tests
+   - Do NOT include error handling, edge cases, or state-dependent tests
+   - Keep tests simple and focused on successful operations
+
 OUTPUT:
 Return ONLY valid Python code in <code></code> tags.
-Generate ONE class with all positive and state-dependent test methods.
+Generate ONE class with positive test methods only.
 
 <code>your_complete_python_code_here</code>

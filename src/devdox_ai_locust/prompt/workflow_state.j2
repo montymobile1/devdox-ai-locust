@@ -1,0 +1,107 @@
+TASK: Generate STATE-DEPENDENT test scenarios for the Locust workflow.
+
+ENDPOINTS TO TEST:
+{{ grouped_endpoints }}
+
+{% if auth_endpoints %}
+AUTHENTICATION ENDPOINTS:
+{{ auth_endpoints }}
+{% endif %}
+
+BASE WORKFLOW (inherit from this):
+{{ base_workflow }}
+
+TEST DATA AVAILABLE:
+{{ test_data_content }}
+
+REQUIREMENTS:
+
+1. **STATE-DEPENDENT SCENARIOS** (Resource Lifecycle):
+   Generate @task methods that test resource state interactions:
+   - Create resource, then read it back (weight: 5)
+   - Create resource, then update it (weight: 5)
+   - Create resource, then delete it (weight: 4)
+   - Full CRUD cycle: create -> read -> update -> delete (weight: 3)
+
+2. **DUPLICATE AND CONFLICT SCENARIOS**:
+   Generate @task methods for state conflicts:
+   - Duplicate creation attempts - expect 409 Conflict (weight: 3)
+   - Update non-existent resource - expect 404 (weight: 3)
+   - Delete non-existent resource - expect 404 (weight: 3)
+   - Double delete same resource - expect 404 on second (weight: 2)
+
+3. **DEPENDENCY SCENARIOS**:
+   Generate @task methods for dependent operations:
+   - Operations requiring prior resource creation (weight: 3)
+   - Operations on resources in specific states (weight: 3)
+   - Cascade operations (delete parent affects children) (weight: 2)
+
+4. **CLASS STRUCTURE**:
+   ```python
+   from base_workflow import BaseWorkflow
+   import test_data
+
+   class {{ class_name }}StateWorkflow(BaseWorkflow):
+       """State-dependent tests for {{ tag_name }} endpoints"""
+
+       created_resources = []  # Store IDs for state-dependent tests
+
+       def on_start(self):
+           super().on_start()
+           self.created_resources = []
+
+       def on_stop(self):
+           # Clean up created resources
+           for resource_id in self.created_resources:
+               self.client.delete(f"/path/{resource_id}")
+           super().on_stop()
+
+       @task(5)
+       def test_create_then_read(self):
+           """Test create followed by read"""
+           data = test_data.get_valid_data()
+           with self.client.post("/path", json=data, catch_response=True) as response:
+               if response.status_code == 201:
+                   resource_id = response.json().get('id')
+                   self.created_resources.append(resource_id)
+                   response.success()
+                   # Now read it back
+                   with self.client.get(f"/path/{resource_id}", catch_response=True) as read_resp:
+                       if read_resp.status_code == 200:
+                           read_resp.success()
+                       else:
+                           read_resp.failure(f"Read failed: {read_resp.status_code}")
+               else:
+                   response.failure(f"Create failed: {response.status_code}")
+
+       @task(3)
+       def test_duplicate_create_conflict(self):
+           """Test duplicate creation - expect 409"""
+           data = test_data.get_valid_data()
+           # Create first
+           resp1 = self.client.post("/path", json=data)
+           if resp1.status_code == 201:
+               self.created_resources.append(resp1.json().get('id'))
+               # Try duplicate
+               with self.client.post("/path", json=data, catch_response=True) as resp2:
+                   if resp2.status_code == 409:
+                       resp2.success()
+                   else:
+                       resp2.failure(f"Expected 409, got {resp2.status_code}")
+   ```
+
+5. **DATA FLOW**:
+   - Store created resource IDs in instance variables
+   - Use stored IDs in subsequent operations
+   - Clean up resources in on_stop()
+
+6. **IMPORTANT**:
+   - Focus on operations that depend on prior state
+   - Use catch_response=True for proper Locust reporting
+   - Do NOT include simple validation or security tests
+
+OUTPUT:
+Return ONLY valid Python code in <code></code> tags.
+Generate ONE class with state-dependent test methods.
+
+<code>your_complete_python_code_here</code>
