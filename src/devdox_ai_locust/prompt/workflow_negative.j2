@@ -18,6 +18,7 @@ TEST DATA MODULE (test_data.py):
 
 === ALLOWED IMPORTS (use ONLY these) ===
 ```python
+import random
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
@@ -37,10 +38,14 @@ Before writing code, you MUST reason through these steps:
 - List ALL required fields (exact names!)
 - List optional fields
 - Note field types - these determine what "invalid" means
+- **IMPORTANT**: Note any ENUM fields - look for "allowed values:" in the schema
+- **IMPORTANT**: Note any PATTERN constraints - look for "pattern=" in constraints
 
 **STEP 3 - PLAN NEGATIVE TESTS (skip if response-testing endpoint):**
 - Missing required field test: Only if there ARE required fields
 - Invalid type test: Send wrong type for a field (string where int expected)
+- Invalid enum test: If field has enum, send a value NOT in the allowed list
+- Invalid pattern test: If field has pattern constraint, send a value that doesn't match
 - Non-existent ID test: For endpoints with path params, use obviously fake IDs:
   - Integer params: use 999999999 (very large number)
   - String/UUID params: use "nonexistent-id-12345"
@@ -55,11 +60,38 @@ Before writing code, you MUST reason through these steps:
 - Not found: 404
 - Response-testing endpoints: Whatever status is in the path (e.g., /responses/404 → expect 404)
 
+=== CRITICAL: RESPONSE VALIDATION PATTERN ===
+
+Negative tests MUST validate that the server CORRECTLY rejects invalid input.
+Use this pattern - call success() when server returns expected error code:
+
+```python
+@task(3)
+def test_missing_required_field(self):
+    data = {"optional_field": "value"}  # Missing required field
+    with self.client.post("/endpoint", json=data, catch_response=True) as response:
+        if response.status_code in [400, 422]:
+            response.success()  # Server correctly rejected invalid input
+        else:
+            response.failure(f"Expected 400/422, got {response.status_code}")
+
+@task(3)
+def test_not_found(self):
+    with self.client.get("/endpoint/999999999", catch_response=True) as response:
+        if response.status_code == 404:
+            response.success()  # Server correctly returned not found
+        else:
+            response.failure(f"Expected 404, got {response.status_code}")
+```
+
+**DO NOT** unconditionally call response.failure() - that marks the test as failed even when the server behaves correctly!
+
 === CONSTRAINTS ===
 - ALL test values must be SHORT: max 50 characters
 - Keep total code under 100 lines
 - For integer path params, use integers (999999), not UUIDs
 - BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
+- Use catch_response=True for ALL requests
 
 === OUTPUT FORMAT ===
 
@@ -77,6 +109,8 @@ Path params: [list with types]
 STEP 2 - SCHEMA FIELDS:
 Required: [list exact names and types, or "none"]
 Optional: [list exact names and types, or "none"]
+Enums: [list any fields with "allowed values:" and their valid values]
+Patterns: [list any fields with pattern constraints]
 
 STEP 3 - NEGATIVE TEST PLAN:
 [List what negative tests make sense for this endpoint]
@@ -89,6 +123,7 @@ STEP 5 - EXPECTED STATUS CODES:
 </analysis>
 
 <code>
+import random
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator

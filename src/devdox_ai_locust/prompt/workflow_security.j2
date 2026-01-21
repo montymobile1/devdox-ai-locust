@@ -56,6 +56,27 @@ For each string field, plan:
 - 500: POTENTIAL VULNERABILITY (bad - server error from injection)
 - 200/201: May or may not be vulnerable (depends on if payload was sanitized)
 
+=== CRITICAL: RESPONSE VALIDATION PATTERN ===
+
+Security tests MUST validate server responses correctly.
+Use this pattern:
+
+```python
+@task(3)
+def test_sql_injection(self):
+    payload = random.choice(SQL_PAYLOADS)
+    data = {"name": payload, "other_field": "valid"}
+    with self.client.post("/endpoint", json=data, catch_response=True) as response:
+        if response.status_code in [400, 422]:
+            response.success()  # Server properly rejected injection
+        elif response.status_code == 500:
+            response.failure("POTENTIAL VULNERABILITY: Server error from injection")
+        else:
+            response.success()  # 200/201 - payload was likely sanitized
+```
+
+**DO NOT** unconditionally call response.failure() - that marks the test as failed even when the server handles the injection correctly!
+
 === CONSTRAINTS ===
 - ALL payloads must be SHORT: max 100 characters
 - Keep total code under 80 lines
