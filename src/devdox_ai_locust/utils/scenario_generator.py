@@ -380,6 +380,9 @@ class ScenarioWorkflowGenerator:
             # LLMs sometimes ignore the template and generate their own class names
             content = self._fix_class_name(content, class_name, scenario_type.value)
 
+            # Fix bytes literals with unicode (b'tëst' → 'tëst'.encode('utf-8'))
+            content = self._fix_bytes_literals(content)
+
             is_valid, error = self._validate_python_code(content)
             if is_valid:
                 return content
@@ -846,6 +849,30 @@ class ScenarioWorkflowGenerator:
                 )
 
         return code
+
+    def _fix_bytes_literals(self, code: str) -> str:
+        """
+        Fix bytes literals containing non-ASCII characters.
+
+        LLMs sometimes generate b'tëst' which is invalid Python (bytes can only
+        contain ASCII). This converts them to 'tëst'.encode('utf-8').
+        """
+        import re
+
+        def fix_match(match):
+            quote_char = match.group(1)  # ' or "
+            content = match.group(2)
+            # Check if content has non-ASCII
+            try:
+                content.encode('ascii')
+                return match.group(0)  # Valid ASCII, keep as-is
+            except UnicodeEncodeError:
+                # Has non-ASCII, convert to .encode() form
+                return f"{quote_char}{content}{quote_char}.encode('utf-8')"
+
+        # Match b'...' or b"..." - non-greedy to handle multiple on same line
+        pattern = r"b(['\"])([^'\"]*?)\1"
+        return re.sub(pattern, fix_match, code)
 
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
         """Validate Python syntax and return error details if invalid"""
