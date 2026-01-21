@@ -21,29 +21,15 @@ from locust.runners import MasterRunner
 logger = logging.getLogger(__name__)
 
 
-def log_request_failure(method: str = None, path: str = None,
-                        request_body: Any = None, response_body: str = None):
+def log_request_failure(request_body: Any = None, response_body: str = None):
     """
     Log a request failure with full traceback showing workflow path.
 
     Output format mimics Python's native traceback.
     """
-    # Build traceback section
-    lines = [
-        "",
-        "Traceback (most recent call last):"
-    ]
+    lines = [""]
 
-    # Get full stack trace with proper formatting
-    stack = traceback.extract_stack()[:-1]  # Exclude this function
-    for frame in stack:
-        lines.append(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}')
-        if frame.line:
-            lines.append(f"    {frame.line}")
-
-    # Add request/response context
-    if method and path:
-        lines.append(f"  Request: {method.upper()} {path}")
+    # Add request/response context first
     if request_body is not None:
         body_str = json.dumps(request_body, default=str) if isinstance(request_body, (dict, list)) else str(request_body)
         if len(body_str) > 500:
@@ -52,6 +38,17 @@ def log_request_failure(method: str = None, path: str = None,
     if response_body:
         resp_str = response_body[:500] + "..." if len(response_body) > 500 else response_body
         lines.append(f"  Response Body: {resp_str}")
+
+    # Add traceback
+    lines.append("")
+    lines.append("Traceback (most recent call last):")
+
+    # Get full stack trace with proper formatting
+    stack = traceback.extract_stack()[:-1]  # Exclude this function
+    for frame in stack:
+        lines.append(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}')
+        if frame.line:
+            lines.append(f"    {frame.line}")
 
     lines.append("")
     logger.error("\n".join(lines))
@@ -139,10 +136,7 @@ class ResponseValidator:
                 resp_body = response.text[:1000] if response.text else None
             except Exception:
                 resp_body = None
-            log_request_failure(
-                method=method_upper, path=endpoint,
-                request_body=request_body, response_body=resp_body
-            )
+            log_request_failure(request_body=request_body, response_body=resp_body)
             is_valid = False
 
         # Validate response time
@@ -267,7 +261,7 @@ class PerformanceMonitor:
     def on_request_event(self, request_type, name, response_time, response_length, exception, context):
         if exception:
             logger.error(f"Request failed: {request_type} {name} - {exception}")
-            log_request_failure(method=request_type, path=name)
+            log_request_failure()
 
     def get_statistics(self) -> Dict[str, Any]:
         if not self.metrics:

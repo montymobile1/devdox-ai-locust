@@ -163,10 +163,7 @@ class BaseTaskMethods:
 
         except Exception as e:
             logger.error(f"Request failed {method} {path}: {e}")
-            log_request_failure(
-                method=method, path=path,
-                request_body=request_body
-            )
+            log_request_failure(request_body=request_body)
             return None
 
     def _store_response_data(self, method_name: str, data: Dict):
