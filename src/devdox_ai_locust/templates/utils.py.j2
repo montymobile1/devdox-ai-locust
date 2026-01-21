@@ -5,13 +5,11 @@ Utility classes for Locust load testing
 import json
 import logging
 import time
-import traceback
-import sys
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 import csv
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 import statistics
 from collections import defaultdict
 
@@ -19,195 +17,6 @@ import requests
 from locust.runners import MasterRunner
 
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# Enhanced Error Logging
-# =============================================================================
-
-@dataclass
-class RequestContext:
-    """Captures full request details for error logging"""
-    method: str
-    url: str
-    path: str
-    headers: Dict[str, str] = field(default_factory=dict)
-    body: Optional[Any] = None
-    params: Optional[Dict[str, Any]] = None
-    files: Optional[Dict[str, Any]] = None
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    def to_log_string(self) -> str:
-        """Format request details for logging"""
-        lines = [
-            f"  Method: {self.method}",
-            f"  URL: {self.url}",
-            f"  Path: {self.path}",
-            f"  Timestamp: {self.timestamp}",
-        ]
-        if self.headers:
-            # Mask sensitive headers
-            safe_headers = {k: ('***' if k.lower() in ['authorization', 'x-api-key', 'cookie'] else v)
-                          for k, v in self.headers.items()}
-            lines.append(f"  Headers: {json.dumps(safe_headers, indent=4, default=str)}")
-        if self.params:
-            lines.append(f"  Query Params: {json.dumps(self.params, indent=4, default=str)}")
-        if self.body is not None:
-            body_str = json.dumps(self.body, indent=4, default=str) if isinstance(self.body, (dict, list)) else str(self.body)
-            # Truncate very long bodies
-            if len(body_str) > 2000:
-                body_str = body_str[:2000] + "\n    ... [truncated]"
-            lines.append(f"  Request Body: {body_str}")
-        if self.files:
-            lines.append(f"  Files: {list(self.files.keys())}")
-        return "\n".join(lines)
-
-
-@dataclass
-class ResponseContext:
-    """Captures full response details for error logging"""
-    status_code: int
-    headers: Dict[str, str] = field(default_factory=dict)
-    body: Optional[str] = None
-    elapsed_ms: float = 0
-    reason: str = ""
-
-    def to_log_string(self) -> str:
-        """Format response details for logging"""
-        lines = [
-            f"  Status Code: {self.status_code}",
-            f"  Reason: {self.reason}",
-            f"  Response Time: {self.elapsed_ms:.2f}ms",
-        ]
-        if self.headers:
-            lines.append(f"  Response Headers: {json.dumps(dict(self.headers), indent=4, default=str)}")
-        if self.body:
-            body_str = self.body
-            # Truncate very long bodies
-            if len(body_str) > 2000:
-                body_str = body_str[:2000] + "\n    ... [truncated]"
-            lines.append(f"  Response Body: {body_str}")
-        return "\n".join(lines)
-
-
-@dataclass
-class ErrorContext:
-    """Full context for error logging"""
-    error_type: str  # "validation_failed", "connection_error", "timeout", "exception"
-    message: str
-    request: Optional[RequestContext] = None
-    response: Optional[ResponseContext] = None
-    expected_status: Optional[List[int]] = None
-    actual_status: Optional[int] = None
-    exception: Optional[Exception] = None
-    stack_trace: Optional[str] = None
-
-
-def log_failure(error_ctx: ErrorContext):
-    """
-    Log a failure with full context for debugging.
-
-    This is the main function to call when something goes wrong.
-    It provides all the details needed to understand what happened.
-    """
-    separator = "=" * 80
-
-    # Build the log message
-    lines = [
-        "",
-        separator,
-        f"REQUEST FAILURE: {error_ctx.error_type.upper()}",
-        separator,
-        f"Error: {error_ctx.message}",
-    ]
-
-    # Add expected vs actual status
-    if error_ctx.expected_status is not None:
-        lines.append(f"Expected Status Codes: {error_ctx.expected_status}")
-    if error_ctx.actual_status is not None:
-        lines.append(f"Actual Status Code: {error_ctx.actual_status}")
-        # Explain status code 0
-        if error_ctx.actual_status == 0:
-            lines.append("  NOTE: Status code 0 means NO RESPONSE was received from the server.")
-            lines.append("  Possible causes: connection refused, timeout, DNS failure, server not running")
-
-    # Add request details
-    if error_ctx.request:
-        lines.append("")
-        lines.append("REQUEST DETAILS:")
-        lines.append(error_ctx.request.to_log_string())
-
-    # Add response details
-    if error_ctx.response:
-        lines.append("")
-        lines.append("RESPONSE DETAILS:")
-        lines.append(error_ctx.response.to_log_string())
-
-    # Add exception details
-    if error_ctx.exception:
-        lines.append("")
-        lines.append(f"EXCEPTION TYPE: {type(error_ctx.exception).__name__}")
-        lines.append(f"EXCEPTION MESSAGE: {str(error_ctx.exception)}")
-
-    # Add stack trace
-    if error_ctx.stack_trace:
-        lines.append("")
-        lines.append("STACK TRACE:")
-        lines.append(error_ctx.stack_trace)
-
-    lines.append(separator)
-    lines.append("")
-
-    # Log the full message
-    logger.error("\n".join(lines))
-
-
-def capture_exception_context() -> str:
-    """Capture the current exception's stack trace"""
-    return traceback.format_exc()
-
-
-def create_request_context(method: str, path: str, url: str, **kwargs) -> RequestContext:
-    """Create a RequestContext from request arguments"""
-    return RequestContext(
-        method=method.upper(),
-        path=path,
-        url=url,
-        headers=kwargs.get('headers', {}),
-        body=kwargs.get('json') or kwargs.get('data'),
-        params=kwargs.get('params'),
-        files=kwargs.get('files'),
-    )
-
-
-def create_response_context(response) -> ResponseContext:
-    """Create a ResponseContext from a response object"""
-    try:
-        body = response.text[:5000] if response.text else None
-    except Exception:
-        body = "<unable to read response body>"
-
-    try:
-        elapsed_ms = response.elapsed.total_seconds() * 1000
-    except Exception:
-        elapsed_ms = 0
-
-    try:
-        headers = dict(response.headers)
-    except Exception:
-        headers = {}
-
-    try:
-        reason = response.reason or ""
-    except Exception:
-        reason = ""
-
-    return ResponseContext(
-        status_code=getattr(response, 'status_code', 0),
-        headers=headers,
-        body=body,
-        elapsed_ms=elapsed_ms,
-        reason=reason,
-    )
 
 
 @dataclass
@@ -224,7 +33,7 @@ class ResponseMetric:
 
 
 class ResponseValidator:
-    """Validates HTTP responses against expected criteria with enhanced error logging"""
+    """Validates HTTP responses against expected criteria"""
 
     def __init__(self):
         # Default validation rules by HTTP method (fallback when no expected_status provided)
@@ -255,20 +64,9 @@ class ResponseValidator:
                 'max_response_time_ms': 2000
             }
         }
-        # Store current request context for error logging
-        self._current_request_context: Optional[RequestContext] = None
-
-    def set_request_context(self, request_ctx: RequestContext):
-        """Set the current request context for detailed error logging"""
-        self._current_request_context = request_ctx
-
-    def clear_request_context(self):
-        """Clear the current request context"""
-        self._current_request_context = None
 
     def validate_response(self, response, method: str, endpoint: str,
-                          expected_status: Optional[List[int]] = None,
-                          request_context: Optional[RequestContext] = None) -> bool:
+                          expected_status: Optional[List[int]] = None) -> bool:
         """Validate HTTP response against expected criteria.
 
         Args:
@@ -278,18 +76,13 @@ class ResponseValidator:
             expected_status: Optional list of valid status codes from OpenAPI spec.
                            If provided, overrides the default method-based rules.
                            This allows per-endpoint validation (e.g., POST that returns 422).
-            request_context: Optional RequestContext for detailed error logging
 
         Returns:
             bool: True if response is valid, False otherwise
         """
         is_valid = True
-        validation_errors = []
         method_upper = method.upper()
         rules = self.validation_rules.get(method_upper, {})
-
-        # Use provided request context or fall back to stored one
-        req_ctx = request_context or self._current_request_context
 
         # Use caller-provided expected_status if available (from OpenAPI spec),
         # otherwise fall back to method-based defaults
@@ -300,22 +93,20 @@ class ResponseValidator:
 
         # Validate status code
         if response.status_code not in valid_status_codes:
-            validation_errors.append(f"Unexpected status code: got {response.status_code}, expected one of {valid_status_codes}")
+            logger.warning(f"Unexpected status code {response.status_code} for {method_upper} {endpoint} (expected one of {valid_status_codes})")
             is_valid = False
 
         # Validate response time
         max_time = rules.get('max_response_time_ms', 5000)
-        elapsed_ms = response.elapsed.total_seconds() * 1000
-        if elapsed_ms > max_time:
-            validation_errors.append(f"Slow response: {elapsed_ms:.2f}ms exceeds max {max_time}ms")
-            # Note: slow response is a warning, not a failure
-            logger.warning(f"Slow response {elapsed_ms:.2f}ms for {method_upper} {endpoint} (max: {max_time}ms)")
+        if response.elapsed.total_seconds() * 1000 > max_time:
+            logger.warning(f"Slow response {response.elapsed.total_seconds() * 1000:.2f}ms for {method_upper} {endpoint}")
+            is_valid = False
 
         # Check forbidden headers (security)
         forbidden_headers = rules.get('forbidden_headers', [])
         for header in forbidden_headers:
             if header.lower() in [h.lower() for h in response.headers.keys()]:
-                validation_errors.append(f"Forbidden header '{header}' present in response")
+                logger.warning(f"Forbidden header '{header}' present for {method_upper} {endpoint}")
                 is_valid = False
 
         # Validate JSON response structure
@@ -323,24 +114,10 @@ class ResponseValidator:
             try:
                 json_data = response.json()
                 if not self._validate_json_structure(json_data, method_upper, endpoint):
-                    validation_errors.append("Invalid JSON structure in response")
                     is_valid = False
-            except json.JSONDecodeError as e:
-                validation_errors.append(f"Invalid JSON response: {str(e)}")
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON response for {method_upper} {endpoint}")
                 is_valid = False
-
-        # If validation failed, log detailed error context
-        if not is_valid:
-            response_ctx = create_response_context(response)
-            error_ctx = ErrorContext(
-                error_type="validation_failed",
-                message=" | ".join(validation_errors),
-                request=req_ctx,
-                response=response_ctx,
-                expected_status=valid_status_codes,
-                actual_status=response.status_code,
-            )
-            log_failure(error_ctx)
 
         return is_valid
 
@@ -361,7 +138,7 @@ class ResponseValidator:
 
 
 class RequestLogger:
-    """Logs HTTP requests for debugging and analysis with enhanced error details"""
+    """Logs HTTP requests for debugging and analysis"""
 
     def __init__(self, log_file: str = "requests.log"):
         self.log_file = log_file
@@ -375,43 +152,17 @@ class RequestLogger:
         self.request_logger.addHandler(self.file_handler)
         self.request_logger.setLevel(logging.INFO)
 
-        # Store last request for error context
-        self._last_request_context: Optional[RequestContext] = None
-
-    def log_request(self, method: str, url: str, path: str, kwargs: Dict) -> RequestContext:
-        """Log request and return context for error logging.
-
-        Returns:
-            RequestContext that can be used for detailed error logging
-        """
-        # Create and store request context
-        request_ctx = create_request_context(method, path, url, **kwargs)
-        self._last_request_context = request_ctx
-
-        # Log basic info at INFO level
+    @staticmethod
+    def log_request(method: str, url: str, kwargs: Dict):
         logger.info(f"REQUEST: {method.upper()} {url}")
-
-        # Log details at INFO level (previously DEBUG - now visible by default for debugging)
         if 'params' in kwargs and kwargs['params']:
-            logger.info(f"  Query params: {kwargs['params']}")
+            logger.debug(f"Query params: {kwargs['params']}")
         if 'json' in kwargs and kwargs['json']:
-            body_preview = json.dumps(kwargs['json'], default=str)
-            if len(body_preview) > 500:
-                body_preview = body_preview[:500] + "..."
-            logger.info(f"  JSON body: {body_preview}")
+            logger.debug(f"JSON body: {json.dumps(kwargs['json'], indent=2)}")
         if 'data' in kwargs and kwargs['data']:
-            logger.info(f"  Form data: {kwargs['data']}")
-        if 'files' in kwargs and kwargs['files']:
-            logger.info(f"  Files: {list(kwargs['files'].keys())}")
-
-        return request_ctx
-
-    def get_last_request_context(self) -> Optional[RequestContext]:
-        """Get the last request context for error logging"""
-        return self._last_request_context
+            logger.debug(f"Form data: {kwargs['data']}")
 
     def log_response(self, response, method: str, url: str):
-        """Log response details"""
         self.requests_logged += 1
         log_entry = {
             'timestamp': datetime.now().isoformat(),
@@ -422,18 +173,10 @@ class RequestLogger:
             'response_size': len(response.content) if response.content else 0
         }
         self.request_logger.info(json.dumps(log_entry))
-
-        # Log error responses with full details
         if response.status_code >= 400:
-            response_ctx = create_response_context(response)
-            error_ctx = ErrorContext(
-                error_type="http_error",
-                message=f"HTTP {response.status_code} error for {method.upper()} {url}",
-                request=self._last_request_context,
-                response=response_ctx,
-                actual_status=response.status_code,
-            )
-            log_failure(error_ctx)
+            logger.error(f"ERROR RESPONSE: {response.status_code} for {method.upper()} {url}")
+            if response.text:
+                logger.error(f"Error details: {response.text[:500]}")
 
 
 class PerformanceMonitor:
@@ -472,32 +215,9 @@ class PerformanceMonitor:
         if not metric.success:
             self.error_counts[endpoint_key] += 1
 
-    def on_request_event(self, request_type, name, response_time, response_length, exception, context,
-                         request_context: Optional[RequestContext] = None):
-        """Handle Locust request event with enhanced error logging"""
+    def on_request_event(self, request_type, name, response_time, response_length, exception, context):
         if exception:
-            # Determine error type from exception
-            exception_name = type(exception).__name__
-            if 'ConnectionError' in exception_name or 'Connection' in str(exception):
-                error_type = "connection_error"
-            elif 'Timeout' in exception_name or 'timeout' in str(exception).lower():
-                error_type = "timeout"
-            elif 'SSL' in exception_name:
-                error_type = "ssl_error"
-            else:
-                error_type = "request_exception"
-
-            # Create error context with all available information
-            error_ctx = ErrorContext(
-                error_type=error_type,
-                message=f"{request_type} {name} failed: {str(exception)}",
-                request=request_context,
-                expected_status=None,
-                actual_status=0,  # No response received
-                exception=exception,
-                stack_trace=traceback.format_exc() if sys.exc_info()[0] else None,
-            )
-            log_failure(error_ctx)
+            logger.error(f"Request failed: {request_type} {name} - {exception}")
 
     def get_statistics(self) -> Dict[str, Any]:
         if not self.metrics:
