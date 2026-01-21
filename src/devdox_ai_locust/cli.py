@@ -287,10 +287,18 @@ async def _generate_scenario_based_tests(
     workflows_dir = output_dir / "workflows"
     endpoint_idx = 0
 
+    # Helper to sanitize directory names
+    def sanitize_dir_name(name: str) -> str:
+        import re
+        name = name.lower().replace("-", "_").replace(" ", "_").replace(".", "_")
+        name = re.sub(r'[^a-z0-9_]', '', name)
+        name = re.sub(r'_+', '_', name).strip('_')
+        return name or "unnamed"
+
     # Process each tag and endpoint
     with console.status("[bold green]Generating per-endpoint workflows...") as status:
         for tag_name, tag_endpoints in grouped_endpoints.items():
-            tag_dir_name = tag_name.lower().replace(" ", "_").replace("-", "_")
+            tag_dir_name = sanitize_dir_name(tag_name)
 
             for endpoint in tag_endpoints:
                 endpoint_idx += 1

@@ -111,6 +111,28 @@ class LocustTestGenerator:
             autoescape=False,
         )
 
+    def _sanitize_identifier(self, name: str) -> str:
+        """Sanitize string to be a valid Python identifier"""
+        import re
+        # Replace common separators with underscores
+        name = name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
+        # Remove any remaining non-alphanumeric chars (except underscore)
+        name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+        # Remove consecutive underscores
+        name = re.sub(r'_+', '_', name)
+        # Remove leading/trailing underscores
+        name = name.strip('_')
+        # Ensure doesn't start with a number
+        if name and name[0].isdigit():
+            name = f"n{name}"
+        return name or "unnamed"
+
+    def _to_class_name(self, name: str) -> str:
+        """Convert name to PascalCase class name"""
+        sanitized = self._sanitize_identifier(name)
+        words = sanitized.replace("_", " ").split()
+        return "".join(word.capitalize() for word in words) or "Unnamed"
+
     def fix_indent(self, base_files: Dict[str, str]) -> Dict[str, str]:
         """Fix indentation for generated files"""
         try:
@@ -220,8 +242,8 @@ class LocustTestGenerator:
                     task_methods, indent_level=1
                 )
                 # Sanitize names for file and class
-                safe_file_name = group.lower().replace(" ", "_").replace("-", "_")
-                safe_class_name = "".join(word.capitalize() for word in group.replace("-", " ").split())
+                safe_file_name = self._sanitize_identifier(group).lower()
+                safe_class_name = self._to_class_name(group)
                 file_content = self._build_endpoint_template(
                     api_info, indented_task_methods, group, safe_class_name
                 )
@@ -335,10 +357,9 @@ class LocustTestGenerator:
         import_group_tasks = ""
         tasks = []
         for group in groups:
-            # Sanitize for file names: lowercase, replace spaces and dashes with underscores
-            file_name = group.lower().replace(" ", "_").replace("-", "_")
-            # Sanitize for class names: PascalCase, remove spaces and dashes
-            class_name = "".join(word.capitalize() for word in group.replace("-", " ").split())
+            # Sanitize for file names and class names
+            file_name = self._sanitize_identifier(group).lower()
+            class_name = self._to_class_name(group)
             import_group_tasks += f"""from workflows.{file_name}_workflow import {class_name}TaskMethods\n"""
             tasks.append(f"{class_name}TaskMethods")
         tasks_str = "[" + ",".join(tasks) + "]"

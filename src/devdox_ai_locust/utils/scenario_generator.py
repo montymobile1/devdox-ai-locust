@@ -357,23 +357,41 @@ class ScenarioWorkflowGenerator:
 
         return "\n".join(lines)
 
+    def _sanitize_identifier(self, name: str) -> str:
+        """Sanitize string to be a valid Python identifier"""
+        import re
+        # Replace common separators with underscores
+        name = name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
+        # Remove any remaining non-alphanumeric chars (except underscore)
+        name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+        # Remove consecutive underscores
+        name = re.sub(r'_+', '_', name)
+        # Remove leading/trailing underscores
+        name = name.strip('_')
+        # Ensure doesn't start with a number
+        if name and name[0].isdigit():
+            name = f"n{name}"
+        return name or "unnamed"
+
     def _operation_to_class_name(self, endpoint: Any) -> str:
         """Convert operation_id to valid Python class name"""
         operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
-        # Remove special characters and convert to PascalCase
-        words = operation_id.replace("-", " ").replace("_", " ").split()
-        return "".join(word.capitalize() for word in words)
+        # Sanitize and convert to PascalCase
+        sanitized = self._sanitize_identifier(operation_id)
+        words = sanitized.replace("_", " ").split()
+        return "".join(word.capitalize() for word in words) or "Unnamed"
 
     def _generate_operation_id(self, endpoint: Any) -> str:
         """Generate operation_id from method and path if not present"""
         path_parts = endpoint.path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
-        return f"{endpoint.method.lower()}_{path_parts}"
+        raw_id = f"{endpoint.method.lower()}_{path_parts}"
+        return self._sanitize_identifier(raw_id)
 
     def get_endpoint_dir_name(self, endpoint: Any) -> str:
         """Get directory name for an endpoint"""
         operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
         # Sanitize for filesystem
-        return operation_id.lower().replace(" ", "_").replace("-", "_")
+        return self._sanitize_identifier(operation_id).lower()
 
     async def _call_ai_service(self, prompt: str) -> str:
         """Call AI service with retry logic"""
