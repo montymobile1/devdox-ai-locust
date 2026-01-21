@@ -225,8 +225,9 @@ class TestDataGenerator:
 
     def generate_integer(self, min_val: int = 1, max_val: int = 1000, default: int = None) -> int:
         if default is not None:
-            return default
-        return random.randint(min_val, max_val)
+            return int(default) if not isinstance(default, int) else default
+        # Convert to int in case LLM passes scientific notation floats (e.g., 9.2e18)
+        return random.randint(int(min_val), int(max_val))
 
     def generate_float(self, min_val: float = 0.0, max_val: float = 1000.0, default: float = None) -> float:
         if default is not None:
