@@ -418,6 +418,11 @@ class ScenarioWorkflowGenerator:
             is_valid, error = self._validate_python_code(content)
 
             if is_valid:
+                if attempt > 0:
+                    logger.info(
+                        f"Retry SUCCEEDED for {scenario_type.value} [{endpoint.method} {endpoint.path}] "
+                        f"on attempt {attempt + 1}/{max_validation_retries}"
+                    )
                 return content
 
             # Save for error reporting and fix prompt on retry
@@ -430,6 +435,11 @@ class ScenarioWorkflowGenerator:
                     f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying with fix prompt..."
                 )
                 await asyncio.sleep(1)
+            else:
+                logger.error(
+                    f"Retry FAILED for {scenario_type.value} [{endpoint.method} {endpoint.path}] "
+                    f"after {max_validation_retries} attempts. Final error: {error}"
+                )
 
         # All retries exhausted
         raise CodeValidationError(
