@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from together import AsyncTogether
 
 from .ai_config import AIEnhancementConfig
@@ -146,46 +145,49 @@ async def _process_api_schema(
     """Fetch and parse API schema"""
     source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
     api_schema = None
-    with console.status(
-        f"[bold green]Fetching API schema from {'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'}..."
-    ):
-        try:
-            async with asyncio.timeout(30):
-                api_schema = await get_api_schema(source_request)
 
-                if not api_schema:
-                    console.print("[red]✗[/red] Failed to fetch API schema")
-                    sys.exit(1)
+    # Fetch API schema
+    source_type = 'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'
+    console.print(f"→ Fetching API schema from {source_type}...")
+    try:
+        async with asyncio.timeout(30):
+            api_schema = await get_api_schema(source_request)
 
-        except asyncio.TimeoutError:
-            console.print("[red]✗[/red] Timeout while fetching API schema")
-            sys.exit(1)
-        except Exception as e:
-            console.print(f"[red]✗[/red] Error fetching API schema: {e}")
-            sys.exit(1)
+            if not api_schema:
+                console.print("[red]✗[/red] Failed to fetch API schema")
+                sys.exit(1)
+
+    except asyncio.TimeoutError:
+        console.print("[red]✗[/red] Timeout while fetching API schema")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error fetching API schema: {e}")
+        sys.exit(1)
+
     if not api_schema:
         console.print("[red]✗[/red] Failed to fetch API schema")
         sys.exit(1)
+
     schema_kb = len(api_schema) // 1024 if api_schema else 0
+    console.print(f"[green]✓[/green] API schema fetched ({schema_kb}KB)")
 
     # Parse schema
-    with console.status("[bold green]Parsing API schema..."):
-        parser = OpenAPIParser()
-        try:
-            schema_data = parser.parse_schema(api_schema)
-            endpoints = parser.parse_endpoints()
-            api_info = parser.get_schema_info()
+    console.print("→ Parsing API schema...")
+    parser = OpenAPIParser()
+    try:
+        schema_data = parser.parse_schema(api_schema)
+        endpoints = parser.parse_endpoints()
+        api_info = parser.get_schema_info()
 
-            # Consolidated output: schema + endpoints in one line
-            api_title = api_info.get('title', 'API')
-            console.print(
-                f"[green]✓[/green] Loaded [bold]{api_title}[/bold] ({schema_kb}KB) — {len(endpoints)} endpoints"
-            )
-            return schema_data, endpoints, api_info
+        api_title = api_info.get('title', 'API')
+        console.print(
+            f"[green]✓[/green] Loaded [bold]{api_title}[/bold] — {len(endpoints)} endpoints"
+        )
+        return schema_data, endpoints, api_info
 
-        except Exception as e:
-            console.print(f"[red]✗[/red] Failed to parse API schema: {e}")
-            sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to parse API schema: {e}")
+        sys.exit(1)
 
 
 async def _generate_and_create_tests(
@@ -336,14 +338,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 '''
 
     # Generate base templates first (LLM will enhance these)
-    with console.status("[bold cyan]Generating base templates...[/bold cyan]"):
-        pre_llm_templates: Dict[Tuple[int, str], str] = {}
-        scenario_types = ["positive", "negative", "security"]
-        for endpoint in endpoints:
-            for scenario_type in scenario_types:
-                pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
-                    endpoint, scenario_type
-                )
+    console.print("→ Generating base templates...")
+    pre_llm_templates: Dict[Tuple[int, str], str] = {}
+    scenario_types = ["positive", "negative", "security"]
+    for endpoint in endpoints:
+        for scenario_type in scenario_types:
+            pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
+                endpoint, scenario_type
+            )
     console.print("[green]✓[/green] Base templates generated")
 
     # Build endpoint to tag mapping
@@ -356,12 +358,22 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     active_workers: set = set()  # Set of active endpoint short_info strings
     active_lock = asyncio.Lock()
 
+    # Milestone tracking for log-friendly progress
+    printed_milestones: set = set()
+    milestones = [25, 50, 75, 100]
+
+    def check_and_print_milestone():
+        """Print progress at 25%, 50%, 75%, 100% milestones"""
+        total_processed = completed_count + failed_count
+        if num_endpoints > 0:
+            percent = (total_processed * 100) // num_endpoints
+            for milestone in milestones:
+                if percent >= milestone and milestone not in printed_milestones:
+                    printed_milestones.add(milestone)
+                    console.print(f"  • Progress: {milestone}% ({total_processed}/{num_endpoints} endpoints)")
+
     # Process endpoint and save files (resilient - catches and tracks errors)
-    async def process_and_save_endpoint(
-        endpoint: Any,
-        progress: Progress,
-        task_id: Any,
-    ) -> List[Dict[str, Any]]:
+    async def process_and_save_endpoint(endpoint: Any) -> List[Dict[str, Any]]:
         nonlocal completed_count, failed_count
         tag_name = endpoint_to_tag.get(id(endpoint), "default")
         tag_dir_name = sanitize_dir_name(tag_name)
@@ -408,10 +420,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 completed_count += 1
                 created_files.extend(local_files)
                 active_workers.discard(short_info)
-                # Update progress with active worker count
-                active_count = len(active_workers)
-                desc = f"[green]Generating workflows...[/green] [dim]({active_count} active)[/dim]"
-                progress.update(task_id, completed=completed_count + failed_count, description=desc)
+                check_and_print_milestone()
 
             return local_files
 
@@ -447,45 +456,27 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 })
                 created_files.extend(fallback_files)  # Use pre-LLM templates
                 active_workers.discard(short_info)
-                # Update progress with active worker count
-                active_count = len(active_workers)
-                desc = f"[green]Generating workflows...[/green] [dim]({active_count} active)[/dim]"
-                progress.update(task_id, completed=completed_count + failed_count, description=desc)
+                check_and_print_milestone()
                 # Print full traceback so user can debug (no truncation)
-                progress.console.print(
+                console.print(
                     f"\n   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id} failed, using base template:"
                 )
                 # Use format_exception with no limit to avoid Python 3.11+ truncation
                 exc_lines = traceback.format_exception(type(e), e, e.__traceback__)
-                progress.console.print(f"[red]{''.join(exc_lines)}[/red]")
+                console.print(f"[red]{''.join(exc_lines)}[/red]")
             return fallback_files
 
-    # Process all endpoints in parallel with progress bar
+    # Process all endpoints in parallel
     num_workers = scenario_gen.current_concurrency
-    console.print(f"\n🚀 [bold cyan]Generating workflows[/bold cyan] ({num_workers} concurrent)\n")
+    console.print(f"\n→ Generating workflows ({num_workers} concurrent)...")
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TextColumn("[cyan]{task.completed}/{task.total}[/cyan]"),
-        console=console,
-    ) as progress:
-        # Main progress bar (description will be updated with active count)
-        task_id = progress.add_task(
-            "[green]Generating workflows...[/green] [dim](0 active)[/dim]",
-            total=num_endpoints,
-        )
+    # Create all tasks
+    tasks = [process_and_save_endpoint(ep) for ep in endpoints]
 
-        # Create all tasks
-        tasks = [
-            process_and_save_endpoint(ep, progress, task_id)
-            for ep in endpoints
-        ]
+    # Run all concurrently (semaphore in generator limits actual API calls)
+    await asyncio.gather(*tasks)
 
-        # Run all concurrently (semaphore in generator limits actual API calls)
-        await asyncio.gather(*tasks)
+    console.print(f"[green]✓[/green] Workflows generated ({completed_count + failed_count}/{num_endpoints} endpoints)")
 
     # Show summary
     rate_info = scenario_gen.get_rate_limit_info()
@@ -510,45 +501,47 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         console.print(f"\n[bold green]✓ All {num_endpoints} endpoints generated successfully[/bold green]")
 
     # Generate __init__.py files for each tag directory to enable imports
-    with console.status("[bold green]Creating workflow __init__.py files..."):
-        # Create main workflows/__init__.py
-        workflows_init = workflows_dir / "__init__.py"
-        tag_imports = []
-        for tag_name in grouped_endpoints.keys():
-            tag_dir_name = sanitize_dir_name(tag_name)
-            tag_imports.append(f"from .{tag_dir_name} import *")
-        workflows_init.write_text("\n".join(tag_imports) + "\n", encoding='utf-8')
+    console.print("→ Creating workflow __init__.py files...")
+    # Create main workflows/__init__.py
+    workflows_init = workflows_dir / "__init__.py"
+    tag_imports = []
+    for tag_name in grouped_endpoints.keys():
+        tag_dir_name = sanitize_dir_name(tag_name)
+        tag_imports.append(f"from .{tag_dir_name} import *")
+    workflows_init.write_text("\n".join(tag_imports) + "\n", encoding='utf-8')
 
-        # Create __init__.py for each tag directory
-        for tag_name, tag_endpoints in grouped_endpoints.items():
-            tag_dir_name = sanitize_dir_name(tag_name)
-            tag_dir = workflows_dir / tag_dir_name
-            if tag_dir.exists():
-                init_lines = ['"""Auto-generated workflow exports"""']
-                for ep in tag_endpoints:
-                    op_id = scenario_gen.get_endpoint_dir_name(ep)
-                    class_name = to_class_name(op_id)
-                    # Import all three scenario types
-                    for scenario in ["positive", "negative", "security"]:
-                        init_lines.append(
-                            f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
-                        )
-                tag_init = tag_dir / "__init__.py"
-                tag_init.write_text("\n".join(init_lines) + "\n", encoding='utf-8')
+    # Create __init__.py for each tag directory
+    for tag_name, tag_endpoints in grouped_endpoints.items():
+        tag_dir_name = sanitize_dir_name(tag_name)
+        tag_dir = workflows_dir / tag_dir_name
+        if tag_dir.exists():
+            init_lines = ['"""Auto-generated workflow exports"""']
+            for ep in tag_endpoints:
+                op_id = scenario_gen.get_endpoint_dir_name(ep)
+                class_name = to_class_name(op_id)
+                # Import all three scenario types
+                for scenario in ["positive", "negative", "security"]:
+                    init_lines.append(
+                        f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
+                    )
+            tag_init = tag_dir / "__init__.py"
+            tag_init.write_text("\n".join(init_lines) + "\n", encoding='utf-8')
+    console.print("[green]✓[/green] Workflow __init__.py files created")
 
     # Write base files
-    with console.status("[bold green]Creating base files..."):
-        for filename, content in base_files.items():
-            # base_workflow.py goes in workflows/ to match locustfile.py import
-            if filename == "base_workflow.py":
-                file_path = workflows_dir / filename
-            else:
-                file_path = output_dir / filename
-            file_path.write_text(content, encoding='utf-8')
-            created_files.append({
-                "path": str(file_path),
-                "size": len(content),
-            })
+    console.print("→ Creating base files...")
+    for filename, content in base_files.items():
+        # base_workflow.py goes in workflows/ to match locustfile.py import
+        if filename == "base_workflow.py":
+            file_path = workflows_dir / filename
+        else:
+            file_path = output_dir / filename
+        file_path.write_text(content, encoding='utf-8')
+        created_files.append({
+            "path": str(file_path),
+            "size": len(content),
+        })
+    console.print(f"[green]✓[/green] Base files created ({len(base_files)} files)")
 
     return created_files
 
