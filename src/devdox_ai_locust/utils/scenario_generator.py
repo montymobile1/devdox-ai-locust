@@ -346,15 +346,34 @@ class ScenarioWorkflowGenerator:
             for scenario_type in scenario_types
         ]
 
-        # Let exceptions propagate naturally - no return_exceptions=True
-        llm_results = await asyncio.gather(*llm_tasks)
+        # Use return_exceptions=True to preserve successful results even if some fail
+        llm_results = await asyncio.gather(*llm_tasks, return_exceptions=True)
 
-        # Filter out None results (skipped scenarios, e.g., positive with no 2xx codes)
-        return {
-            scenario_type: result
-            for scenario_type, result in zip(scenario_types, llm_results)
-            if result is not None
-        }
+        # Separate successes from failures
+        endpoint_info = f"{endpoint.method} {endpoint.path}"
+        results = {}
+        errors = []
+        for scenario_type, result in zip(scenario_types, llm_results):
+            if isinstance(result, Exception):
+                errors.append((scenario_type, result))
+            elif result is not None:
+                results[scenario_type] = result
+
+        # If there are errors but also successes, log and return partial results
+        if errors and results:
+            for scenario_type, error in errors:
+                logger.warning(
+                    f"Scenario {scenario_type.value} failed for [{endpoint_info}], "
+                    f"but other scenarios succeeded: {error}"
+                )
+            return results
+
+        # If ALL scenarios failed, raise the first error
+        if errors and not results:
+            _, first_error = errors[0]
+            raise first_error
+
+        return results
 
     async def generate_tag_orchestrator(
         self,
@@ -790,7 +809,12 @@ class ScenarioWorkflowGenerator:
             # On retry, use error-aware fix prompt instead of original
             if attempt > 0 and last_error and last_code:
                 if last_is_semantic:
-                    current_prompt = self._render_semantic_fix_prompt(last_code, last_error)
+                    current_prompt = self._render_semantic_fix_prompt(
+                        last_code, last_error,
+                        endpoint_expected_status=expected_status_codes,
+                        endpoint_path=endpoint.path,
+                        endpoint_method=endpoint.method.upper(),
+                    )
                 else:
                     current_prompt = self._render_fix_prompt(last_code, last_error)
 
@@ -969,7 +993,12 @@ class ScenarioWorkflowGenerator:
                 # Record retry attempt
                 if self.debug_recorder and self.debug_recorder.enabled:
                     fix_prompt = (
-                        self._render_semantic_fix_prompt(content, error)
+                        self._render_semantic_fix_prompt(
+                            content, error,
+                            endpoint_expected_status=expected_status_codes,
+                            endpoint_path=endpoint.path,
+                            endpoint_method=endpoint.method.upper(),
+                        )
                         if last_is_semantic
                         else self._render_fix_prompt(content, error)
                     )
@@ -2657,13 +2686,23 @@ Code:
 
 Output the complete corrected Python code:"""
 
-    def _render_semantic_fix_prompt(self, failed_code: str, error_message: str) -> str:
+    def _render_semantic_fix_prompt(
+        self,
+        failed_code: str,
+        error_message: str,
+        endpoint_expected_status: Optional[List[int]] = None,
+        endpoint_path: str = "",
+        endpoint_method: str = "",
+    ) -> str:
         """
         Render the semantic fix prompt for code that passes syntax but fails semantic checks.
 
         Args:
             failed_code: The code that failed semantic validation
             error_message: The semantic violation details
+            endpoint_expected_status: Pre-computed expected status codes for the endpoint
+            endpoint_path: The endpoint path under test
+            endpoint_method: The HTTP method under test
 
         Returns:
             Rendered semantic fix prompt string
@@ -2673,6 +2712,9 @@ Output the complete corrected Python code:"""
             return template.render(
                 failed_code=failed_code,
                 error_message=error_message,
+                endpoint_expected_status=endpoint_expected_status,
+                endpoint_path=endpoint_path,
+                endpoint_method=endpoint_method,
             )
         except Exception as e:
             logger.warning(f"Failed to render semantic fix template: {e}. Falling back to inline prompt.")

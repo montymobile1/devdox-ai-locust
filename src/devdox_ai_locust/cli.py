@@ -395,6 +395,14 @@ async def _generate_scenario_based_tests(
     created_files: List[Dict[str, Any]] = []
     failed_endpoints: List[Dict[str, Any]] = []  # Track failures
     workflows_dir = output_dir / "workflows"
+
+    # Clean previous workflow files to prevent stale/broken files from prior runs
+    if workflows_dir.exists():
+        import shutil
+        shutil.rmtree(workflows_dir)
+        logger.info("Cleaned previous workflow files")
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+
     completed_count = 0
     failed_count = 0
     file_write_lock = asyncio.Lock()

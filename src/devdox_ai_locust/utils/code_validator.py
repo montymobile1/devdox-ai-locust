@@ -145,7 +145,7 @@ class CodeValidator:
             violations.extend(self._check_security_path_injection(code))
 
         if scenario_type == "negative":
-            violations.extend(self._check_success_codes_in_negative(code))
+            violations.extend(self._check_success_codes_in_negative(code, endpoint_path))
 
         if all_endpoint_paths:
             violations.extend(self._check_hallucinated_endpoints(code, endpoint_path, all_endpoint_paths))
@@ -243,27 +243,50 @@ class CodeValidator:
 
         return violations
 
-    def _check_success_codes_in_negative(self, code: str) -> List[ValidationViolation]:
-        """Check for 2xx status codes in negative workflow expected_status (Classification G)."""
+    # Regex to extract method and path from make_request calls
+    MAKE_REQUEST_CALL_RE = re.compile(
+        r'make_request\(\s*"(\w+)"\s*,\s*(?:f)?"([^"{}]*)',
+    )
+
+    def _check_success_codes_in_negative(self, code: str, endpoint_path: str = "") -> List[ValidationViolation]:
+        """Check for 2xx status codes in negative workflow expected_status (Classification G).
+
+        Only flags 2xx codes on make_request calls that target the endpoint under test.
+        Setup calls (POST/PUT to different endpoints to create test data) are exempt.
+        """
         violations = []
         lines = code.split("\n")
+
+        # Normalize endpoint path for comparison (strip path params)
+        endpoint_base = endpoint_path.split("{")[0].rstrip("/") if endpoint_path else ""
 
         for i, line in enumerate(lines, 1):
             match = self.SUCCESS_IN_EXPECTED_STATUS_RE.search(line)
             if match:
                 codes_str = match.group(1)
-                # Parse the codes
                 try:
                     codes = [int(c.strip()) for c in codes_str.split(",") if c.strip()]
                     success_codes = [c for c in codes if 200 <= c < 300]
-                    if success_codes:
-                        violations.append(ValidationViolation(
-                            rule="success_in_negative",
-                            message=f"Negative workflow has success codes {success_codes} in expected_status. "
-                                    f"Negative tests must ONLY expect 4xx error codes.",
-                            line_number=i,
-                            severity="error",
-                        ))
+                    if not success_codes:
+                        continue
+
+                    # Check if this call targets the endpoint under test or a different endpoint
+                    if endpoint_path:
+                        call_match = self.MAKE_REQUEST_CALL_RE.search(line)
+                        if call_match:
+                            call_path = call_match.group(2)
+                            call_base = call_path.split("{")[0].rstrip("/")
+                            # If calling a DIFFERENT endpoint (setup call), allow 2xx
+                            if call_base and endpoint_base and call_base != endpoint_base:
+                                continue
+
+                    violations.append(ValidationViolation(
+                        rule="success_in_negative",
+                        message=f"Negative workflow has success codes {success_codes} in expected_status. "
+                                f"Negative tests must ONLY expect 4xx error codes.",
+                        line_number=i,
+                        severity="error",
+                    ))
                 except (ValueError, TypeError):
                     pass
 

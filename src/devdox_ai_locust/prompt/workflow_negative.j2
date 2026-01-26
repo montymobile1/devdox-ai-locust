@@ -125,12 +125,16 @@ self.make_request("POST", "/endpoint", expected_status=[200, 201], json=invalid_
 ```
 
 === MANDATORY STATUS CODES (use VERBATIM - do NOT modify) ===
-You MUST use this EXACT value in ALL make_request() calls:
+For the ACTUAL TEST call to {{ method }} {{ path }}, you MUST use:
 expected_status={{ endpoint_expected_status }}
 
-NEVER write your own status codes. NEVER use 200, 201, 204, or any 2xx code.
-Copy `expected_status={{ endpoint_expected_status }}` exactly as shown above into every make_request() call.
-If you write ANY status code not listed above, your code will be REJECTED.
+NEVER write your own status codes for the test call. NEVER use 200, 201, 204, or any 2xx code.
+If you write ANY 2xx code in the test call's expected_status, your code will be REJECTED.
+
+**SETUP CALLS (creating test data):** If you need to call a DIFFERENT endpoint to create
+test data first (e.g., POST to a parent resource), do NOT include expected_status at all.
+Just call: `self.make_request("POST", "/other/endpoint", json=data)`
+The base workflow handles success/failure automatically for setup calls.
 
 {% if expected_status_info %}
 {{ expected_status_info }}
@@ -193,7 +197,8 @@ def test_invalid_input(self):
 - Keep total code under 100 lines
 - For integer path params, use integers (999999), not UUIDs
 - BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
-- **ALWAYS use `self.make_request()` with `expected_status` set to 4xx error codes**
+- **ALWAYS use `self.make_request()` with `expected_status` set to 4xx error codes for the test call**
+- **For setup calls to create test data, omit expected_status entirely**
 - **NEVER use `with self.client.X(catch_response=True)` pattern** - use make_request() instead
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
@@ -317,16 +322,22 @@ def test_boundary_value(self):
 3. **NEVER assume validation rules not in the OpenAPI spec**
 4. **NEVER use self.client directly** - always use self.make_request()
 5. **NEVER access .status_code on make_request() result** - it returns dict or None
-6. **NEVER write your own expected_status values** - use ONLY `expected_status={{ endpoint_expected_status }}`
-   Copy this VERBATIM. Any 2xx code (200, 201, 204) will cause IMMEDIATE REJECTION.
-   If a test logically expects success, DELETE that test - it belongs in positive workflow.
+6. **NEVER write your own expected_status values for the test call** - use ONLY `expected_status={{ endpoint_expected_status }}`
+   Copy this VERBATIM for the test call to {{ method }} {{ path }}.
+   Any 2xx code in the TEST call will cause IMMEDIATE REJECTION.
+   Setup calls to OTHER endpoints should omit expected_status entirely.
 7. **NEVER use Unicode characters** - ASCII only (codes 0-127)
 8. **NEVER import modules not listed in ALLOWED IMPORTS**
 9. **ALWAYS use valid values for OTHER fields when testing non-existent IDs**
    - When testing 404 with invalid ID, enum/pattern fields must still have VALID values
 10. **NEVER hardcode resource IDs** like `item_id = 1` or `item_id = 2`
     - For non-existent resources: use 999999999 (integer) or "nonexistent-id-99999" (string)
-    - For existing resources: create first via setup endpoint, then use the returned ID
+    - For existing resources: create via setup endpoint WITHOUT expected_status, then use the returned ID:
+      ```python
+      create_result = self.make_request("POST", "/parent/resource", json=valid_data)
+      if create_result:
+          item_id = create_result.get("id")
+      ```
     - Hardcoded IDs will almost always return 404 since the resource doesn't exist
 11. **NEVER invent endpoint paths** - only use paths from ENDPOINT TO TEST or SETUP ENDPOINTS sections
 12. **NEVER leave path segments empty** to test missing parameters

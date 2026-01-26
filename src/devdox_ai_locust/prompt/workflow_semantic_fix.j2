@@ -28,9 +28,15 @@ Fix ALL the semantic violations listed above. The rules are:
 4. **empty_path_segment**: Fix double slashes (//) in URLs.
    Use a present but invalid value like "nonexistent-id-99999" instead of empty segments.
 
-5. **success_in_negative**: Remove 2xx codes from expected_status in negative tests.
+5. **success_in_negative**: Remove 2xx codes from expected_status in the TEST call.
+{% if endpoint_expected_status %}
+   The CORRECT expected_status for the test call to {{ endpoint_method }} {{ endpoint_path }} is:
+   expected_status={{ endpoint_expected_status }}
+   Use this EXACT value for the test call. Setup calls to OTHER endpoints should omit expected_status entirely.
+{% else %}
    Negative tests must ONLY expect 4xx error codes (400, 404, 422, etc.).
-   If the test expects success, it belongs in positive workflow - remove it from here.
+{% endif %}
+   If a make_request call creates test data (POST to a different endpoint), remove its expected_status parameter.
 
 6. **hallucinated_endpoint**: Remove or replace invented endpoint paths.
    Use ONLY the endpoint path provided in the original test context.

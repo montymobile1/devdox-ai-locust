@@ -1,30 +1,26 @@
 """
-Persistent Progress Display for Workflow Generation
+Live-Refreshing Progress Display for Workflow Generation
 
-Provides Claude Code CLI-inspired persistent scrolling output where every
-event stays in the terminal history for auditing. Nothing is erased or
-refreshed - all output accumulates naturally.
-
-Style:
-  ● current/active items
-  ✓ completed items
-  ✗ failed items
-  ⊘ skipped items
-  ⚠ warnings/retries
+Uses Rich Live to show active workers in a refreshing panel.
+Only errors and the final summary persist in terminal history.
+Success items disappear from the panel once done.
 """
 
 import time
+import threading
 import traceback as tb_module
-from typing import Optional
+from typing import Dict, Optional
 from rich.console import Console
+from rich.live import Live
+from rich.table import Table
 
 
 class GenerationProgress:
     """
-    Persistent scrolling progress display for workflow generation.
+    Live-refreshing progress display for workflow generation.
 
-    All output is printed line-by-line and stays in terminal history.
-    No live-refresh, no erasing - everything is auditable.
+    Active workers are shown in a refreshing panel.
+    Only failures and the final summary persist in terminal history.
     """
 
     def __init__(self, total: int, num_workers: int, console: Optional[Console] = None):
@@ -40,107 +36,177 @@ class GenerationProgress:
         # Timing
         self.start_time = time.time()
 
-        # Milestone tracking (print at every 25%)
-        self._printed_milestones: set = set()
+        # Active worker states: {endpoint_info: {"scenario": str, "detail": str}}
+        self._workers: Dict[str, Dict[str, str]] = {}
+        self._lock = threading.Lock()
+
+        # Rich Live display
+        self._live: Optional[Live] = None
 
     def start(self) -> None:
-        """Print the start banner."""
+        """Start the live display."""
         self.start_time = time.time()
         self.console.print(
             f"\n[bold]→ Generating workflows[/bold] "
             f"({self.num_workers} concurrent, {self.total} endpoints)"
         )
+        self._live = Live(
+            self._render_panel(),
+            console=self.console,
+            refresh_per_second=4,
+            transient=True,  # Remove panel when stopped
+        )
+        self._live.start()
 
     def stop(self) -> None:
-        """Print the completion summary."""
+        """Stop the live display and print final summary."""
+        if self._live:
+            self._live.stop()
+            self._live = None
+
         elapsed = time.time() - self.start_time
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
         time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
 
-        self.console.print()
         self.console.print(
-            f"[bold green]✓ Generation complete[/bold green] in {time_str} — "
+            f"\n[bold green]✓ Generation complete[/bold green] in {time_str} — "
             f"[green]{self.completed} endpoints done[/green], "
             f"[red]{self.failed} failed[/red]"
             + (f", [dim]{self.skipped} scenarios skipped[/dim]" if self.skipped else "")
         )
 
     def endpoint_start(self, endpoint_info: str) -> None:
-        """Log that an endpoint started processing."""
-        self.console.print(f"  [cyan]●[/cyan] {endpoint_info}")
+        """Register an endpoint as actively processing."""
+        with self._lock:
+            self._workers[endpoint_info] = {"scenario": "", "detail": "starting..."}
+        self._refresh()
 
     def scenario_start(self, endpoint_info: str, scenario: str) -> None:
-        """Log that a specific scenario started for an endpoint."""
-        self.console.print(f"    [dim]├─[/dim] {scenario}...", highlight=False)
+        """Update worker state: scenario started."""
+        with self._lock:
+            if endpoint_info in self._workers:
+                self._workers[endpoint_info] = {"scenario": scenario, "detail": ""}
+        self._refresh()
 
     def scenario_done(self, endpoint_info: str, scenario: str) -> None:
-        """Log that a scenario completed successfully."""
-        self.console.print(f"    [dim]├─[/dim] [green]✓[/green] {scenario} done")
+        """Update worker state: scenario completed."""
+        with self._lock:
+            if endpoint_info in self._workers:
+                self._workers[endpoint_info] = {"scenario": scenario, "detail": "done"}
+        self._refresh()
 
     def scenario_skipped(self, endpoint_info: str, scenario: str, reason: str = "") -> None:
-        """Log that a scenario was skipped."""
+        """Update worker state: scenario skipped."""
         self.skipped += 1
-        reason_text = f" ({reason})" if reason else ""
-        self.console.print(f"    [dim]├─[/dim] [dim]⊘ {scenario} skipped{reason_text}[/dim]")
+        with self._lock:
+            if endpoint_info in self._workers:
+                self._workers[endpoint_info] = {"scenario": scenario, "detail": f"skipped"}
+        self._refresh()
 
     def scenario_detail(self, endpoint_info: str, scenario: str, detail: str) -> None:
-        """Log a sub-step detail within a scenario (pre-computation, LLM call, validation)."""
-        self.console.print(f"    [dim]│    {scenario}: {detail}[/dim]", highlight=False)
+        """Update worker state with a sub-step detail."""
+        with self._lock:
+            if endpoint_info in self._workers:
+                self._workers[endpoint_info] = {"scenario": scenario, "detail": detail}
+        self._refresh()
 
     def scenario_retry(self, endpoint_info: str, scenario: str, attempt: int, max_attempts: int, error: str) -> None:
-        """Log a retry attempt for a scenario."""
-        self.console.print(
-            f"    [dim]├─[/dim] [yellow]⚠[/yellow] {scenario} retry {attempt}/{max_attempts}: "
-            f"{error}"
+        """Persist a retry warning above the live panel."""
+        short_error = error[:150] if len(error) > 150 else error
+        self._persist(
+            f"  [yellow]⚠[/yellow] {endpoint_info} → {scenario} retry {attempt}/{max_attempts}: "
+            f"[dim]{short_error}[/dim]"
         )
+        with self._lock:
+            if endpoint_info in self._workers:
+                self._workers[endpoint_info] = {"scenario": scenario, "detail": f"retry {attempt}/{max_attempts}"}
+        self._refresh()
 
     def endpoint_done(self, endpoint_info: str, scenarios_generated: int = 0) -> None:
-        """Log that an endpoint completed successfully."""
+        """Remove endpoint from active workers (success disappears)."""
         self.completed += 1
-        self.console.print(
-            f"  [green]✓[/green] {endpoint_info} "
-            f"[dim]({scenarios_generated} scenarios)[/dim]"
-        )
-        self._check_milestone()
+        with self._lock:
+            self._workers.pop(endpoint_info, None)
+        self._refresh()
 
     def endpoint_failed(self, endpoint_info: str, error: Exception) -> None:
-        """Log that an endpoint failed with full traceback."""
+        """Persist failure above the live panel, then remove from active workers."""
         self.failed += 1
-        self.console.print(f"  [red]✗[/red] {endpoint_info} [red]FAILED[/red]")
-        # Full traceback - never hide exceptions
+        # Persist the failure with traceback
+        self._persist(f"  [red]✗[/red] {endpoint_info} [red]FAILED[/red]")
         exc_lines = tb_module.format_exception(type(error), error, error.__traceback__)
         for line in exc_lines:
             for subline in line.rstrip().split("\n"):
-                self.console.print(f"    [red]{subline}[/red]", highlight=False)
-        self._check_milestone()
+                self._persist(f"    [red]{subline}[/red]")
+
+        with self._lock:
+            self._workers.pop(endpoint_info, None)
+        self._refresh()
 
     def endpoint_skipped(self, endpoint_info: str, reason: str = "") -> None:
-        """Log that an entire endpoint was skipped."""
+        """Remove endpoint from active workers (skipped)."""
         self.skipped += 1
-        reason_text = f" ({reason})" if reason else ""
-        self.console.print(f"  [dim]⊘ {endpoint_info} skipped{reason_text}[/dim]")
-        self._check_milestone()
+        with self._lock:
+            self._workers.pop(endpoint_info, None)
+        self._refresh()
 
-    def _check_milestone(self) -> None:
-        """Print progress milestone at 25% intervals."""
+    def _persist(self, markup: str) -> None:
+        """Print a line above the Live panel so it stays in terminal history."""
+        if self._live:
+            self._live.console.print(markup, highlight=False)
+        else:
+            self.console.print(markup, highlight=False)
+
+    def _refresh(self) -> None:
+        """Update the live panel with current state."""
+        if self._live:
+            self._live.update(self._render_panel())
+
+    def _render_panel(self) -> Table:
+        """Render the live panel content showing active workers + progress bar."""
         total_processed = self.completed + self.failed
-        if self.total <= 0:
-            return
+        elapsed = time.time() - self.start_time
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        percent = (total_processed * 100 // self.total) if self.total > 0 else 0
 
-        percent = (total_processed * 100) // self.total
-        for milestone in [25, 50, 75, 100]:
-            if percent >= milestone and milestone not in self._printed_milestones:
-                self._printed_milestones.add(milestone)
-                elapsed = time.time() - self.start_time
-                minutes = int(elapsed // 60)
-                seconds = int(elapsed % 60)
-                time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-                self.console.print(
-                    f"\n  [bold]━ {milestone}% ({total_processed}/{self.total})[/bold] "
-                    f"— {self.completed} done, {self.failed} failed, {self.skipped} skipped "
-                    f"[dim]({time_str})[/dim]\n"
-                )
+        # Build a simple table
+        table = Table.grid(padding=(0, 1))
+        table.add_column(style="dim", width=3)
+        table.add_column(min_width=50)
+        table.add_column(style="dim", justify="right")
+
+        # Progress header row
+        bar_width = 30
+        filled = int(bar_width * percent / 100) if self.total > 0 else 0
+        bar = "━" * filled + "╺" + "─" * (bar_width - filled - 1)
+        status_text = (
+            f"[bold]{percent}%[/bold] ({total_processed}/{self.total}) "
+            f"— {self.completed} done, {self.failed} failed, {self.skipped} skipped"
+        )
+        table.add_row("", f"[cyan]{bar}[/cyan] {status_text}", f"[dim]{time_str}[/dim]")
+
+        # Active workers
+        with self._lock:
+            workers_snapshot = dict(self._workers)
+
+        for endpoint, state in list(workers_snapshot.items())[:self.num_workers]:
+            scenario = state.get("scenario", "")
+            detail = state.get("detail", "")
+
+            endpoint_display = endpoint[:55] + "..." if len(endpoint) > 55 else endpoint
+            if scenario and detail:
+                info = f"[dim]{scenario}: {detail}[/dim]"
+            elif scenario:
+                info = f"[dim]{scenario}[/dim]"
+            else:
+                info = f"[dim]{detail}[/dim]"
+
+            table.add_row("[cyan]●[/cyan]", endpoint_display, info)
+
+        return table
 
     def __enter__(self):
         self.start()

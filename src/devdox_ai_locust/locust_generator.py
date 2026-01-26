@@ -405,36 +405,37 @@ class LocustTestGenerator:
             weight = self._get_task_weight(getattr(endpoint, "method", "GET"))
 
             # Build the task method with proper error handling
+            # All lines at 0-indent level (caller adds class-body indentation)
             task_method = f'''@task({weight})
-    def {method_name}(self):
-        """
-        {getattr(endpoint, "summary", f"{getattr(endpoint, 'method', 'GET')} {getattr(endpoint, 'path', '')}")}
-        {getattr(endpoint, "description", "")}
-        """
-        try:
-            # Generate path parameters
-            {self._generate_path_params_code(endpoint)}
+def {method_name}(self):
+    """
+    {getattr(endpoint, "summary", f"{getattr(endpoint, 'method', 'GET')} {getattr(endpoint, 'path', '')}")}
+    {getattr(endpoint, "description", "")}
+    """
+    try:
+        # Generate path parameters
+        {self._generate_path_params_code(endpoint)}
 
-            # Generate query parameters
-            {self._generate_query_params_code(endpoint)}
+        # Generate query parameters
+        {self._generate_query_params_code(endpoint)}
 
-            # Generate request body
-            {self._generate_request_body_code(endpoint)}
+        # Generate request body
+        {self._generate_request_body_code(endpoint)}
 
-            # Make the request
-            response_data = self.make_request(
-                method="{getattr(endpoint, "method", "GET").lower()}",
-                path=f"{path_with_params}",
-                {self._generate_request_kwargs(endpoint)}
-            )
+        # Make the request
+        response_data = self.make_request(
+            method="{getattr(endpoint, "method", "GET").lower()}",
+            path=f"{path_with_params}",
+            {self._generate_request_kwargs(endpoint)}
+        )
 
-            if response_data:
-                # Store response data for dependent requests
-                self._store_response_data("{method_name}", response_data)
+        if response_data:
+            # Store response data for dependent requests
+            self._store_response_data("{method_name}", response_data)
 
-        except Exception as e:
-            logger.error(f"Task {method_name} failed: {{e}}")
-    '''
+    except Exception as e:
+        logger.error(f"Task {method_name} failed: {{e}}")
+'''
             return task_method
 
         except Exception as e:
