@@ -70,6 +70,17 @@ has a pattern constraint. Semantic generators produce more reliable valid data t
 
 Rationale: Pattern-based string generation often fails to produce semantically valid data.
 
+**CRITICAL: NEVER use generate_string(pattern=...) for email fields!**
+```python
+# WRONG - pattern generation often produces invalid emails that fail validation
+"email": test_data_generator.generate_string(pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")  # NO!
+
+# CORRECT - always use the dedicated email generator
+"email": test_data_generator.generate_email()  # YES - produces "user123@example.com"
+```
+The regex pattern for emails is complex and generate_string() frequently produces strings that
+technically match the pattern but fail real email validation (missing TLD, invalid characters, etc.).
+
 **COMMON MISTAKES TO AVOID:**
 ```python
 # WRONG - random_date() already returns a string!
