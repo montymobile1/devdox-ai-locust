@@ -115,9 +115,12 @@ self.make_request("POST", "/endpoint", expected_status=[200, 400, 422], json=pay
 self.make_request("POST", "/endpoint", expected_status=[200, 400, 422, 500], json=payload_data)
 ```
 
-{% if endpoint_expected_status %}
-=== EXPECTED STATUS CODES (from OpenAPI spec) ===
-This endpoint defines these valid response status codes: {{ endpoint_expected_status }}
+=== EXPECTED STATUS CODES ===
+Use ONLY these status codes in your expected_status= parameter:
+expected_status={{ endpoint_expected_status }}
+
+{% if expected_status_info %}
+{{ expected_status_info }}
 {% endif %}
 
 === CRITICAL: OUTPUT REQUIREMENTS ===
@@ -145,17 +148,16 @@ Before writing code, you MUST reason through these steps:
 
 **STEP 1 - ANALYZE THE ENDPOINT:**
 - What is the HTTP method and path?
-- **CRITICAL**: Check the OpenAPI spec's expected status codes (endpoint_expected_status)
-  - The OpenAPI spec is the ONLY source of truth for what status codes to expect
-  - Use ONLY the status codes defined in the spec - do not assume or invent others
+- Use exactly expected_status={{ endpoint_expected_status }} in ALL make_request calls
 - Does it accept a request body? (POST/PUT/PATCH usually do)
-- Does it have path parameters?
+- Does it have query parameters?
 - Does the endpoint have string fields that could be injection points?
 
 **STEP 2 - IDENTIFY INJECTION POINTS:**
-- List ALL string fields from the schema (exact names!)
+- List ALL string fields from the request body schema (exact names!)
+- List ALL query parameters that accept strings
 - These are where we inject payloads
-- Path parameters can also be injection points
+- NEVER inject into path parameters (they are URL routing, not validation)
 
 **STEP 3 - PLAN SECURITY TESTS:**
 For each string field, plan:
@@ -164,8 +166,7 @@ For each string field, plan:
 - Include ALL required fields with valid data, only inject into ONE field at a time
 
 **STEP 4 - DETERMINE EXPECTED BEHAVIOR:**
-- Use status codes from endpoint_expected_status (OpenAPI spec) as baseline
-- Any status code defined in the spec: expected behavior (input was handled)
+- Use exactly expected_status={{ endpoint_expected_status }} in all make_request calls
 - 500: POTENTIAL VULNERABILITY (bad - server error/crash from injection)
 - The goal is to verify the server doesn't crash (500) when receiving malicious input
 
@@ -272,15 +273,16 @@ No markdown fences, no explanations outside the tags.
 
 <analysis>
 STEP 1 - ENDPOINT ANALYSIS:
-Method: [method]
-Path: [path]
-Expected status codes (from OpenAPI spec): [list endpoint_expected_status]
+Method: {{ method }}
+Path: {{ path }}
+expected_status={{ endpoint_expected_status }}
 Accepts body: [yes/no]
-Path params: [list them]
+Query params: [list them]
 
 STEP 2 - INJECTION POINTS:
-String fields from schema: [list exact field names]
-Path params that accept strings: [list them]
+String fields from request body: [list exact field names]
+Query params that accept strings: [list them]
+(NEVER inject into path parameters)
 
 STEP 3 - SECURITY TEST PLAN:
 - SQL injection in field: [field name]
@@ -314,13 +316,12 @@ class {{ class_name }}SecurityWorkflow(BaseWorkflow):
         """SQL injection test - 500 = potential vulnerability"""
         payload = random.choice(SQL_PAYLOADS)
         data = {"string_field": payload}
-        # 500 NOT in expected_status, so it gets logged as vulnerability
-        self.make_request("{{ method }}", "{{ path }}", expected_status=[200, 201, 400, 422], json=data)
+        self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 
     @task(2)
     def test_xss_injection(self):
         """XSS injection test - 500 = potential vulnerability"""
         payload = random.choice(XSS_PAYLOADS)
         data = {"string_field": payload}
-        self.make_request("{{ method }}", "{{ path }}", expected_status=[200, 201, 400, 422], json=data)
+        self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 </code>

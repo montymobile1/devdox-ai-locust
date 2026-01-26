@@ -124,10 +124,12 @@ self.make_request("POST", "/endpoint", expected_status=[400, 422], json=invalid_
 self.make_request("POST", "/endpoint", expected_status=[200, 201], json=invalid_data)
 ```
 
-{% if endpoint_expected_status %}
-=== EXPECTED STATUS CODES (from OpenAPI spec) ===
-This endpoint defines these valid response status codes: {{ endpoint_expected_status }}
-Consider testing scenarios that might return these error codes (e.g., 400, 422, 404).
+=== EXPECTED STATUS CODES ===
+Use ONLY these status codes in your expected_status= parameter:
+expected_status={{ endpoint_expected_status }}
+
+{% if expected_status_info %}
+{{ expected_status_info }}
 {% endif %}
 
 === CRITICAL: OUTPUT REQUIREMENTS ===
@@ -148,11 +150,7 @@ Before writing code, you MUST reason through these steps:
 
 **STEP 1 - ANALYZE THE ENDPOINT:**
 - What is the HTTP method and path?
-- **CRITICAL**: Check the OpenAPI spec's expected status codes (endpoint_expected_status)
-  - The OpenAPI spec is the ONLY source of truth for what status codes to expect
-  - Use ONLY the status codes defined in the spec - do not assume or invent others
-  - If the spec only defines success codes (2xx), negative tests should verify the endpoint
-    rejects invalid input with one of the documented error codes
+- Use exactly expected_status={{ endpoint_expected_status }} in all make_request calls
 - Does it have path parameters? What type (integer, string, UUID)?
 
 **STEP 2 - EXTRACT SCHEMA FIELDS:**
@@ -193,11 +191,9 @@ Before writing code, you MUST reason through these steps:
   - If no pattern constraint exists, special characters are VALID and should NOT be tested as edge cases
 - Boundary values for numeric fields with min/max constraints
 
-**STEP 5 - DETERMINE EXPECTED STATUS CODES:**
-- Use ONLY the status codes from endpoint_expected_status (extracted from OpenAPI spec)
-- The OpenAPI spec is the ONLY source of truth - do not assume status codes not in the spec
-- If the spec defines 422, test for 422; if it defines 404, test for 404
-- Do NOT hardcode status codes that are not documented in the spec
+**STEP 5 - USE EXPECTED STATUS CODES:**
+- Use exactly expected_status={{ endpoint_expected_status }} in ALL make_request calls
+- Do NOT use any other status codes
 
 === CRITICAL: RESPONSE VALIDATION ===
 
@@ -208,11 +204,7 @@ With `make_request()`, validation is automatic:
 @task(3)
 def test_invalid_input(self):
     data = {"invalid_field": "wrong_value"}
-    # Extract error codes from endpoint_expected_status
-    # Example: if spec defines [200, 422], use [422] for negative tests
-    self.make_request("POST", "/endpoint", expected_status=[422], json=data)
-    # If API returns 422 → test passes (API correctly rejected)
-    # If API returns 200 → test fails with full traceback logged automatically
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 ```
 
 **Understanding negative test results:**
@@ -371,9 +363,9 @@ No markdown fences, no explanations outside the tags.
 
 <analysis>
 STEP 1 - ENDPOINT ANALYSIS:
-Method: [method]
-Path: [path]
-Expected status codes (from OpenAPI spec): [list endpoint_expected_status]
+Method: {{ method }}
+Path: {{ path }}
+expected_status={{ endpoint_expected_status }}
 Path params: [list with types]
 
 STEP 2 - SCHEMA FIELDS:
@@ -396,7 +388,7 @@ STEP 4 - EDGE CASE PLAN:
 - Special chars: ONLY if pattern constraint exists
 
 STEP 5 - EXPECTED STATUS CODES:
-[Use ONLY status codes from endpoint_expected_status]
+expected_status={{ endpoint_expected_status }}
 
 STEP 6 - VALID VALUES FOR NON-EXISTENT ID TESTS:
 [For each enum/pattern field, list the VALID value to use when testing non-existent IDs]
@@ -417,19 +409,18 @@ class {{ class_name }}NegativeWorkflow(BaseWorkflow):
 
     @task(3)
     def test_missing_required_field(self):
-        """Test with missing required field - expect 400/422"""
+        """Test with missing required field"""
         data = {"optional_field": "value"}  # Missing required fields
-        self.make_request("{{ method }}", "{{ path }}", expected_status=[400, 422], json=data)
+        self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 
     @task(3)
     def test_invalid_type(self):
-        """Test with invalid field type - expect 400/422"""
+        """Test with invalid field type"""
         data = {"field_name": "string_instead_of_int"}  # Wrong type
-        self.make_request("{{ method }}", "{{ path }}", expected_status=[400, 422], json=data)
+        self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 
     @task(2)
     def test_nonexistent_id(self):
-        """Test with non-existent resource ID - expect 404"""
-        # Use 999999999 for integer IDs, "nonexistent-id-12345" for string/UUID IDs
-        self.make_request("GET", "/resource/999999999", expected_status=[404])
+        """Test with non-existent resource ID"""
+        self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }})
 </code>

@@ -643,23 +643,16 @@ class ScenarioWorkflowGenerator:
         # Build class name from operation_id
         class_name = self._operation_to_class_name(endpoint)
 
-        # Extract expected status codes from OpenAPI spec responses
-        all_status_codes = self._extract_expected_status_codes(endpoint)
-
-        # Determine if auth is enabled (auth_endpoints provided means auth is active)
+        # Pre-compute exact status codes + descriptions for this scenario type
+        # Handles spec vs fallback transparently - the template just gets the codes
         has_auth = bool(auth_endpoints)
-
-        # Filter status codes by scenario type using source-of-truth logic:
-        # - If spec defines responses: use only those (no supplementation from fallback)
-        # - If spec defines no responses: use FallbackHttpResponseRegistry
-        expected_status_codes = self._filter_status_codes_for_scenario(
-            all_status_codes, scenario_type,
-            method=endpoint.method.upper(),
-            exclude_auth=not has_auth,
-        )
+        codes_with_desc = self._precompute_scenario_status_codes(endpoint, scenario_type, has_auth)
+        expected_status_codes = [code for code, _ in codes_with_desc]
+        expected_status_info = self._format_status_codes_for_prompt(codes_with_desc)
 
         # Skip positive generation if spec defines responses but no 2xx codes
         # (e.g., response-test endpoints that intentionally return 4xx/5xx)
+        all_status_codes = self._extract_expected_status_codes(endpoint)
         if scenario_type == ScenarioType.POSITIVE and all_status_codes and not expected_status_codes:
             logger.info(
                 f"Skipping positive workflow for [{endpoint.method} {endpoint.path}] - "
@@ -684,6 +677,7 @@ class ScenarioWorkflowGenerator:
             "method": endpoint.method,
             "path": endpoint.path,
             "endpoint_expected_status": expected_status_codes,
+            "expected_status_info": expected_status_info,
             "setup_endpoints": setup_endpoints_section,
             "custom_requirement": custom_requirement or "",
             "db_type": db_type,
@@ -1625,6 +1619,128 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Sort for consistency
         return sorted(status_codes)
+
+    def _extract_status_codes_with_descriptions(self, endpoint: Any) -> List[Tuple[int, str]]:
+        """
+        Extract status codes with their descriptions from the OpenAPI spec responses.
+
+        Returns:
+            List of (code, description) tuples from the spec.
+            Empty list if no responses defined.
+        """
+        result: List[Tuple[int, str]] = []
+
+        if not hasattr(endpoint, "responses") or not endpoint.responses:
+            return result
+
+        responses = endpoint.responses
+
+        if isinstance(responses, dict):
+            for status_code_str, response in responses.items():
+                try:
+                    if status_code_str.lower() == "default":
+                        continue
+                    code = int(status_code_str)
+                    desc = ""
+                    if hasattr(response, "description"):
+                        desc = getattr(response, "description", "") or ""
+                    elif isinstance(response, dict):
+                        desc = response.get("description", "")
+                    result.append((code, desc))
+                except (ValueError, TypeError):
+                    pass
+        elif isinstance(responses, list):
+            for response in responses:
+                status_code = getattr(response, "status_code", None)
+                if status_code is not None:
+                    try:
+                        code = int(status_code)
+                        desc = getattr(response, "description", "") or ""
+                        result.append((code, desc))
+                    except (ValueError, TypeError):
+                        pass
+
+        return sorted(result, key=lambda x: x[0])
+
+    def _precompute_scenario_status_codes(
+        self,
+        endpoint: Any,
+        scenario_type: ScenarioType,
+        has_auth: bool,
+    ) -> List[Tuple[int, str]]:
+        """
+        Pre-compute the exact status codes + descriptions for a scenario type.
+
+        Logic:
+        1. Try to get codes from spec responses (with descriptions)
+        2. Filter by scenario type (2xx for positive, 4xx for negative, all <500 for security)
+        3. If filter returns empty, use FallbackHttpResponseRegistry
+        4. Auth codes (401/403) included for negative/security when auth is enabled
+
+        The result is passed directly to the prompt template. The template
+        does not need to know whether codes came from spec or fallback.
+
+        Returns:
+            List of (code, description) tuples ready for the template.
+        """
+        method = endpoint.method.upper()
+
+        # Step 1: Get codes + descriptions from spec
+        spec_codes = self._extract_status_codes_with_descriptions(endpoint)
+
+        # Step 2: Filter by scenario type
+        if scenario_type == ScenarioType.POSITIVE:
+            filtered = [(c, d) for c, d in spec_codes if 200 <= c < 300]
+        elif scenario_type == ScenarioType.NEGATIVE:
+            filtered = [(c, d) for c, d in spec_codes if 400 <= c < 500]
+        elif scenario_type == ScenarioType.SECURITY:
+            filtered = [(c, d) for c, d in spec_codes if c < 500]
+        else:
+            filtered = spec_codes
+
+        # Step 3: If filter produced results, use them
+        if filtered:
+            return sorted(filtered, key=lambda x: x[0])
+
+        # Step 4: No matching codes from spec - use fallback
+        exclude_auth = not has_auth
+        response_block = self._fallback_registry.get_responses(
+            methods=method,
+            exclude_auth=exclude_auth,
+        )
+        method_responses = response_block.as_dict().get(method, {})
+
+        fallback_codes: List[Tuple[int, str]] = []
+        for code_str, data in method_responses.items():
+            try:
+                code = int(code_str)
+                desc = data.get("description", "") if isinstance(data, dict) else ""
+                fallback_codes.append((code, desc))
+            except (ValueError, TypeError):
+                pass
+
+        # Filter fallback by scenario type
+        if scenario_type == ScenarioType.POSITIVE:
+            return sorted([(c, d) for c, d in fallback_codes if 200 <= c < 300], key=lambda x: x[0])
+        elif scenario_type == ScenarioType.NEGATIVE:
+            return sorted([(c, d) for c, d in fallback_codes if 400 <= c < 500], key=lambda x: x[0])
+        elif scenario_type == ScenarioType.SECURITY:
+            return sorted([(c, d) for c, d in fallback_codes if c < 500], key=lambda x: x[0])
+
+        return sorted(fallback_codes, key=lambda x: x[0])
+
+    @staticmethod
+    def _format_status_codes_for_prompt(codes_with_desc: List[Tuple[int, str]]) -> str:
+        """Format pre-computed status codes with descriptions for the prompt."""
+        if not codes_with_desc:
+            return ""
+        lines = []
+        for code, desc in codes_with_desc:
+            if desc:
+                lines.append(f"- {code}: {desc}")
+            else:
+                lines.append(f"- {code}")
+        return "\n".join(lines)
 
     def _format_endpoints_list(self, endpoints: List[Any]) -> str:
         """Format list of endpoints (for auth endpoints)"""

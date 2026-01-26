@@ -128,8 +128,7 @@ if result:
     # result is a dict containing JSON data
     items = result.get("items", [])
 
-# Request with OpenAPI spec-derived expected status codes
-# IMPORTANT: For POSITIVE tests, only use SUCCESS codes (2xx)
+# Use the expected_status codes provided
 result = self.make_request("POST", "/items", expected_status=[201], json=data)
 if result:
     # Request succeeded - result is JSON data as dict
@@ -155,22 +154,17 @@ with self.client.post("/items", json=data, catch_response=True) as response:
     ...  # Don't do this - use make_request() instead
 ```
 
-{% if endpoint_expected_status %}
-=== EXPECTED STATUS CODES (SUCCESS CODES ONLY) ===
-For POSITIVE tests, you should expect SUCCESS (2xx) responses only.
-These are the success codes from the OpenAPI spec for this endpoint:
-{{ endpoint_expected_status }}
+=== EXPECTED STATUS CODES ===
+Use ONLY these status codes in your expected_status= parameter:
+expected_status={{ endpoint_expected_status }}
 
-**CRITICAL: Why only success codes?**
-- POSITIVE tests verify that VALID input returns SUCCESS
-- If you include error codes (4xx), errors would be treated as "success" and NOT logged
-- Error code testing belongs in NEGATIVE tests, not here
+{% if expected_status_info %}
+{{ expected_status_info }}
+{% endif %}
 
-Use these SUCCESS codes with the expected_status parameter:
 ```python
 result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 ```
-{% endif %}
 
 === CRITICAL: OUTPUT REQUIREMENTS ===
 
@@ -192,9 +186,7 @@ Before writing code, you MUST reason through these steps:
 - What is the HTTP method? (GET/POST/PUT/DELETE/PATCH)
 - What is the path? Are there path parameters like {id}?
 - Does this endpoint need a request body?
-- **CRITICAL**: Check the OpenAPI spec's expected status codes (endpoint_expected_status)
-  - The OpenAPI spec is the ONLY source of truth for what status codes to expect
-  - Use ONLY the status codes defined in the spec - do not assume or invent others
+- Use exactly expected_status={{ endpoint_expected_status }} in ALL make_request calls
 - **NOTE on redirects (3xx)**: If the expected status is a 3xx redirect code:
   - You MUST use allow_redirects=False to capture the actual redirect status code
   - Without allow_redirects=False, the HTTP client auto-follows redirects
@@ -414,7 +406,7 @@ Method: [GET/POST/PUT/DELETE]
 Path: [the path]
 Has path params: [yes/no, list them]
 Needs request body: [yes/no]
-Expected status codes (from OpenAPI spec): [list endpoint_expected_status]
+expected_status={{ endpoint_expected_status }}
 
 STEP 2 - SCHEMA FIELDS:
 Required: [list exact field names and types]
@@ -452,11 +444,7 @@ class {{ class_name }}PositiveWorkflow(BaseWorkflow):
     @task(10)
     def test_valid_request(self):
         data = {}  # Generate ALL required fields with valid values
-        {% if endpoint_expected_status %}
         result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
-        {% else %}
-        result = self.make_request("{{ method }}", "{{ path }}", json=data)
-        {% endif %}
         if result:
             item_id = result.get("id")
             if item_id:
