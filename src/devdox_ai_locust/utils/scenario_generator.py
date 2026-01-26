@@ -1148,6 +1148,19 @@ class ScenarioWorkflowGenerator:
             .replace("\t", "\\t")
         )
 
+    @staticmethod
+    def _escape_for_raw_string(value: str) -> str:
+        """Escape a string for safe embedding in a Python raw string literal (r"...").
+
+        For raw strings, backslashes are NOT escaped (they're literal in raw strings).
+        Only quotes need escaping. Used for regex patterns since the LLM wraps them in r"...".
+        """
+        if not isinstance(value, str):
+            return str(value)
+        # In raw strings, only quotes need escaping (and raw strings can't end with odd backslashes)
+        # For simplicity, we just escape quotes - regex patterns rarely have quotes
+        return value.replace('"', '\\"')
+
     def _get_type_instruction(self, field_schema: dict, _object_ancestors: Optional[frozenset] = None) -> str:
         """Map a field schema to a Python code instruction for generating a valid value.
 
@@ -1176,10 +1189,10 @@ class ScenarioWorkflowGenerator:
         if field_enum:
             return f"random.choice({field_enum})"
 
-        # Pattern: regex-based generation
+        # Pattern: regex-based generation (use raw string since prompts tell LLM to use r"...")
         if field_pattern:
-            escaped = self._escape_for_python_string(field_pattern)
-            return f'test_data_generator.generate_string(pattern="{escaped}")'
+            escaped = self._escape_for_raw_string(field_pattern)
+            return f'test_data_generator.generate_string(pattern=r"{escaped}")'
 
         # Format-specific generators
         if field_format == "date":
@@ -1915,6 +1928,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         lines.append("These POST endpoints can be used to create resources before testing.")
         lines.append("They are ranked by relevance to the endpoint you are testing.")
         lines.append("Use ONLY these endpoints for setup - do NOT invent endpoints that don't exist.")
+        lines.append("**CRITICAL: Use the expected_status shown for EACH setup endpoint.**")
         lines.append("")
 
         # Edge case 3: Pass all ranked endpoints with guidance
@@ -1923,9 +1937,19 @@ Do NOT invent or call POST endpoints that are not documented here.
             summary = getattr(endpoint, "summary", "") or "No summary"
             description = getattr(endpoint, "description", "") or ""
 
+            # Extract expected status codes for THIS setup endpoint from OpenAPI spec
+            setup_all_codes = self._extract_expected_status_codes(endpoint)
+            setup_status_codes = self._filter_status_codes_for_scenario(
+                setup_all_codes, ScenarioType.POSITIVE, method="POST"
+            )
+            # If no codes found, use sensible POST defaults
+            if not setup_status_codes:
+                setup_status_codes = [200, 201]
+
             lines.append(f"--- Rank #{i} (relevance: {score:.0f}) ---")
             lines.append(f"POST {endpoint.path}")
             lines.append(f"Operation ID: {operation_id}")
+            lines.append(f"**expected_status={setup_status_codes}**  <-- USE THIS for this setup call")
             lines.append(f"Why relevant: {reason}")
             lines.append(f"Summary: {summary}")
             if description:
@@ -1941,6 +1965,20 @@ Do NOT invent or call POST endpoints that are not documented here.
                     lines.extend(schema_lines)
 
             lines.append("")
+
+        # Add explicit example showing correct usage
+        lines.append("=== SETUP CALL PATTERN ===")
+        lines.append("```python")
+        lines.append("# Use the expected_status from the setup endpoint above, NOT from the main endpoint")
+        if related_endpoints:
+            first_endpoint = related_endpoints[0][0]
+            first_codes = self._extract_expected_status_codes(first_endpoint)
+            first_filtered = self._filter_status_codes_for_scenario(first_codes, ScenarioType.POSITIVE, method="POST")
+            if not first_filtered:
+                first_filtered = [200, 201]
+            lines.append(f'result = self.make_request("POST", "{first_endpoint.path}", expected_status={first_filtered}, json=data)')
+        lines.append("```")
+        lines.append("")
 
         return "\n".join(lines)
 
@@ -2268,7 +2306,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         Pre-compute which negative test scenarios are valid for this endpoint.
 
         Based on the endpoint's schema, determines what can actually be tested:
-        - Path params → non-existent ID test
+        - Path params → non-existent ID test (only for resource endpoints, not parameter-test endpoints)
         - Required body fields → missing field test
         - Typed fields → wrong type test
         - Enum fields → invalid enum test
@@ -2279,6 +2317,10 @@ Do NOT invent or call POST endpoints that are not documented here.
             Formatted string listing testable scenarios with details.
         """
         scenarios: List[str] = []
+
+        # Detect parameter-test endpoints (these just echo inputs, no validation)
+        endpoint_path = getattr(endpoint, "path", "")
+        is_parameter_test_endpoint = "/parameters/" in endpoint_path
 
         # Check path parameters
         path_params: List[Tuple[str, str]] = []
@@ -2298,7 +2340,9 @@ Do NOT invent or call POST endpoints that are not documented here.
                 elif param_location == "query":
                     query_params.append((param_name, param_type))
 
-        if path_params:
+        # Generate NON_EXISTENT_ID tests ONLY for resource endpoints (not parameter-test endpoints)
+        # Parameter-test endpoints accept any value and echo it back - no resource lookup
+        if path_params and not is_parameter_test_endpoint:
             for name, ptype in path_params:
                 if ptype.lower() in ("integer", "number") or ptype.lower().startswith("array[int"):
                     scenarios.append(
@@ -2398,14 +2442,14 @@ Do NOT invent or call POST endpoints that are not documented here.
                         f"BOUNDARY: Field \"{name}\" has max={max_val}, send {max_val + 1}"
                     )
 
-        if not scenarios:
-            # Fallback: at least test invalid query params if available
+        # Fallback: test invalid query params ONLY if not a parameter-test endpoint
+        # Parameter-test endpoints accept any value, so negative tests don't make sense
+        if not scenarios and not is_parameter_test_endpoint:
             if query_params:
                 for name, ptype in query_params:
                     if ptype.lower() in ("integer", "number") or ptype.lower().startswith("array[int"):
                         scenarios.append(f"INVALID_QUERY: Send \"{name}=not_a_number\" (expects integer)")
-                    else:
-                        scenarios.append(f"INVALID_QUERY: Send very long string for \"{name}\"")
+                    # Skip "very long string" tests - most APIs don't validate string length without explicit constraints
 
         if not scenarios:
             return ""

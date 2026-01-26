@@ -120,9 +120,10 @@ NEVER write your own status codes for the test call. NEVER use 200, 201, 204, or
 If you write ANY 2xx code in the test call's expected_status, your code will be REJECTED.
 
 **SETUP CALLS (creating test data):** If you need to call a DIFFERENT endpoint to create
-test data first (e.g., POST to a parent resource), do NOT include expected_status at all.
-Just call: `self.make_request("POST", "/other/endpoint", json=data)`
-The base workflow handles success/failure automatically for setup calls.
+test data first (e.g., POST to a parent resource), use the expected_status from the SETUP ENDPOINTS
+section below. Each setup endpoint has its own correct status codes from the OpenAPI spec.
+Example: `self.make_request("POST", "/other/endpoint", expected_status=[201], json=data)`
+Do NOT use {{ endpoint_expected_status }} for setup calls - that's only for the MAIN test endpoint.
 
 {% if expected_status_info %}
 {{ expected_status_info }}

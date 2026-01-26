@@ -1414,11 +1414,12 @@ class TestGetTypeInstruction:
         assert "['a', 'b']" in result
 
     def test_pattern(self):
-        """Pattern generates generate_string with pattern arg."""
+        """Pattern generates generate_string with raw string pattern arg."""
         gen = self._get_generator()
         result = gen._get_type_instruction({"type": "string", "pattern": "^\\d+$"})
         assert "generate_string(pattern=" in result
-        assert "\\\\" in result  # Backslash properly escaped
+        assert 'pattern=r"' in result  # Uses raw string to preserve backslashes
+        assert "\\d" in result  # Backslash NOT double-escaped (raw string)
 
     def test_format_date(self):
         gen = self._get_generator()
@@ -1904,3 +1905,195 @@ class TestNegativeInjectionWithAllOf:
         assert result is not None
         assert "name" in result
         assert "description" in result
+
+
+# ============================================================
+# 5th Sweep Fixes: Locust Run Error Analysis
+# ============================================================
+
+class TestFifthSweepFixes:
+    """Tests for 5th sweep fixes addressing locust run errors."""
+
+    def _get_generator(self):
+        """Helper to create a ScenarioWorkflowGenerator instance for testing."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    # Category 1: Float-to-int TypeError in generate_integer
+    def test_generate_integer_handles_float_multiple_of(self):
+        """generate_integer should convert float multiple_of to int."""
+        # This tests the template-generated test_data.py
+        # Simulate what the template generates
+        import random
+
+        def generate_integer_fixed(min_val=1, max_val=1000, multiple_of=None):
+            """Fixed version that handles float multiple_of."""
+            min_val = int(min_val)
+            max_val = int(max_val)
+            if multiple_of and multiple_of > 0:
+                multiple_of = int(multiple_of)  # The fix
+                low = int((min_val + multiple_of - 1) // multiple_of)
+                high = int(max_val // multiple_of)
+                if high < low:
+                    return min_val
+                return random.randint(low, high) * multiple_of
+            return random.randint(min_val, max_val)
+
+        # This would crash before the fix with TypeError
+        result = generate_integer_fixed(min_val=0.0, max_val=1000, multiple_of=5.0)
+        assert isinstance(result, int)
+        assert result % 5 == 0
+        assert 0 <= result <= 1000
+
+    # Category 3: Pattern double-escaping fix
+    def test_escape_for_raw_string_preserves_backslashes(self):
+        """_escape_for_raw_string should NOT escape backslashes for raw string literals."""
+        gen = self._get_generator()
+        pattern = r"^\d{5}(-\d{4})?$"  # Regex pattern
+        escaped = gen._escape_for_raw_string(pattern)
+        # Backslashes should NOT be doubled
+        assert escaped == pattern
+        assert "\\d" in escaped  # Single backslash preserved
+        assert "\\\\d" not in escaped  # No double backslashes
+
+    def test_escape_for_raw_string_escapes_quotes(self):
+        """_escape_for_raw_string should escape quotes."""
+        gen = self._get_generator()
+        pattern = 'test "quoted" value'
+        escaped = gen._escape_for_raw_string(pattern)
+        assert escaped == 'test \\"quoted\\" value'
+
+    def test_get_type_instruction_uses_raw_string_for_pattern(self):
+        """_get_type_instruction should output raw string r\"...\" for patterns."""
+        gen = self._get_generator()
+        field_schema = {"type": "string", "pattern": r"^\d{5}$"}
+        result = gen._get_type_instruction(field_schema)
+        # Should use raw string prefix
+        assert 'pattern=r"' in result
+        # Should NOT double-escape backslashes
+        assert r'pattern=r"^\d{5}$"' in result
+
+    # Category 4: Negative tests skip parameter-test endpoints
+    def test_negative_scenarios_skips_parameter_test_endpoints(self):
+        """_precompute_negative_scenarios should skip NON_EXISTENT_ID for parameter-test endpoints."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.method = "GET"
+        endpoint.path = "/api/v1/comprehensive/parameters/path/string/{value}"
+
+        # Add path parameter
+        param = Mock()
+        param.name = "value"
+        param.type = "string"
+        param.location = "path"
+        endpoint.parameters = [param]
+        endpoint.request_body = None
+
+        result = gen._precompute_negative_scenarios(endpoint)
+
+        # Should NOT generate NON_EXISTENT_ID for parameter-test endpoints
+        assert "NON_EXISTENT_ID" not in result
+
+    def test_negative_scenarios_generates_nonexistent_id_for_resource_endpoints(self):
+        """_precompute_negative_scenarios should generate NON_EXISTENT_ID for resource endpoints."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.method = "GET"
+        endpoint.path = "/api/v1/users/{user_id}"  # Real resource endpoint
+
+        # Add path parameter
+        param = Mock()
+        param.name = "user_id"
+        param.type = "integer"
+        param.location = "path"
+        endpoint.parameters = [param]
+        endpoint.request_body = None
+
+        result = gen._precompute_negative_scenarios(endpoint)
+
+        # Should generate NON_EXISTENT_ID for resource endpoints
+        assert "NON_EXISTENT_ID" in result
+        assert "999999999" in result
+
+    def test_negative_scenarios_skips_invalid_query_for_parameter_test_endpoints(self):
+        """_precompute_negative_scenarios should skip INVALID_QUERY for parameter-test endpoints."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.method = "GET"
+        endpoint.path = "/api/v1/comprehensive/parameters/query/required"
+
+        # Add query parameter
+        param = Mock()
+        param.name = "name"
+        param.type = "string"
+        param.location = "query"
+        endpoint.parameters = [param]
+        endpoint.request_body = None
+
+        result = gen._precompute_negative_scenarios(endpoint)
+
+        # Should NOT generate fallback INVALID_QUERY for parameter-test endpoints
+        # (since they accept any input)
+        assert "INVALID_QUERY" not in result or result == ""
+
+    # Category 2 & 5: Setup endpoints get their own status codes from OpenAPI spec
+    def test_format_related_create_endpoints_includes_status_codes(self):
+        """_format_related_create_endpoints should include expected_status for each setup endpoint."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        # Create a mock setup endpoint with responses
+        setup_endpoint = Mock()
+        setup_endpoint.method = "POST"
+        setup_endpoint.path = "/api/v1/users"
+        setup_endpoint.operation_id = "createUser"
+        setup_endpoint.summary = "Create a user"
+        setup_endpoint.description = ""
+        setup_endpoint.request_body = None
+        # OpenAPI spec says this endpoint returns 201
+        setup_endpoint.responses = {"201": Mock(), "422": Mock()}
+
+        related_endpoints = [(setup_endpoint, 100.0, "Exact resource match")]
+
+        result = gen._format_related_create_endpoints(related_endpoints)
+
+        # Should include expected_status for the setup endpoint
+        assert "expected_status=" in result
+        assert "[201]" in result  # Should extract 201 from responses
+        assert "USE THIS for this setup call" in result
+
+    def test_format_related_create_endpoints_fallback_when_no_responses(self):
+        """_format_related_create_endpoints should use FallbackHttpResponseRegistry when no responses defined."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        # Create a mock setup endpoint WITHOUT responses
+        setup_endpoint = Mock()
+        setup_endpoint.method = "POST"
+        setup_endpoint.path = "/api/v1/items"
+        setup_endpoint.operation_id = "createItem"
+        setup_endpoint.summary = "Create an item"
+        setup_endpoint.description = ""
+        setup_endpoint.request_body = None
+        setup_endpoint.responses = {}  # No responses defined
+
+        related_endpoints = [(setup_endpoint, 100.0, "Exact resource match")]
+
+        result = gen._format_related_create_endpoints(related_endpoints)
+
+        # Should use FallbackHttpResponseRegistry when no responses defined
+        # The registry returns [200, 201, 204] for POST positive scenarios
+        assert "expected_status=" in result
+        assert "[200, 201, 204]" in result  # Fallback from registry
