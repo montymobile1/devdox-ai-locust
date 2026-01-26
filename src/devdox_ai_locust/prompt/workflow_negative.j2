@@ -124,9 +124,13 @@ self.make_request("POST", "/endpoint", expected_status=[400, 422], json=invalid_
 self.make_request("POST", "/endpoint", expected_status=[200, 201], json=invalid_data)
 ```
 
-=== EXPECTED STATUS CODES ===
-Use ONLY these status codes in your expected_status= parameter:
+=== MANDATORY STATUS CODES (use VERBATIM - do NOT modify) ===
+You MUST use this EXACT value in ALL make_request() calls:
 expected_status={{ endpoint_expected_status }}
+
+NEVER write your own status codes. NEVER use 200, 201, 204, or any 2xx code.
+Copy `expected_status={{ endpoint_expected_status }}` exactly as shown above into every make_request() call.
+If you write ANY status code not listed above, your code will be REJECTED.
 
 {% if expected_status_info %}
 {{ expected_status_info }}
@@ -313,8 +317,9 @@ def test_boundary_value(self):
 3. **NEVER assume validation rules not in the OpenAPI spec**
 4. **NEVER use self.client directly** - always use self.make_request()
 5. **NEVER access .status_code on make_request() result** - it returns dict or None
-6. **NEVER use success codes (2xx) in expected_status for negative tests** - only use 4xx codes
-   If your test expects 200/201/204, it belongs in the POSITIVE workflow, not here.
+6. **NEVER write your own expected_status values** - use ONLY `expected_status={{ endpoint_expected_status }}`
+   Copy this VERBATIM. Any 2xx code (200, 201, 204) will cause IMMEDIATE REJECTION.
+   If a test logically expects success, DELETE that test - it belongs in positive workflow.
 7. **NEVER use Unicode characters** - ASCII only (codes 0-127)
 8. **NEVER import modules not listed in ALLOWED IMPORTS**
 9. **ALWAYS use valid values for OTHER fields when testing non-existent IDs**

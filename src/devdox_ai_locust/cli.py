@@ -459,38 +459,10 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     # Orchestrator should only reference endpoints that were successfully generated
     successful_endpoints: set = set()  # Set of endpoint ids that succeeded
 
-    # Track active workers for concurrent progress display
-    active_workers: set = set()  # Set of active endpoint short_info strings
-    active_lock = asyncio.Lock()
-
-    # Progress tracking - milestones + heartbeat for user feedback
-    printed_milestones: set = set()
-    milestones = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-    last_heartbeat_count = 0
-    heartbeat_interval = max(5, num_endpoints // 20)  # Every 5% or minimum 5 endpoints
-
-    def check_and_print_progress():
-        """Print progress - milestones at 10% intervals, heartbeat between them"""
-        nonlocal last_heartbeat_count
-        total_processed = completed_count + failed_count
-        if num_endpoints <= 0:
-            return
-
-        percent = (total_processed * 100) // num_endpoints
-
-        # Check for milestone
-        milestone_printed = False
-        for milestone in milestones:
-            if percent >= milestone and milestone not in printed_milestones:
-                printed_milestones.add(milestone)
-                console.print(f"  ✓ {milestone}% complete ({total_processed}/{num_endpoints} endpoints)")
-                last_heartbeat_count = total_processed
-                milestone_printed = True
-
-        # Heartbeat between milestones to show system is working
-        if not milestone_printed and (total_processed - last_heartbeat_count) >= heartbeat_interval:
-            console.print(f"    ... processing ({total_processed}/{num_endpoints})")
-            last_heartbeat_count = total_processed
+    # Live progress display
+    from devdox_ai_locust.utils.generation_progress import GenerationProgress
+    num_workers = scenario_gen.current_concurrency
+    progress = GenerationProgress(total=num_endpoints, num_workers=num_workers, console=console)
 
     # Process endpoint and save files (resilient - catches and tracks errors)
     async def process_and_save_endpoint(endpoint: Any) -> List[Dict[str, Any]]:
@@ -499,11 +471,9 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         tag_dir_name = sanitize_dir_name(tag_name)
         operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
         endpoint_info = f"{endpoint.method} {endpoint.path}"
-        short_info = f"{endpoint.method} {endpoint.path[:30]}..." if len(endpoint.path) > 30 else endpoint_info
+        short_info = f"{endpoint.method} {endpoint.path[:45]}..." if len(endpoint.path) > 45 else endpoint_info
 
-        # Track active worker
-        async with active_lock:
-            active_workers.add(short_info)
+        progress.worker_start(short_info)
 
         try:
             # Create endpoint directory
@@ -524,8 +494,10 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 
             # Save files using async I/O
             local_files = []
+            skipped_count = 0
             for scenario_type, content in scenarios.items():
                 if content:
+                    progress.worker_scenario(short_info, scenario_type.value)
                     filename = scenario_gen.SCENARIO_FILES[scenario_type]
                     file_path = endpoint_dir / filename
                     async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
@@ -537,25 +509,24 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                         "operation_id": operation_id,
                         "scenario": scenario_type.value,
                     })
+                else:
+                    skipped_count += 1
 
-            # Update progress (success) and release worker
+            # Update progress (success)
             async with file_write_lock:
                 completed_count += 1
-                successful_endpoints.add(id(endpoint))  # Track for orchestrator
+                successful_endpoints.add(id(endpoint))
                 created_files.extend(local_files)
-                active_workers.discard(short_info)
-                check_and_print_progress()
 
+            progress.worker_done(short_info, success=True, skipped_scenarios=skipped_count)
             return local_files
 
         except Exception as e:
             # Use pre-generated pre-LLM templates as fallback
             fallback_files = []
             for scenario_type in ["positive", "negative", "security"]:
-                # Get pre-generated template (already exists before LLM processing)
                 fallback_content = pre_llm_templates.get((id(endpoint), scenario_type), "")
                 if not fallback_content:
-                    # Should never happen, but generate on-the-fly as last resort
                     fallback_content = generate_pre_llm_workflow(endpoint, scenario_type)
                 filename = f"{scenario_type}_workflow.py"
                 file_path = endpoint_dir / filename
@@ -572,7 +543,6 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     })
                 except Exception as write_error:
                     logger.error(f"Failed to write fallback file {file_path}: {write_error}")
-                    # Continue with other scenarios - don't let one file failure stop all
 
             async with file_write_lock:
                 failed_count += 1
@@ -582,29 +552,22 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     "error": str(e),
                     "error_type": type(e).__name__,
                 })
-                created_files.extend(fallback_files)  # Use pre-LLM templates
-                active_workers.discard(short_info)
-                check_and_print_progress()
-                # Print full traceback so user can debug (no truncation)
-                console.print(
-                    f"\n   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id} failed, using base template:"
-                )
-                # Use format_exception with no limit to avoid Python 3.11+ truncation
-                exc_lines = traceback.format_exception(type(e), e, e.__traceback__)
-                console.print(f"[red]{''.join(exc_lines)}[/red]")
+                created_files.extend(fallback_files)
+
+            progress.worker_done(short_info, success=False)
             return fallback_files
 
-    # Process all endpoints in parallel
-    num_workers = scenario_gen.current_concurrency
-    console.print(f"\n→ Generating workflows ({num_workers} concurrent)...")
+    # Process all endpoints in parallel with live progress
+    with progress:
+        tasks = [process_and_save_endpoint(ep) for ep in endpoints]
+        await asyncio.gather(*tasks)
 
-    # Create all tasks
-    tasks = [process_and_save_endpoint(ep) for ep in endpoints]
-
-    # Run all concurrently (semaphore in generator limits actual API calls)
-    await asyncio.gather(*tasks)
-
-    console.print(f"[green]✓[/green] Workflows generated ({completed_count + failed_count}/{num_endpoints} endpoints)")
+    console.print(
+        f"\n[green]done[/green] Workflows generated: "
+        f"[green]{completed_count} done[/green], "
+        f"[red]{failed_count} failed[/red], "
+        f"[dim]{progress.skipped} skipped[/dim]"
+    )
 
     # Generate orchestrator for each tag
     console.print(f"\n→ Generating orchestrators ({num_tags} tags)...")
@@ -828,9 +791,8 @@ def generate(
 ) -> None:
     """Generate Locust test files from API documentation URL or file"""
 
-    # Setup output directory and logging
+    # Setup output directory
     output_dir = _setup_output_directory(output)
-    log_path, log_file = _setup_logging(output_dir, "generate")
 
     try:
         # Run the async generation
@@ -838,7 +800,7 @@ def generate(
             _async_generate(
                 ctx,
                 swagger_url,
-                output_dir,  # Pass already-created output_dir instead of string
+                output_dir,
                 users,
                 spawn_rate,
                 run_time,
@@ -860,8 +822,6 @@ def generate(
 
             console.print(traceback.format_exc())
         sys.exit(1)
-    finally:
-        _teardown_logging(log_file, log_path)
 
 
 async def _async_generate(

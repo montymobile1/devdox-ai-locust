@@ -16,7 +16,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader
-from rich.console import Console
 from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
 from devdox_ai_locust.utils.code_validator import CodeValidator
 
@@ -24,7 +23,6 @@ if TYPE_CHECKING:
     from devdox_ai_locust.utils.debug_recorder import DebugRecorder
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 
 class ScenarioGenerationError(Exception):
@@ -495,8 +493,8 @@ class ScenarioWorkflowGenerator:
                         },
                     )
                 if attempt > 0:
-                    console.print(
-                        f"[green]✓ Retry SUCCEEDED[/green] for orchestrator [{tag_name}] "
+                    logger.info(
+                        f"Retry SUCCEEDED for orchestrator [{tag_name}] "
                         f"on attempt {attempt + 1}/{max_validation_retries}"
                     )
                 return content
@@ -505,8 +503,8 @@ class ScenarioWorkflowGenerator:
             last_code = content
 
             if attempt < max_validation_retries - 1:
-                console.print(
-                    f"[yellow]⚠ Validation failed[/yellow] for orchestrator [{tag_name}], "
+                logger.warning(
+                    f"Validation failed for orchestrator [{tag_name}], "
                     f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying..."
                 )
                 await asyncio.sleep(1)
@@ -639,6 +637,11 @@ class ScenarioWorkflowGenerator:
 
         # Format single endpoint with full details
         endpoint_details = self._format_single_endpoint(endpoint)
+
+        # For negative tests: strip 2xx response codes from endpoint description
+        # so the LLM cannot see/copy success codes into expected_status
+        if scenario_type == ScenarioType.NEGATIVE:
+            endpoint_details = self._strip_success_responses(endpoint_details)
 
         # Build class name from operation_id
         class_name = self._operation_to_class_name(endpoint)
@@ -900,8 +903,8 @@ class ScenarioWorkflowGenerator:
                             },
                         )
                     if attempt > 0:
-                        console.print(
-                            f"[green]✓ Retry SUCCEEDED[/green] for {scenario_type.value} "
+                        logger.info(
+                            f"Retry SUCCEEDED for {scenario_type.value} "
                             f"[{endpoint.method} {endpoint.path}] on attempt {attempt + 1}/{max_validation_retries}"
                         )
                     return content
@@ -944,15 +947,15 @@ class ScenarioWorkflowGenerator:
                         validation_result={"valid": False, "error": error},
                     )
                 error_type = "Semantic" if last_is_semantic else "Syntax"
-                console.print(
-                    f"[yellow]⚠ {error_type} validation failed[/yellow] for {scenario_type.value} "
+                logger.warning(
+                    f"{error_type} validation failed for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
-                    f"{error[:200]}. Retrying with fix prompt..."
+                    f"{error[:200]}. Retrying..."
                 )
                 await asyncio.sleep(1)
             else:
-                console.print(
-                    f"[red]✗ Retry FAILED[/red] for {scenario_type.value} "
+                logger.error(
+                    f"Retry FAILED for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}] after {max_validation_retries} attempts. "
                     f"Final error: {error}"
                 )
@@ -964,6 +967,51 @@ class ScenarioWorkflowGenerator:
             last_code,
             endpoint_info=f"{endpoint.method} {endpoint.path}"
         )
+
+    @staticmethod
+    def _strip_success_responses(endpoint_details: str) -> str:
+        """
+        Remove 2xx response codes from endpoint description for negative tests.
+
+        The LLM sees '- 201: Created' in the responses section and copies
+        201 into expected_status for negative tests. Stripping 2xx lines
+        prevents this hallucination pattern.
+        """
+        lines = endpoint_details.split("\n")
+        filtered = []
+        in_responses = False
+        skip_response_schema = False
+
+        for line in lines:
+            # Detect responses section
+            if line.strip() == "Responses:":
+                in_responses = True
+                filtered.append(line)
+                continue
+
+            # Detect end of responses section (next top-level section)
+            if in_responses and line and not line.startswith(" ") and line.strip() != "":
+                in_responses = False
+                skip_response_schema = False
+
+            if in_responses:
+                # Check if this is a 2xx response line (e.g., "  - 201: Created")
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    code_part = stripped[2:].split(":")[0].strip()
+                    if code_part.isdigit() and 200 <= int(code_part) < 300:
+                        skip_response_schema = True
+                        continue  # Skip this 2xx response line
+                    else:
+                        skip_response_schema = False
+
+                # Skip response schema lines that belong to a 2xx response
+                if skip_response_schema:
+                    continue
+
+            filtered.append(line)
+
+        return "\n".join(filtered)
 
     def _format_single_endpoint(self, endpoint: Any) -> str:
         """Format a single endpoint with full details for the prompt"""
