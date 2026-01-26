@@ -240,6 +240,34 @@ def test_invalid_input(self):
   - CORRECT: `{"emoji": "A"}` (valid enum) with user_id=999999999
   - WRONG: `{"emoji": "X"}` (invalid enum) - this returns 422, not 404!
 
+=== WEIGHT GUIDANCE FOR NEGATIVE TESTS ===
+
+Task weights for negative tests should be lower than positive tests since they
+test error handling, not normal operation. Recommended weights:
+
+| Test Type | Default Weight | Rationale |
+|-----------|----------------|-----------|
+| Missing required field | 3 | Common user error |
+| Invalid type | 3 | Common validation test |
+| Non-existent ID (404) | 2 | Important error handling |
+| Invalid enum value | 2 | Validation testing |
+| Boundary/edge cases | 1 | Edge case testing |
+
+Example:
+```python
+@task(3)  # Common validation error
+def test_missing_required_field(self):
+    ...
+
+@task(2)  # Non-existent resource
+def test_nonexistent_id_404(self):
+    ...
+
+@task(1)  # Edge case
+def test_boundary_value(self):
+    ...
+```
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.

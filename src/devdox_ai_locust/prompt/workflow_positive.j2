@@ -213,8 +213,44 @@ Before writing code, you MUST reason through these steps:
   - Dates: test_data_generator.random_date()
   - Datetimes: Use datetime.now().isoformat() or similar ISO 8601 format
 
-**STEP 5 - WRITE THE CODE:**
+**STEP 5 - SET TASK WEIGHTS:**
+Set @task weights to reflect realistic traffic patterns:
+- **GET endpoints**: weight=10 (most common - read operations)
+- **POST endpoints**: weight=3 (moderate - create operations)
+- **PUT/PATCH endpoints**: weight=2 (less common - update operations)
+- **DELETE endpoints**: weight=1 (rare - delete operations)
+
+Example:
+```python
+@task(10)  # GET - high weight
+def test_list_items(self):
+    ...
+
+@task(3)   # POST - moderate weight
+def test_create_item(self):
+    ...
+```
+
+**STEP 6 - WRITE THE CODE:**
 Based on your analysis, write the complete workflow class.
+
+=== WEIGHT GUIDANCE ===
+
+Task weights control how often each test runs relative to others.
+Higher weights = more frequent execution. Typical patterns:
+
+| Operation Type | Default Weight | Rationale |
+|----------------|----------------|-----------|
+| GET (list)     | 10             | Most APIs are read-heavy |
+| GET (detail)   | 8              | Individual reads common |
+| POST           | 3              | Creates less frequent |
+| PUT/PATCH      | 2              | Updates less frequent |
+| DELETE         | 1              | Deletes rare |
+
+Adjust weights based on:
+- Expected real-world usage patterns
+- What you want to stress test most
+- User's custom requirements (if specified)
 
 === CONSTRAINTS ===
 - ALL test values must be SHORT: max 50 characters per field

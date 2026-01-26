@@ -173,6 +173,25 @@ Before writing code, reason through:
 - BYTES LITERALS MUST BE ASCII ONLY
 - Use RAW STRINGS for regex patterns
 
+=== WEIGHT GUIDANCE FOR ORCHESTRATOR ===
+
+The orchestrator uses SequentialTaskSet, so tasks run in ORDER, not by weight.
+However, weights still matter for how often each task runs within a single pass:
+
+| Task Type | Default Weight | Rationale |
+|-----------|----------------|-----------|
+| CRUD lifecycle tasks | 1 each | Sequential execution |
+| State-dependent tests | 1 | Run once per pass |
+| Auth tests | 1 | Run once per pass |
+| Rate limit tests | 1 | Run once per pass |
+| Cleanup tasks | 1 | Always run last |
+
+For SequentialTaskSet, use weight=1 for all tasks since execution order
+is determined by task definition order, not weight.
+
+Note: The orchestrator pattern is designed to run complete CRUD cycles.
+Each pass through the orchestrator represents one full lifecycle test.
+
 === OUTPUT FORMAT ===
 
 <analysis>

@@ -179,6 +179,32 @@ def test_sql_injection(self):
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
+=== WEIGHT GUIDANCE FOR SECURITY TESTS ===
+
+Security tests should have the lowest weights since they test attack scenarios,
+not normal operation. The goal is to periodically verify security, not dominate load.
+
+| Test Type | Default Weight | Rationale |
+|-----------|----------------|-----------|
+| SQL injection | 2 | Important security check |
+| XSS injection | 2 | Important security check |
+| Path traversal | 1 | Edge case security |
+| Auth bypass | 1 | Edge case security |
+
+Example:
+```python
+@task(2)  # Important security check
+def test_sql_injection(self):
+    ...
+
+@task(1)  # Edge case security
+def test_path_traversal(self):
+    ...
+```
+
+Security tests should not overwhelm the load test - keep total security traffic
+at roughly 5-10% of overall test traffic.
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.
