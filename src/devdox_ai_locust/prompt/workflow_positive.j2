@@ -484,7 +484,7 @@ def test_complex_operation(self):
   You MUST generate ALL required fields for every code path. If a discriminated union has
   multiple variants, generate complete valid data for ALL variants.
 - **NEVER leave setup data dicts empty** - Every dict used as request body (user_data, post_data, etc.)
-  MUST contain actual generated field values, NOT empty `{}` or `{# placeholder comment}`.
+  MUST contain actual generated field values, NOT empty `{}` or dicts with only comments inside.
 - **NEVER use bare `pass` statements** that leave variables uninitialized. If you have conditional
   branches (if/elif/else) that build a `data` dict, EVERY branch must assign to `data`:
   ```python

@@ -221,7 +221,7 @@ def test_invalid_input(self):
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 - **NEVER leave placeholder comments** like "# Generate user data here if needed" or "# TODO"
 - **NEVER leave setup data dicts empty** - Every dict used as request body (user_data, post_data, etc.)
-  MUST contain actual generated field values, NOT empty `{}` or `{# placeholder comment}`
+  MUST contain actual generated field values, NOT empty `{}` or dicts with only comments inside
 
 === CRITICAL: TEST GENERATION RULES ===
 
