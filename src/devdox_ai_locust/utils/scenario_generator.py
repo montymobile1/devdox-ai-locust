@@ -294,6 +294,7 @@ class ScenarioWorkflowGenerator:
         tag_name: str = "default",
         all_endpoints: Optional[List[Any]] = None,
         custom_requirement: Optional[str] = None,
+        db_type: str = "",
     ) -> Dict[ScenarioType, str]:
         """
         Generate all scenario workflow files for a single endpoint using LLM.
@@ -306,6 +307,7 @@ class ScenarioWorkflowGenerator:
             tag_name: Tag/group name for this endpoint (used for debug logging)
             all_endpoints: All endpoints from OpenAPI spec (for finding related CREATE endpoints)
             custom_requirement: User-provided custom requirements for test generation
+            db_type: Database type ("mongo" for MongoDB integration)
 
         Returns:
             Dict mapping ScenarioType to generated code content
@@ -327,6 +329,7 @@ class ScenarioWorkflowGenerator:
                 tag_name,
                 all_endpoints,
                 custom_requirement,
+                db_type,
             )
             for scenario_type in scenario_types
         ]
@@ -344,6 +347,7 @@ class ScenarioWorkflowGenerator:
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
         custom_requirement: Optional[str] = None,
+        db_type: str = "",
     ) -> str:
         """
         Generate an orchestrator workflow for a tag that sequences endpoints with data flow.
@@ -363,6 +367,7 @@ class ScenarioWorkflowGenerator:
             test_data_content: Content of test_data.py
             auth_endpoints: Authentication endpoints (optional)
             custom_requirement: User-provided custom requirements
+            db_type: Database type ("mongo" for MongoDB integration)
 
         Returns:
             Generated orchestrator Python code
@@ -389,6 +394,7 @@ class ScenarioWorkflowGenerator:
             test_data_content=test_data_content,
             class_name=class_name,
             custom_requirement=custom_requirement or "",
+            db_type=db_type,
         )
 
         # Call LLM with validation retry
@@ -534,6 +540,7 @@ class ScenarioWorkflowGenerator:
         tag_name: str = "default",
         all_endpoints: Optional[List[Any]] = None,
         custom_requirement: Optional[str] = None,
+        db_type: str = "",
     ) -> str:
         """
         Generate a scenario using LLM for a single endpoint.
@@ -547,6 +554,7 @@ class ScenarioWorkflowGenerator:
             tag_name: Tag/group name for debug logging
             all_endpoints: All endpoints from OpenAPI spec (for finding related CREATE endpoints)
             custom_requirement: User-provided custom requirements for test generation
+            db_type: Database type ("mongo" for MongoDB integration)
 
         Returns:
             Generated Python code
@@ -600,6 +608,7 @@ class ScenarioWorkflowGenerator:
             endpoint_expected_status=expected_status_codes,
             setup_endpoints=setup_endpoints_section,
             custom_requirement=custom_requirement or "",
+            db_type=db_type,
         )
 
         # Call LLM with validation retry (error-aware on retry)

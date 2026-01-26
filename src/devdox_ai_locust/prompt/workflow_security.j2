@@ -35,9 +35,44 @@ from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+{% if db_type == "mongo" %}
+from mongo_data_provider import MongoDataProvider
+{% endif %}
 
 logger = logging.getLogger(__name__)
 ```
+{% if db_type == "mongo" %}
+
+=== MONGODB TEST DATA INTEGRATION ===
+
+This test suite uses MongoDB for realistic test data. Use the MongoDataProvider:
+
+```python
+# In on_start(), initialize the provider:
+def on_start(self):
+    super().on_start()
+    self.mongo = MongoDataProvider()
+    self.test_user = self.mongo.get_random_user()
+
+# Use real IDs when testing injection attacks:
+@task
+def test_sql_injection_with_real_resource(self):
+    if self.test_user:
+        user_id = self.test_user.get("_id")
+        # Test injection on a REAL resource
+        payload = random.choice(SQL_PAYLOADS)
+        data = {"name": payload}
+        with self.client.put(f"/users/{user_id}", json=data, catch_response=True) as response:
+            if response.status_code == 500:
+                response.failure("POTENTIAL VULNERABILITY: Server error from injection")
+            else:
+                response.success()
+```
+
+Use MongoDB data for:
+- Real IDs when testing injection attacks against existing resources
+- Valid IDs for authentication bypass tests
+{% endif %}
 
 === CRITICAL: HTTP REQUEST PATTERNS FOR SECURITY TESTS ===
 

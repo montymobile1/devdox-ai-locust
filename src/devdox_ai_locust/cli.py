@@ -480,6 +480,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 tag_name=tag_name,
                 all_endpoints=endpoints,
                 custom_requirement=custom_requirement,
+                db_type=db_type,
             )
 
             # Save files using async I/O
@@ -578,6 +579,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 test_data_content=test_data_content,
                 auth_endpoints=auth_endpoints if auth else None,
                 custom_requirement=custom_requirement,
+                db_type=db_type,
             )
 
             # Save orchestrator file
