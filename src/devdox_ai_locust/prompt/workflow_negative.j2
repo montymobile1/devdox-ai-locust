@@ -61,9 +61,7 @@ def test_invalid_field_with_valid_id(self):
         user_id = self.test_user.get("_id")
         # Test invalid input with a REAL ID from database
         data = {"invalid_field": "wrong_value"}
-        with self.client.put(f"/users/{user_id}", json=data, catch_response=True) as response:
-            if response.status_code in [400, 422]:
-                response.success()
+        self.make_request("PUT", f"/users/{user_id}", expected_status=[400, 422], json=data)
 ```
 
 Available MongoDataProvider methods:
@@ -77,37 +75,39 @@ Use MongoDB data for:
 - Realistic data relationships for testing edge cases
 {% endif %}
 
-=== CRITICAL: HTTP REQUEST PATTERNS FOR NEGATIVE TESTS ===
+=== CRITICAL: HTTP REQUEST PATTERN FOR NEGATIVE TESTS ===
 
-For NEGATIVE tests (testing error handling), use the `with self.client.X(..., catch_response=True) as response:` pattern.
-This allows you to call `response.success()` when the server correctly returns the expected error code.
+For NEGATIVE tests, use `self.make_request()` with `expected_status` set to the ERROR codes you expect.
+This provides automatic logging with full traceback when the API unexpectedly ACCEPTS invalid input.
 
 **CORRECT PATTERN for negative tests:**
 ```python
 @task(3)
 def test_missing_required_field(self):
     data = {"optional_field": "value"}  # Missing required field
-    with self.client.post("/endpoint", json=data, catch_response=True) as response:
-        if response.status_code in [400, 422]:
-            response.success()  # Server correctly rejected invalid input
-        else:
-            response.failure(f"Expected 400/422, got {response.status_code}")
+    # For negative tests: we EXPECT the API to reject with 400/422
+    # If API returns 200/201 instead, it's logged as a failure with full traceback
+    self.make_request("POST", "/endpoint", expected_status=[400, 422], json=data)
+
+@task(2)
+def test_nonexistent_id_404(self):
+    # For 404 tests: we EXPECT the API to return 404 for non-existent resources
+    self.make_request("GET", "/items/999999999", expected_status=[404])
 ```
 
-**IMPORTANT: The `with` block is REQUIRED when using catch_response=True!**
+**How this works:**
+- `expected_status=[400, 422]` means these are VALID responses (test passes)
+- If API returns 200/201 (accepted invalid input), it's logged as FAILURE with full traceback
+- No need for `catch_response=True` or manual `response.failure()` calls
+
+**IMPORTANT: Always set expected_status to the ERROR codes you expect, NOT success codes!**
 ```python
-# WRONG - will cause LocustError!
-response = self.client.post("/endpoint", json=data, catch_response=True)
-response.failure("error")  # ERROR! Missing 'with' block
+# CORRECT - expect rejection codes
+self.make_request("POST", "/endpoint", expected_status=[400, 422], json=invalid_data)
 
-# CORRECT - always use 'with' block
-with self.client.post("/endpoint", json=data, catch_response=True) as response:
-    response.failure("error")  # OK - inside 'with' block
+# WRONG - this expects success, not rejection
+self.make_request("POST", "/endpoint", expected_status=[200, 201], json=invalid_data)
 ```
-
-**Note about make_request():**
-- For POSITIVE tests in other workflows, use `self.make_request()` which handles Locust reporting internally
-- For NEGATIVE tests, use the `with self.client.X(...)` pattern shown above to control success/failure based on expected error codes
 
 {% if endpoint_expected_status %}
 === EXPECTED STATUS CODES (from OpenAPI spec) ===
@@ -184,45 +184,44 @@ Before writing code, you MUST reason through these steps:
 - If the spec defines 422, test for 422; if it defines 404, test for 404
 - Do NOT hardcode status codes that are not documented in the spec
 
-=== CRITICAL: RESPONSE VALIDATION PATTERN ===
+=== CRITICAL: RESPONSE VALIDATION ===
 
-Negative tests MUST validate that the server CORRECTLY rejects invalid input.
-Use this pattern - call success() when server returns expected error code:
+Negative tests validate that the server CORRECTLY rejects invalid input.
+With `make_request()`, validation is automatic:
 
 ```python
 @task(3)
 def test_invalid_input(self):
     data = {"invalid_field": "wrong_value"}
-    # Use status codes from endpoint_expected_status (OpenAPI spec)
-    # Example: if spec defines [200, 422], use 422 for validation errors
-    with self.client.post("/endpoint", json=data, catch_response=True) as response:
-        # Check against ONLY the error codes defined in the OpenAPI spec
-        expected_error_codes = [code for code in endpoint_expected_status if code >= 400]
-        if response.status_code in expected_error_codes:
-            response.success()  # Server correctly rejected invalid input
-        else:
-            response.failure(f"Expected one of {expected_error_codes}, got {response.status_code}")
+    # Extract error codes from endpoint_expected_status
+    # Example: if spec defines [200, 422], use [422] for negative tests
+    self.make_request("POST", "/endpoint", expected_status=[422], json=data)
+    # If API returns 422 → test passes (API correctly rejected)
+    # If API returns 200 → test fails with full traceback logged automatically
 ```
 
-**DO NOT** unconditionally call response.failure() - that marks the test as failed even when the server behaves correctly!
+**Understanding negative test results:**
+- API returns 4xx (in expected_status) → Test PASSED - API correctly rejected invalid input
+- API returns 2xx (not in expected_status) → Test FAILED - API wrongly accepted invalid input (logged with traceback)
 
 === CONSTRAINTS ===
 - ALL test values must be SHORT: max 50 characters
 - Keep total code under 100 lines
 - For integer path params, use integers (999999), not UUIDs
 - BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
-- **ALWAYS use `with self.client.X(..., catch_response=True) as response:` pattern**
-- **NEVER use catch_response=True without a `with` block** - this causes LocustError
-- Call `response.success()` when server returns expected error code (400, 404, 422)
-- Call `response.failure()` when server returns unexpected status code
+- **ALWAYS use `self.make_request()` with `expected_status` set to 4xx error codes**
+- **NEVER use `with self.client.X(catch_response=True)` pattern** - use make_request() instead
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
 === CRITICAL: TEST GENERATION RULES ===
-**Rule 1 - No Empty Path Segment Tests:**
+
+**Rule 1 - ABSOLUTELY NO Empty Path Segment Tests:**
 - NEVER test empty path parameters by omitting the value (e.g., `/users/` instead of `/users/{id}`)
+- NEVER test paths like `/path/date/` with trailing slash and no value
 - Empty path segments cause 404 (route not found), NOT 422 (validation error)
-- This leads to false test failures - avoid entirely
+- This leads to false test failures - SKIP these tests entirely
+- If you find yourself writing a URL that ends with `/` where a parameter should be, STOP and remove that test
 
 **Rule 2 - Only Test Against Actual Constraints:**
 - ONLY generate special character tests if the field has a `pattern` constraint in the spec
@@ -239,6 +238,23 @@ def test_invalid_input(self):
 - Example: If testing non-existent user_id with emoji field that allows only [A, B, C]:
   - CORRECT: `{"emoji": "A"}` (valid enum) with user_id=999999999
   - WRONG: `{"emoji": "X"}` (invalid enum) - this returns 422, not 404!
+
+**Rule 4 - Valid Boundary Values Are NOT Errors:**
+- Boundary values that match the format are VALID, not errors
+- Date fields: `9999-12-31`, `0001-01-01`, `2000-02-29` are all VALID ISO dates - do NOT expect 422
+- Numeric fields: min/max values within constraints are VALID - do NOT expect 422
+- Only test values that VIOLATE the constraint (e.g., `2000-02-30` is invalid date)
+
+**Rule 5 - Numeric Strings Are Valid Strings:**
+- A string field with value `"123"` is a VALID string
+- A string field with value `"456.78"` is a VALID string
+- Only expect 422 if the field has a `pattern` constraint that explicitly rejects numeric characters
+- Do NOT assume string fields reject numeric input - strings accept ANY characters by default
+
+**Rule 6 - Type Coercion May Be Allowed:**
+- Some APIs accept type coercion (e.g., `"123"` for an integer field)
+- Only test type errors if you're confident the API does strict type validation
+- Focus on clearly invalid types like `{"count": "not-a-number"}` rather than `{"count": "123"}`
 
 === WEIGHT GUIDANCE FOR NEGATIVE TESTS ===
 
@@ -321,7 +337,20 @@ class {{ class_name }}NegativeWorkflow(BaseWorkflow):
     """Negative and edge case tests for {{ method }} {{ path }}"""
 
     @task(3)
+    def test_missing_required_field(self):
+        """Test with missing required field - expect 400/422"""
+        data = {"optional_field": "value"}  # Missing required fields
+        self.make_request("{{ method }}", "{{ path }}", expected_status=[400, 422], json=data)
+
+    @task(3)
     def test_invalid_type(self):
-        # Your implementation based on analysis...
-        pass
+        """Test with invalid field type - expect 400/422"""
+        data = {"field_name": "string_instead_of_int"}  # Wrong type
+        self.make_request("{{ method }}", "{{ path }}", expected_status=[400, 422], json=data)
+
+    @task(2)
+    def test_nonexistent_id(self):
+        """Test with non-existent resource ID - expect 404"""
+        # Use 999999999 for integer IDs, "nonexistent-id-12345" for string/UUID IDs
+        self.make_request("GET", "/resource/999999999", expected_status=[404])
 </code>

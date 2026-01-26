@@ -59,14 +59,10 @@ def on_start(self):
 def test_sql_injection_with_real_resource(self):
     if self.test_user:
         user_id = self.test_user.get("_id")
-        # Test injection on a REAL resource
+        # Test injection on a REAL resource - 500 = vulnerability (auto-logged)
         payload = random.choice(SQL_PAYLOADS)
         data = {"name": payload}
-        with self.client.put(f"/users/{user_id}", json=data, catch_response=True) as response:
-            if response.status_code == 500:
-                response.failure("POTENTIAL VULNERABILITY: Server error from injection")
-            else:
-                response.success()
+        self.make_request("PUT", f"/users/{user_id}", expected_status=[200, 400, 422], json=data)
 ```
 
 Use MongoDB data for:
@@ -74,23 +70,35 @@ Use MongoDB data for:
 - Valid IDs for authentication bypass tests
 {% endif %}
 
-=== CRITICAL: HTTP REQUEST PATTERNS FOR SECURITY TESTS ===
+=== CRITICAL: HTTP REQUEST PATTERN FOR SECURITY TESTS ===
 
-For SECURITY tests, use the `with self.client.X(..., catch_response=True) as response:` pattern.
-This allows you to mark tests as success/failure based on the server's response to injection attempts.
+For SECURITY tests, use `self.make_request()` with `expected_status` set to include ALL non-500 codes.
+A 500 response indicates a potential vulnerability and will be logged automatically with full traceback.
 
-**IMPORTANT: The `with` block is REQUIRED when using catch_response=True!**
+**CORRECT PATTERN for security tests:**
 ```python
-# WRONG - will cause LocustError!
-response = self.client.post("/endpoint", json=data, catch_response=True)
-response.failure("error")  # ERROR! Missing 'with' block
+@task(2)
+def test_sql_injection(self):
+    payload = random.choice(SQL_PAYLOADS)
+    data = {"name": payload, "other_field": "valid_value"}
+    # Include BOTH success (2xx) and rejection (4xx) codes - NOT 500
+    # If API returns 500, it's logged as VULNERABILITY with full traceback
+    self.make_request("POST", "/endpoint", expected_status=[200, 201, 400, 422], json=data)
+```
 
-# CORRECT - always use 'with' block
-with self.client.post("/endpoint", json=data, catch_response=True) as response:
-    if response.status_code in [400, 422]:
-        response.success()  # Server properly rejected injection
-    elif response.status_code == 500:
-        response.failure("POTENTIAL VULNERABILITY: Server error from injection")
+**How this works:**
+- `expected_status=[200, 201, 400, 422]` means these are all acceptable responses
+- 200/201: API accepted input (presumably sanitized) → Test PASSED
+- 400/422: API rejected malicious input → Test PASSED
+- 500: Server crashed from injection → Test FAILED (potential vulnerability, logged with traceback)
+
+**IMPORTANT: Always EXCLUDE 500 from expected_status!**
+```python
+# CORRECT - 500 will be logged as vulnerability
+self.make_request("POST", "/endpoint", expected_status=[200, 400, 422], json=payload_data)
+
+# WRONG - this would treat 500 as acceptable!
+self.make_request("POST", "/endpoint", expected_status=[200, 400, 422, 500], json=payload_data)
 ```
 
 {% if endpoint_expected_status %}
@@ -147,34 +155,32 @@ For each string field, plan:
 - 500: POTENTIAL VULNERABILITY (bad - server error/crash from injection)
 - The goal is to verify the server doesn't crash (500) when receiving malicious input
 
-=== CRITICAL: RESPONSE VALIDATION PATTERN ===
+=== CRITICAL: RESPONSE VALIDATION ===
 
-Security tests MUST validate server responses correctly.
-Use this pattern:
+Security tests validate that the server doesn't crash (500) when receiving malicious input.
+With `make_request()`, 500 responses are automatically logged as failures:
 
 ```python
-@task(3)
+@task(2)
 def test_sql_injection(self):
     payload = random.choice(SQL_PAYLOADS)
     data = {"name": payload, "other_field": "valid"}
-    with self.client.post("/endpoint", json=data, catch_response=True) as response:
-        # Check against status codes from OpenAPI spec (endpoint_expected_status)
-        if response.status_code == 500:
-            response.failure("POTENTIAL VULNERABILITY: Server error from injection")
-        elif response.status_code in endpoint_expected_status:
-            response.success()  # Server handled input (rejected or sanitized)
-        else:
-            response.success()  # Unexpected but not a crash
+    # 500 is NOT in expected_status, so it gets logged as VULNERABILITY
+    self.make_request("POST", "/endpoint", expected_status=[200, 201, 400, 422], json=data)
 ```
 
-**DO NOT** unconditionally call response.failure() - that marks the test as failed even when the server handles the injection correctly!
+**Understanding security test results:**
+- API returns 2xx (accepted/sanitized) → Test PASSED
+- API returns 4xx (rejected injection) → Test PASSED
+- API returns 500 (crashed) → Test FAILED - POTENTIAL VULNERABILITY (logged with traceback)
 
 === CONSTRAINTS ===
 - ALL payloads must be SHORT: max 100 characters
 - Keep total code under 80 lines
 - Use test_data_generator for valid values in non-injected fields
-- **ALWAYS use `with self.client.X(..., catch_response=True) as response:` pattern**
-- **NEVER use catch_response=True without a `with` block** - this causes LocustError
+- **ALWAYS use `self.make_request()` with `expected_status` excluding 500**
+- **NEVER use `with self.client.X(catch_response=True)` pattern** - use make_request() instead
+- **NEVER include 500 in expected_status** - 500 should trigger vulnerability logging
 - BYTES LITERALS MUST BE ASCII ONLY
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
@@ -245,12 +251,23 @@ logger = logging.getLogger(__name__)
 
 SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --"]
 XSS_PAYLOADS = ["<script>alert('XSS')</script>"]
+PATH_TRAVERSAL = ["../../../etc/passwd", "..\\..\\windows\\system32"]
 
 class {{ class_name }}SecurityWorkflow(BaseWorkflow):
     """Security tests for {{ method }} {{ path }}"""
 
-    @task(3)
+    @task(2)
     def test_sql_injection(self):
-        # Your implementation based on analysis...
-        pass
+        """SQL injection test - 500 = potential vulnerability"""
+        payload = random.choice(SQL_PAYLOADS)
+        data = {"string_field": payload}
+        # 500 NOT in expected_status, so it gets logged as vulnerability
+        self.make_request("{{ method }}", "{{ path }}", expected_status=[200, 201, 400, 422], json=data)
+
+    @task(2)
+    def test_xss_injection(self):
+        """XSS injection test - 500 = potential vulnerability"""
+        payload = random.choice(XSS_PAYLOADS)
+        data = {"string_field": payload}
+        self.make_request("{{ method }}", "{{ path }}", expected_status=[200, 201, 400, 422], json=data)
 </code>
