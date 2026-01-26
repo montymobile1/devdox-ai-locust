@@ -243,10 +243,37 @@ class CodeValidator:
 
         return violations
 
-    # Regex to extract method and path from make_request calls
+    # Regex to extract method and path from make_request calls (supports f-strings)
     MAKE_REQUEST_CALL_RE = re.compile(
-        r'make_request\(\s*"(\w+)"\s*,\s*(?:f)?"([^"{}]*)',
+        r'make_request\(\s*"(\w+)"\s*,\s*(?:f)?"([^"]*)"',
     )
+
+    @staticmethod
+    def _paths_match(spec_path: str, call_path: str) -> bool:
+        """Compare an OpenAPI spec path with a code call path segment-by-segment.
+
+        Treats {param} segments in the spec path and {expression} segments in
+        the call path (f-string variables) as wildcards that match any segment.
+
+        Examples:
+            _paths_match("/items/{id}", "/items/{item_id}") -> True
+            _paths_match("/items/{id}", "/items/{item_id}/details") -> False
+            _paths_match("/items/{id}/details", "/items/{x}/details") -> True
+        """
+        spec_segments = [s for s in spec_path.strip("/").split("/") if s]
+        call_segments = [s for s in call_path.strip("/").split("/") if s]
+
+        if len(spec_segments) != len(call_segments):
+            return False
+
+        for spec_seg, call_seg in zip(spec_segments, call_segments):
+            # If either segment is a parameter placeholder, it matches anything
+            if spec_seg.startswith("{") or call_seg.startswith("{"):
+                continue
+            if spec_seg != call_seg:
+                return False
+
+        return True
 
     def _check_success_codes_in_negative(self, code: str, endpoint_path: str = "") -> List[ValidationViolation]:
         """Check for 2xx status codes in negative workflow expected_status (Classification G).
@@ -256,9 +283,6 @@ class CodeValidator:
         """
         violations = []
         lines = code.split("\n")
-
-        # Normalize endpoint path for comparison (strip path params)
-        endpoint_base = endpoint_path.split("{")[0].rstrip("/") if endpoint_path else ""
 
         for i, line in enumerate(lines, 1):
             match = self.SUCCESS_IN_EXPECTED_STATUS_RE.search(line)
@@ -275,9 +299,8 @@ class CodeValidator:
                         call_match = self.MAKE_REQUEST_CALL_RE.search(line)
                         if call_match:
                             call_path = call_match.group(2)
-                            call_base = call_path.split("{")[0].rstrip("/")
                             # If calling a DIFFERENT endpoint (setup call), allow 2xx
-                            if call_base and endpoint_base and call_base != endpoint_base:
+                            if call_path and not self._paths_match(endpoint_path, call_path):
                                 continue
 
                     violations.append(ValidationViolation(
@@ -305,7 +328,7 @@ class CodeValidator:
                 continue
 
             # Extract URL from make_request call - handle both regular and f-strings
-            url_match = re.search(r'make_request\([^,]+,\s*(?:f)?"([^"{}]+)', line)
+            url_match = re.search(r'make_request\([^,]+,\s*(?:f)?"([^"]+)"', line)
             if not url_match:
                 continue
 
@@ -333,17 +356,9 @@ class CodeValidator:
         if used_path == endpoint_path:
             return True
 
-        # Check against all known paths (resolve path params)
+        # Check against all known paths using segment-by-segment comparison
         for spec_path in all_paths:
-            # Convert spec path params to regex: /items/{id} -> /items/[^/]+
-            pattern = re.sub(r'\{[^}]+\}', r'[^/]+', spec_path)
-            if re.fullmatch(pattern, used_path):
-                return True
-
-            # Also check base path match (for endpoints with path params)
-            base_spec = spec_path.split("{")[0].rstrip("/")
-            base_used = used_path.split("{")[0].rstrip("/")
-            if base_spec and base_used.startswith(base_spec):
+            if self._paths_match(spec_path, used_path):
                 return True
 
         return False

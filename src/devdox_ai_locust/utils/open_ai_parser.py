@@ -262,12 +262,21 @@ class OpenAPIParser:
 
             # Extract parameter type from schema
             param_schema = param.get("schema", {})
-            param_type = param_schema.get("type", "string")
-            param_format = param_schema.get("format")
+
+            # Unwrap OpenAPI 3.1 anyOf nullable pattern
+            effective_schema = param_schema
+            any_of = param_schema.get("anyOf") or param_schema.get("oneOf")
+            if any_of and isinstance(any_of, list):
+                real_variants = [v for v in any_of if isinstance(v, dict) and v.get("type") != "null"]
+                if len(real_variants) == 1:
+                    effective_schema = real_variants[0]
+
+            param_type = effective_schema.get("type", "string")
+            param_format = effective_schema.get("format")
 
             # Handle array types
             if param_type == "array":
-                items = param_schema.get("items", {})
+                items = effective_schema.get("items", {})
                 param_type = f"array[{items.get('type', 'string')}]"
 
             parameter = Parameter(
@@ -276,15 +285,15 @@ class OpenAPIParser:
                 required=param.get("required", False),
                 type=param_type,
                 description=param.get("description"),
-                example=param.get("example") or param_schema.get("example"),
-                enum=param_schema.get("enum"),
-                default=param_schema.get("default"),
+                example=param.get("example") or effective_schema.get("example"),
+                enum=effective_schema.get("enum"),
+                default=effective_schema.get("default"),
                 format=param_format,
-                pattern=param_schema.get("pattern"),
-                min_length=param_schema.get("minLength"),
-                max_length=param_schema.get("maxLength"),
-                minimum=param_schema.get("minimum"),
-                maximum=param_schema.get("maximum"),
+                pattern=effective_schema.get("pattern"),
+                min_length=effective_schema.get("minLength"),
+                max_length=effective_schema.get("maxLength"),
+                minimum=effective_schema.get("minimum"),
+                maximum=effective_schema.get("maximum"),
             )
 
             parameters.append(parameter)
@@ -334,8 +343,8 @@ class OpenAPIParser:
         media_type = content[content_type]
         schema = media_type.get("schema", {})
 
-        # Resolve schema reference if needed
-        schema = self._resolve_reference(schema)
+        # Recursively resolve all $refs in the schema
+        schema = self._resolve_schema_deep(schema)
 
         return RequestBody(
             content_type=content_type,
@@ -380,7 +389,7 @@ class OpenAPIParser:
 
                 schema = media_type.get("schema")
                 if schema:
-                    schema = self._resolve_reference(schema)
+                    schema = self._resolve_schema_deep(schema)
 
             response = Response(
                 status_code=status_code,
@@ -437,6 +446,88 @@ class OpenAPIParser:
         except (KeyError, TypeError) as e:
             logger.warning(f"Failed to resolve reference {ref}: {e}")
             return None
+
+    def _resolve_schema_deep(
+        self, schema: Optional[Dict[str, Any]], _ancestors: Optional[set] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Recursively resolve all $ref references in a schema tree.
+
+        Uses ancestry tracking to detect circular references. When a circular
+        reference is detected, the schema at that point is returned with only
+        its direct properties resolved (no further recursion into the cycle).
+
+        Args:
+            schema: Schema dict that may contain $ref at any level
+            _ancestors: Set of $ref paths seen in the current resolution chain
+
+        Returns:
+            Fully resolved schema dict, or None if resolution fails
+        """
+        if not isinstance(schema, dict):
+            return schema
+
+        if _ancestors is None:
+            _ancestors = set()
+
+        # If this schema is a $ref, resolve it
+        ref = schema.get("$ref")
+        if ref:
+            if ref in _ancestors:
+                # Circular reference detected - return the resolved target
+                # without further recursion (one level of fields only)
+                resolved = self._resolve_reference(schema)
+                if not resolved:
+                    return None
+                # Return a shallow copy without recursing into its nested refs
+                result = dict(resolved)
+                result.pop("$ref", None)
+                return result
+
+            # Track this ref in ancestry
+            new_ancestors = _ancestors | {ref}
+            resolved = self._resolve_reference(schema)
+            if not resolved:
+                return None
+            # Continue resolving the resolved schema
+            return self._resolve_schema_deep(resolved, new_ancestors)
+
+        # Not a $ref - recursively resolve nested structures
+        result = dict(schema)
+
+        # Resolve properties
+        if "properties" in result and isinstance(result["properties"], dict):
+            resolved_props = {}
+            for prop_name, prop_schema in result["properties"].items():
+                resolved_props[prop_name] = self._resolve_schema_deep(
+                    prop_schema, _ancestors
+                ) or prop_schema
+            result["properties"] = resolved_props
+
+        # Resolve additionalProperties
+        if "additionalProperties" in result and isinstance(
+            result["additionalProperties"], dict
+        ):
+            result["additionalProperties"] = self._resolve_schema_deep(
+                result["additionalProperties"], _ancestors
+            ) or result["additionalProperties"]
+
+        # Resolve items (for arrays)
+        if "items" in result and isinstance(result["items"], dict):
+            result["items"] = self._resolve_schema_deep(
+                result["items"], _ancestors
+            ) or result["items"]
+
+        # Resolve allOf, oneOf, anyOf
+        for keyword in ("allOf", "oneOf", "anyOf"):
+            if keyword in result and isinstance(result[keyword], list):
+                resolved_list = []
+                for item in result[keyword]:
+                    resolved_item = self._resolve_schema_deep(item, _ancestors)
+                    resolved_list.append(resolved_item or item)
+                result[keyword] = resolved_list
+
+        return result
 
     def get_schema_info(self) -> Dict[str, Any]:
         """

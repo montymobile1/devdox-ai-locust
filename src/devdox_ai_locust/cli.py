@@ -286,6 +286,7 @@ async def _generate_and_create_tests(
     auth: bool = False,
     db_type: str = "",
     timeout: int = 120,
+    max_llm_workers: int = 1,
     debug_recorder: Optional[DebugRecorder] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
@@ -305,6 +306,7 @@ async def _generate_and_create_tests(
         db_type,
         host,
         custom_requirement,
+        max_llm_workers,
         debug_recorder,
     )
 
@@ -319,6 +321,7 @@ async def _generate_scenario_based_tests(
     db_type: str,
     host: Optional[str] = None,
     custom_requirement: Optional[str] = None,
+    max_llm_workers: int = 1,
     debug_recorder: Optional[DebugRecorder] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
@@ -344,7 +347,7 @@ async def _generate_scenario_based_tests(
         prompt_dir=prompt_dir,
         ai_client=ai_client,
         ai_config=ai_config,
-        max_concurrency=min(concurrency, 50),
+        max_concurrency=max_llm_workers,
         debug_recorder=debug_recorder,
     )
 
@@ -388,7 +391,9 @@ async def _generate_scenario_based_tests(
                 rendered_content=content,
             )
 
-    # Get auth endpoints
+    # TODO: Auth endpoint detection is overly broad - matches any path containing
+    # "auth", "login", "token", or "session" as substrings (e.g. "/authorization-codes",
+    # "/reset-session-timer"). Consider using OpenAPI security schemes instead.
     auth_endpoints = [ep for ep in endpoints if any(
         kw in ep.path.lower() for kw in ["auth", "login", "token", "session"]
     )]
@@ -782,11 +787,10 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="Timeout in seconds for fetching/parsing OpenAPI schema (default: 30)",
 )
 @click.option(
-    "--concurrency",
-    "-c",
+    "--max-llm-workers",
     type=int,
-    default=10,
-    help="Number of concurrent LLM requests (default: 10, max: 50). Lower to reduce API 503 errors.",
+    default=1,
+    help="Number of concurrent LLM requests (default: 1, max: 10).",
 )
 @click.option(
     "--debug",
@@ -810,10 +814,17 @@ def generate(
     together_api_key: Optional[str],
     timeout: int,
     schema_timeout: int,
-    concurrency: int,
+    max_llm_workers: int,
     debug: bool,
 ) -> None:
     """Generate Locust test files from API documentation URL or file"""
+
+    # Validate max_llm_workers
+    if max_llm_workers > 10:
+        raise click.BadParameter(
+            f"--max-llm-workers cannot exceed 10 (got {max_llm_workers})",
+            param_hint="'--max-llm-workers'",
+        )
 
     # Setup output directory
     output_dir = _setup_output_directory(output)
@@ -836,6 +847,7 @@ def generate(
                 together_api_key,
                 timeout,
                 schema_timeout,
+                max_llm_workers,
                 debug,
             )
         )
@@ -863,6 +875,7 @@ async def _async_generate(
     together_api_key: Optional[str],
     timeout: int = 120,
     schema_timeout: int = 30,
+    max_llm_workers: int = 1,
     debug: bool = False,
 ) -> None:
     """Async function to handle the generation process"""
@@ -890,6 +903,7 @@ async def _async_generate(
                 "custom_requirement": custom_requirement,
                 "timeout": timeout,
                 "schema_timeout": schema_timeout,
+                "max_llm_workers": max_llm_workers,
             })
 
         # Display configuration
@@ -935,6 +949,7 @@ async def _async_generate(
             auth,
             db_type,
             timeout,
+            max_llm_workers,
             debug_recorder,
         )
 

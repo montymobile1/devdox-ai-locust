@@ -6,7 +6,6 @@ Generates Locust performance test files from parsed OpenAPI endpoints.
 
 import json
 import re
-import secrets
 from typing import List, Tuple, Dict, Any, Optional
 import black
 from jinja2 import Environment, FileSystemLoader
@@ -306,7 +305,6 @@ class LocustTestGenerator:
 
             # Properly indent task methods for class inclusion
             indented_task_methods = self._indent_methods(task_methods, indent_level=1)
-            indented_task_methods = ""
             # Generate the complete file content
             return self._build_locustfile_template(
                 api_info=api_info,
@@ -510,17 +508,10 @@ def {method_name}(self):
 
         param_lines = []
         for param in query_params:
-            if self._should_skip_optional_param(param):
-                continue
-
             param_line = self._generate_param_line(param)
             param_lines.append(param_line)
 
         return self._format_params_dict(param_lines)
-
-    def _should_skip_optional_param(self, param: Parameter) -> bool:
-        """Randomly skip optional parameters 30% of the time"""
-        return not param.required and secrets.randbelow(100) > 70
 
     def _generate_param_line(self, param: Parameter) -> str:
         """Generate a single parameter line based on its type"""
