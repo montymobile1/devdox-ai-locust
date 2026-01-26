@@ -84,6 +84,7 @@ ai = [
 [project.scripts]
 devdox_ai_locust = "devdox_ai_locust.cli:main"
 dal = "devdox_ai_locust.cli:main"
+devdox_ai_locust_analyze = "devdox_ai_locust.log_analyzer:main"
 
 [project.urls]
 Homepage = "https://github.com/montymobile1/devdox-ai-locust"

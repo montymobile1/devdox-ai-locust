@@ -187,7 +187,7 @@ class LocustTestGenerator:
                 "locustfile.py": self._generate_main_locustfile(
                     endpoints, api_info, list(grouped_enpoint.keys())
                 ),
-                "base_workflow.py": self.generate_base_common_file(api_info),
+                "base_workflow.py": self.generate_base_common_file(api_info, total_endpoints=len(endpoints)),
                 "test_data.py": self._generate_test_data_file(db_type),
                 "config.py": self._generate_config_file(api_info),
                 "utils.py": self._generate_utils_file(),
@@ -252,8 +252,9 @@ class LocustTestGenerator:
 
                 workflows.append({file_name: file_content})
 
+            total_ep_count = sum(len(v) for v in endpoints.values())
             workflows.append(
-                {"base_workflow.py": self.generate_base_common_file(api_info)}
+                {"base_workflow.py": self.generate_base_common_file(api_info, total_endpoints=total_ep_count)}
             )
 
             return workflows
@@ -796,6 +797,6 @@ def {method_name}(self):
             logger.error(f"Error generating README: {e}")
             return ""
 
-    def generate_base_common_file(self, api_info: Dict[str, Any]) -> str:
+    def generate_base_common_file(self, api_info: Dict[str, Any], total_endpoints: int = 0) -> str:
         template = self.jinja_env.get_template("base_workflow.py.j2")
-        return template.render(api_info=api_info)
+        return template.render(api_info=api_info, total_endpoints=total_endpoints)

@@ -26,6 +26,52 @@ config = LoadTestConfig()
 data_generator = TestDataGenerator()
 
 
+import re as _re
+
+class APITracker:
+    """Tracks unique API endpoints called during the Locust run and logs milestones."""
+
+    _UUID_RE = _re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', _re.I)
+    _NUM_RE = _re.compile(r'/\d+(?=/|$)')
+
+    def __init__(self, total_endpoints: int):
+        self.total_endpoints = total_endpoints
+        self._seen: set = set()
+        self._milestones_printed: set = set()
+
+    def record(self, method: str, path: str) -> None:
+        """Record an API call. Logs milestone if a new threshold is crossed."""
+        normalized = self._normalize(method, path)
+        if normalized in self._seen:
+            return
+        self._seen.add(normalized)
+        self._check_milestone()
+
+    def _normalize(self, method: str, path: str) -> str:
+        """Normalize path by replacing UUIDs and numeric IDs."""
+        path = self._UUID_RE.sub('{id}', path)
+        path = self._NUM_RE.sub('/{id}', path)
+        return f"{method.upper()} {path}"
+
+    def _check_milestone(self) -> None:
+        if self.total_endpoints <= 0:
+            return
+        count = len(self._seen)
+        percent = (count * 100) // self.total_endpoints
+        for milestone in [10, 25, 50, 75, 90, 100]:
+            if percent >= milestone and milestone not in self._milestones_printed:
+                self._milestones_printed.add(milestone)
+                logger.info(f"API Coverage: {count}/{self.total_endpoints} unique endpoints called ({milestone}%)")
+
+    @property
+    def unique_count(self) -> int:
+        return len(self._seen)
+
+
+# Total endpoints injected at generation time
+api_tracker = APITracker(total_endpoints={{ total_endpoints }})
+
+
 class BaseTaskMethods:
     """Mixin class with common task functionality - no inheritance conflicts"""
 
@@ -245,6 +291,7 @@ class BaseTaskMethods:
         """
         self._initialize_attributes()
         self.request_count += 1
+        api_tracker.record(method, path)
 
         # Capture request body for error logging
         request_body = kwargs.get("json") or kwargs.get("data")
