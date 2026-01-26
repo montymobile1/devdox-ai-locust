@@ -325,6 +325,20 @@ def test_boundary_value(self):
     ...
 ```
 
+=== CRITICAL MISTAKES TO AVOID ===
+
+**DO NOT** make these common errors:
+1. **NEVER test empty path segments** (e.g., `/path/param/` with no value) - these return 404, not 422
+2. **NEVER test special characters unless the field has a pattern constraint**
+3. **NEVER assume validation rules not in the OpenAPI spec**
+4. **NEVER use self.client directly** - always use self.make_request()
+5. **NEVER access .status_code on make_request() result** - it returns dict or None
+6. **NEVER use success codes (2xx) in expected_status for negative tests** - only use 4xx codes
+7. **NEVER use Unicode characters** - ASCII only (codes 0-127)
+8. **NEVER import modules not listed in ALLOWED IMPORTS**
+9. **ALWAYS use valid values for OTHER fields when testing non-existent IDs**
+   - When testing 404 with invalid ID, enum/pattern fields must still have VALID values
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.

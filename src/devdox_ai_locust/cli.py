@@ -205,9 +205,15 @@ def _show_run_instructions(
 
 
 async def _process_api_schema(
-    swagger_url: str, verbose: bool
+    swagger_url: str, verbose: bool, schema_timeout: int = 30
 ) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
-    """Fetch and parse API schema"""
+    """Fetch and parse API schema
+
+    Args:
+        swagger_url: URL or file path to OpenAPI/Swagger schema
+        verbose: Enable verbose output
+        schema_timeout: Timeout in seconds for fetching the schema (default: 30)
+    """
     source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
     api_schema = None
 
@@ -215,7 +221,7 @@ async def _process_api_schema(
     source_type = 'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'
     console.print(f"→ Fetching API schema from {source_type}...")
     try:
-        async with asyncio.timeout(30):
+        async with asyncio.timeout(schema_timeout):
             api_schema = await get_api_schema(source_request)
 
             if not api_schema:
@@ -223,7 +229,8 @@ async def _process_api_schema(
                 sys.exit(1)
 
     except asyncio.TimeoutError:
-        console.print("[red]✗[/red] Timeout while fetching API schema")
+        console.print(f"[red]✗[/red] Timeout while fetching API schema (exceeded {schema_timeout}s)")
+        console.print("[dim]Hint: Use --schema-timeout to increase the timeout for large schemas[/dim]")
         sys.exit(1)
     except Exception as e:
         console.print(f"[red]✗[/red] Error fetching API schema: {e}")
@@ -424,14 +431,22 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 '''
 
     # Generate base templates first (LLM will enhance these)
+    # These are critical fallback infrastructure - fail fast if generation fails
     console.print("→ Generating base templates...")
     pre_llm_templates: Dict[Tuple[int, str], str] = {}
     scenario_types = ["positive", "negative", "security"]
-    for endpoint in endpoints:
-        for scenario_type in scenario_types:
-            pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
-                endpoint, scenario_type
-            )
+    try:
+        for endpoint in endpoints:
+            for scenario_type in scenario_types:
+                pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
+                    endpoint, scenario_type
+                )
+    except Exception as e:
+        console.print(f"[bold red]CRITICAL ERROR: Failed to generate base templates[/bold red]")
+        console.print(f"[red]This indicates a bug or corrupted installation.[/red]")
+        console.print(f"[red]Error: {e}[/red]")
+        logger.error(f"Pre-LLM template generation failed: {e}", exc_info=True)
+        sys.exit(1)
     console.print("[green]✓[/green] Base templates generated")
 
     # Build endpoint to tag mapping
@@ -439,6 +454,10 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     for tag_name, tag_endpoints in grouped_endpoints.items():
         for ep in tag_endpoints:
             endpoint_to_tag[id(ep)] = tag_name
+
+    # Track successful endpoints for orchestrator generation
+    # Orchestrator should only reference endpoints that were successfully generated
+    successful_endpoints: set = set()  # Set of endpoint ids that succeeded
 
     # Track active workers for concurrent progress display
     active_workers: set = set()  # Set of active endpoint short_info strings
@@ -522,6 +541,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             # Update progress (success) and release worker
             async with file_write_lock:
                 completed_count += 1
+                successful_endpoints.add(id(endpoint))  # Track for orchestrator
                 created_files.extend(local_files)
                 active_workers.discard(short_info)
                 check_and_print_progress()
@@ -539,16 +559,20 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     fallback_content = generate_pre_llm_workflow(endpoint, scenario_type)
                 filename = f"{scenario_type}_workflow.py"
                 file_path = endpoint_dir / filename
-                async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-                    await f.write(fallback_content)
-                fallback_files.append({
-                    "path": str(file_path),
-                    "size": len(fallback_content),
-                    "tag": tag_name,
-                    "operation_id": operation_id,
-                    "scenario": scenario_type,
-                    "fallback": True,
-                })
+                try:
+                    async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                        await f.write(fallback_content)
+                    fallback_files.append({
+                        "path": str(file_path),
+                        "size": len(fallback_content),
+                        "tag": tag_name,
+                        "operation_id": operation_id,
+                        "scenario": scenario_type,
+                        "fallback": True,
+                    })
+                except Exception as write_error:
+                    logger.error(f"Failed to write fallback file {file_path}: {write_error}")
+                    # Continue with other scenarios - don't let one file failure stop all
 
             async with file_write_lock:
                 failed_count += 1
@@ -591,10 +615,18 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         tag_dir_name = sanitize_dir_name(tag_name)
         tag_dir = workflows_dir / tag_dir_name
 
+        # Filter to only endpoints that successfully generated workflows
+        # This prevents orchestrator from referencing non-existent endpoints
+        valid_endpoints = [ep for ep in tag_endpoints if id(ep) in successful_endpoints]
+
+        if not valid_endpoints:
+            console.print(f"  [yellow]⚠[/yellow] {tag_dir_name}/orchestrator_workflow.py skipped (no valid endpoints)")
+            continue
+
         try:
             orchestrator_code = await scenario_gen.generate_tag_orchestrator(
                 tag_name=tag_name,
-                tag_endpoints=tag_endpoints,
+                tag_endpoints=valid_endpoints,  # Only pass successfully generated endpoints
                 base_workflow_content=base_workflow_content,
                 test_data_content=test_data_content,
                 auth_endpoints=auth_endpoints if auth else None,
@@ -602,7 +634,8 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 db_type=db_type,
             )
 
-            # Save orchestrator file
+            # Save orchestrator file (ensure directory exists as safety net)
+            tag_dir.mkdir(parents=True, exist_ok=True)
             orchestrator_path = tag_dir / "orchestrator_workflow.py"
             async with aiofiles.open(orchestrator_path, 'w', encoding='utf-8') as f:
                 await f.write(orchestrator_code)
@@ -660,6 +693,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     workflows_init.write_text("\n".join(tag_imports) + "\n", encoding='utf-8')
 
     # Create __init__.py for each tag directory
+    # Only import workflows that actually exist (handles partial failures gracefully)
     for tag_name, tag_endpoints in grouped_endpoints.items():
         tag_dir_name = sanitize_dir_name(tag_name)
         tag_dir = workflows_dir / tag_dir_name
@@ -668,11 +702,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             for ep in tag_endpoints:
                 op_id = scenario_gen.get_endpoint_dir_name(ep)
                 class_name = to_class_name(op_id)
-                # Import all three scenario types
+                endpoint_dir = tag_dir / op_id
+                # Only import scenario types that actually exist
                 for scenario in ["positive", "negative", "security"]:
-                    init_lines.append(
-                        f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
-                    )
+                    workflow_file = endpoint_dir / f"{scenario}_workflow.py"
+                    if workflow_file.exists():
+                        init_lines.append(
+                            f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
+                        )
             # Import orchestrator if it exists
             orchestrator_path = tag_dir / "orchestrator_workflow.py"
             if orchestrator_path.exists():
@@ -760,6 +797,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="Timeout in seconds for AI API calls (default: 120, increase for large APIs)",
 )
 @click.option(
+    "--schema-timeout",
+    type=int,
+    default=30,
+    help="Timeout in seconds for fetching/parsing OpenAPI schema (default: 30)",
+)
+@click.option(
     "--debug",
     is_flag=True,
     default=False,
@@ -780,6 +823,7 @@ def generate(
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
     timeout: int,
+    schema_timeout: int,
     debug: bool,
 ) -> None:
     """Generate Locust test files from API documentation URL or file"""
@@ -794,7 +838,7 @@ def generate(
             _async_generate(
                 ctx,
                 swagger_url,
-                output,
+                output_dir,  # Pass already-created output_dir instead of string
                 users,
                 spawn_rate,
                 run_time,
@@ -805,6 +849,7 @@ def generate(
                 custom_requirement,
                 together_api_key,
                 timeout,
+                schema_timeout,
                 debug,
             )
         )
@@ -822,7 +867,7 @@ def generate(
 async def _async_generate(
     ctx: click.Context,
     swagger_url: str,
-    output: str,
+    output_dir: Path,  # Accept already-created output directory
     users: int,
     spawn_rate: float,
     run_time: str,
@@ -833,6 +878,7 @@ async def _async_generate(
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
     timeout: int = 120,
+    schema_timeout: int = 30,
     debug: bool = False,
 ) -> None:
     """Async function to handle the generation process"""
@@ -840,7 +886,6 @@ async def _async_generate(
 
     try:
         _, api_key = _initialize_config(together_api_key)
-        output_dir = _setup_output_directory(output)
 
         # Initialize debug recorder
         debug_recorder = DebugRecorder(output_dir, enabled=debug)
@@ -850,7 +895,7 @@ async def _async_generate(
             # Record CLI args
             debug_recorder.record_cli_args({
                 "swagger_url": swagger_url,
-                "output": output,
+                "output": str(output_dir),
                 "users": users,
                 "spawn_rate": spawn_rate,
                 "run_time": run_time,
@@ -860,6 +905,7 @@ async def _async_generate(
                 "dry_run": dry_run,
                 "custom_requirement": custom_requirement,
                 "timeout": timeout,
+                "schema_timeout": schema_timeout,
             })
 
         # Display configuration
@@ -877,7 +923,7 @@ async def _async_generate(
             )
 
         raw_schema, endpoints, api_info = await _process_api_schema(
-            swagger_url, ctx.obj["verbose"]
+            swagger_url, ctx.obj["verbose"], schema_timeout
         )
 
         # Record parsed OpenAPI data

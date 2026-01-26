@@ -38,6 +38,11 @@ class Parameter:
     enum: Optional[List[Any]] = None
     default: Optional[Any] = None
     format: Optional[str] = None
+    pattern: Optional[str] = None
+    min_length: Optional[int] = None
+    max_length: Optional[int] = None
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
 
 
 @dataclass
@@ -275,6 +280,11 @@ class OpenAPIParser:
                 enum=param_schema.get("enum"),
                 default=param_schema.get("default"),
                 format=param_format,
+                pattern=param_schema.get("pattern"),
+                min_length=param_schema.get("minLength"),
+                max_length=param_schema.get("maxLength"),
+                minimum=param_schema.get("minimum"),
+                maximum=param_schema.get("maximum"),
             )
 
             parameters.append(parameter)

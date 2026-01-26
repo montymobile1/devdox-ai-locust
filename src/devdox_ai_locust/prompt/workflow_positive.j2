@@ -341,6 +341,19 @@ def test_success_with_valid_data(self):
     self.make_request("POST", "/endpoint", expected_status=[201], params={"required_param": param_value}, data=data)
 ```
 
+=== CRITICAL MISTAKES TO AVOID ===
+
+**DO NOT** make these common errors:
+1. **NEVER invent endpoint paths** - only use paths shown in the ENDPOINT TO TEST section
+2. **NEVER hardcode IDs** (like `/items/1`) - always create resources first and use returned IDs
+3. **NEVER ignore enum constraints** - if "allowed values:" is shown, use EXACTLY one of those values
+4. **NEVER ignore pattern constraints** - if "pattern=" is shown, generate values matching that pattern
+5. **NEVER use self.client directly** - always use self.make_request()
+6. **NEVER access .status_code on make_request() result** - it returns dict or None
+7. **NEVER include 4xx status codes in expected_status for positive tests** - only use 2xx codes
+8. **NEVER use Unicode characters** - ASCII only (codes 0-127)
+9. **NEVER import modules not listed in ALLOWED IMPORTS**
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.
@@ -384,7 +397,10 @@ logger = logging.getLogger(__name__)
 class {{ class_name }}PositiveWorkflow(BaseWorkflow):
     """Positive and state tests for {{ method }} {{ path }}"""
 
-    created_ids = []
+    def on_start(self):
+        super().on_start()
+        # Instance variable to avoid state leaking between test instances
+        self.created_ids = []
 
     @task(10)
     def test_success_with_valid_data(self):

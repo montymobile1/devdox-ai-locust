@@ -917,6 +917,11 @@ class ScenarioWorkflowGenerator:
                 param_format = getattr(param, "format", None)
                 param_enum = getattr(param, "enum", None)
                 param_desc = getattr(param, "description", None)
+                param_pattern = getattr(param, "pattern", None)
+                param_min_length = getattr(param, "min_length", None)
+                param_max_length = getattr(param, "max_length", None)
+                param_minimum = getattr(param, "minimum", None)
+                param_maximum = getattr(param, "maximum", None)
 
                 required_str = "(required)" if param_required else "(optional)"
                 type_str = param_type
@@ -925,7 +930,24 @@ class ScenarioWorkflowGenerator:
 
                 lines.append(f"  - {param_name} [{param_in}]: {type_str} {required_str}")
                 if param_enum:
-                    lines.append(f"      enum: {param_enum}")
+                    # Standardized format for enum values
+                    lines.append(f"      allowed values: {param_enum}")
+                if param_pattern:
+                    lines.append(f"      pattern: {param_pattern}")
+                if param_min_length is not None or param_max_length is not None:
+                    length_constraints = []
+                    if param_min_length is not None:
+                        length_constraints.append(f"minLength={param_min_length}")
+                    if param_max_length is not None:
+                        length_constraints.append(f"maxLength={param_max_length}")
+                    lines.append(f"      constraints: {', '.join(length_constraints)}")
+                if param_minimum is not None or param_maximum is not None:
+                    range_constraints = []
+                    if param_minimum is not None:
+                        range_constraints.append(f"min={param_minimum}")
+                    if param_maximum is not None:
+                        range_constraints.append(f"max={param_maximum}")
+                    lines.append(f"      constraints: {', '.join(range_constraints)}")
                 if param_desc:
                     lines.append(f"      description: {param_desc[:80]}")
 
@@ -1700,16 +1722,12 @@ Do NOT invent or call POST endpoints that are not documented here.
             actual_class_name = match.group(1)
             if actual_class_name != expected_full_name:
                 logger.debug(f"Fixing class name: {actual_class_name} -> {expected_full_name}")
-                # Replace the class name in definition and any self-references
+                # Replace the class name in definition only
+                # Note: We only fix the class definition, not docstrings/comments
+                # If LLM uses wrong name elsewhere, validation will fail and trigger retry
                 code = re.sub(
                     rf'\bclass\s+{re.escape(actual_class_name)}\s*\(',
                     f'class {expected_full_name}(',
-                    code
-                )
-                # Also replace docstrings or comments mentioning the old name
-                code = re.sub(
-                    rf'\b{re.escape(actual_class_name)}\b',
-                    expected_full_name,
                     code
                 )
 
@@ -1738,69 +1756,150 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         LLMs sometimes generate b'tëst' which is invalid Python (bytes can only
         contain ASCII). This converts them to 'tëst'.encode('utf-8').
+
+        Uses improved regex patterns that handle:
+        - Escaped quotes: b'test\\'s data' or b"test\\"s data"
+        - Multiple bytes literals on same line
+        - Both single and double quoted strings
         """
         import re
 
-        def fix_match(match):
-            quote_char = match.group(1)  # ' or "
-            content = match.group(2)
+        def fix_single_quoted(match):
+            content = match.group(1)
             # Check if content has non-ASCII
             try:
                 content.encode('ascii')
                 return match.group(0)  # Valid ASCII, keep as-is
             except UnicodeEncodeError:
                 # Has non-ASCII, convert to .encode() form
-                return f"{quote_char}{content}{quote_char}.encode('utf-8')"
+                return f"'{content}'.encode('utf-8')"
 
-        # Match b'...' or b"..." - non-greedy to handle multiple on same line
-        pattern = r"b(['\"])([^'\"]*?)\1"
-        return re.sub(pattern, fix_match, code)
+        def fix_double_quoted(match):
+            content = match.group(1)
+            # Check if content has non-ASCII
+            try:
+                content.encode('ascii')
+                return match.group(0)  # Valid ASCII, keep as-is
+            except UnicodeEncodeError:
+                # Has non-ASCII, convert to .encode() form
+                return f'"{content}".encode(\'utf-8\')'
+
+        # Patterns that properly handle escaped quotes
+        # (?:[^'\\]|\\.)* matches: non-quote-non-backslash OR backslash+anything
+        single_quote_pattern = r"b'((?:[^'\\]|\\.)*)'"
+        double_quote_pattern = r'b"((?:[^"\\]|\\.)*)"'
+
+        # Apply fixes for both quote styles
+        code = re.sub(single_quote_pattern, fix_single_quoted, code)
+        code = re.sub(double_quote_pattern, fix_double_quoted, code)
+
+        return code
 
     def _fix_regex_strings(self, code: str) -> str:
         """
-        Convert strings with regex escape sequences to raw strings.
+        Convert strings with regex escape sequences to raw strings using tokenizer.
 
         LLMs sometimes generate "\\d" or "\\+" which triggers SyntaxWarnings
         in Python 3.12+. This converts them to raw strings: r"\\d", r"\\+".
 
+        Uses Python's tokenizer for robust string detection that handles:
+        - Escaped quotes within strings
+        - Multi-line strings
+        - Adjacent string literals
+        - Nested quotes
+
         Converts: "\\d", "\\+", "\\s", etc. → r"\\d", r"\\+", r"\\s"
         """
+        import tokenize
+        import io
         import re
 
         # Problematic escape sequences that trigger SyntaxWarnings
-        problematic_escapes = [
-            '\\d', '\\D', '\\w', '\\W', '\\s', '\\S',
-            '\\+', '\\*', '\\?', '\\^', '\\$', '\\|',
-            '\\(', '\\)', '\\[', '\\]', '\\{', '\\}',
-            '\\.'  # Escaped dot in regex patterns like \.
-        ]
+        problematic_escapes = re.compile(
+            r'\\[dDwWsS+*?^$.|()\\[\]{}]'
+        )
 
-        lines = code.split('\n')
-        fixed_lines = []
+        try:
+            tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
+        except tokenize.TokenizeError:
+            # If tokenization fails, return unchanged (validation will catch issues)
+            logger.debug("Tokenization failed in _fix_regex_strings, returning unchanged")
+            return code
 
-        for line in lines:
-            # Skip comments
-            if line.strip().startswith('#'):
-                fixed_lines.append(line)
+        # Find strings that need fixing and build replacement list
+        # Each item: (start_row, start_col, end_row, end_col, old_string, new_string)
+        replacements = []
+
+        for tok in tokens:
+            if tok.type != tokenize.STRING:
                 continue
 
-            # Check if line contains problematic escape sequences in strings
-            # and doesn't already use raw strings
-            has_problematic = any(escape in line for escape in problematic_escapes)
-            already_raw = 'r"' in line or "r'" in line
+            string_val = tok.string
 
-            if has_problematic and not already_raw:
-                # Find and fix string literals containing regex escapes
-                # Pattern matches quoted strings not preceded by 'r'
-                line = re.sub(
-                    r'(?<!r)(["\'])([^"\']*(?:\\[dDwWsS+*?^$.|\\()\[\]{}])[^"\']*)\1',
-                    lambda m: f'r{m.group(1)}{m.group(2)}{m.group(1)}',
-                    line
-                )
+            # Skip if already a raw string (r"..." or r'...')
+            if string_val.startswith(('r"', "r'", 'R"', "R'", 'br"', "br'", 'rb"', "rb'")):
+                continue
 
-            fixed_lines.append(line)
+            # Skip bytes literals (handled by _fix_bytes_literals)
+            if string_val.startswith(('b"', "b'", 'B"', "B'")):
+                continue
 
-        return '\n'.join(fixed_lines)
+            # Skip f-strings (can't be made raw easily due to {} handling)
+            if string_val.startswith(('f"', "f'", 'F"', "F'")):
+                continue
+
+            # Check if the string content has problematic escape sequences
+            # We need to check the actual string value, not the repr
+            if problematic_escapes.search(string_val):
+                # Determine the quote style
+                if string_val.startswith('"""') or string_val.startswith("'''"):
+                    quote = string_val[:3]
+                    content = string_val[3:-3]
+                    new_string = f'r{quote}{content}{quote}'
+                elif string_val.startswith('"'):
+                    content = string_val[1:-1]
+                    new_string = f'r"{content}"'
+                elif string_val.startswith("'"):
+                    content = string_val[1:-1]
+                    new_string = f"r'{content}'"
+                else:
+                    # Unknown format, skip
+                    continue
+
+                replacements.append((
+                    tok.start[0], tok.start[1],
+                    tok.end[0], tok.end[1],
+                    string_val, new_string
+                ))
+
+        # Apply replacements in reverse order to maintain positions
+        if not replacements:
+            return code
+
+        lines = code.split('\n')
+
+        # Sort by position (row, col) in reverse order
+        replacements.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+        for start_row, start_col, end_row, end_col, old, new in replacements:
+            # Tokenizer uses 1-indexed rows
+            start_row -= 1
+            end_row -= 1
+
+            if start_row == end_row:
+                # Single line replacement
+                line = lines[start_row]
+                lines[start_row] = line[:start_col] + new + line[end_col:]
+            else:
+                # Multi-line replacement (for triple-quoted strings)
+                # Join all affected lines, make replacement, then split back
+                first_part = lines[start_row][:start_col]
+                last_part = lines[end_row][end_col:]
+                lines[start_row] = first_part + new + last_part
+                # Remove the lines that were part of the multi-line string
+                del lines[start_row + 1:end_row + 1]
+
+        return '\n'.join(lines)
 
     def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
         """
@@ -1836,10 +1935,62 @@ Code:
 
 Output the complete corrected Python code:"""
 
+    # Allowed imports for generated workflow code
+    # This helps detect when LLM hallucinates imports that don't exist
+    ALLOWED_IMPORTS = {
+        # Standard library
+        "random", "logging", "datetime", "time", "json", "re", "uuid", "string",
+        # Locust
+        "locust",
+        # Project imports
+        "workflows.base_workflow", "workflows", "base_workflow",
+        "test_data", "mongo_data_provider",
+    }
+
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
-        """Validate Python syntax and return error details if invalid"""
+        """Validate Python syntax and check for suspicious imports"""
+        # First check syntax
         try:
             compile(content, "<string>", "exec")
-            return True, ""
         except SyntaxError as e:
             return False, f"Line {e.lineno}: {e.msg} - {e.text.strip() if e.text else ''}"
+
+        # Check for potentially problematic imports
+        warnings = self._check_imports(content)
+        if warnings:
+            # Log warnings but don't fail - LLM might have valid reason
+            for warning in warnings:
+                logger.warning(f"Suspicious import in generated code: {warning}")
+
+        return True, ""
+
+    def _check_imports(self, content: str) -> List[str]:
+        """Check for potentially problematic imports in generated code.
+
+        Returns list of warning messages for suspicious imports.
+        Does not fail validation - just logs warnings.
+        """
+        import ast
+
+        warnings = []
+
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            # If AST parsing fails, syntax validation already caught it
+            return []
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module_name = alias.name.split('.')[0]
+                    if module_name not in self.ALLOWED_IMPORTS:
+                        warnings.append(f"import {alias.name} - module '{module_name}' not in allowed list")
+
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    module_name = node.module.split('.')[0]
+                    if module_name not in self.ALLOWED_IMPORTS:
+                        warnings.append(f"from {node.module} import ... - module '{module_name}' not in allowed list")
+
+        return warnings

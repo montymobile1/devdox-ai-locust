@@ -216,6 +216,17 @@ def test_path_traversal(self):
 Security tests should not overwhelm the load test - keep total security traffic
 at roughly 5-10% of overall test traffic.
 
+=== CRITICAL MISTAKES TO AVOID ===
+
+**DO NOT** make these common errors:
+1. **NEVER include 500 in expected_status** - 500 indicates potential vulnerability and should be logged
+2. **NEVER use self.client directly** - always use self.make_request()
+3. **NEVER access .status_code on make_request() result** - it returns dict or None
+4. **NEVER invent endpoint paths** - only use the path shown in ENDPOINT TO TEST
+5. **NEVER use Unicode characters in payloads** - ASCII only (codes 0-127)
+6. **NEVER import modules not listed in ALLOWED IMPORTS**
+7. **ALWAYS use expected_status with BOTH success (2xx) AND rejection (4xx) codes**
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.

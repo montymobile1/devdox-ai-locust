@@ -88,29 +88,35 @@ The orchestrator workflow sequences endpoints to test:
 
 === CRITICAL: HTTP REQUEST PATTERNS ===
 
-**For normal CRUD operations, use self.make_request():**
+**ALWAYS use self.make_request() for ALL HTTP requests - including error tests!**
+The `expected_status` parameter controls which status codes are valid:
+
+**For normal CRUD operations:**
 ```python
 result = self.make_request("POST", "/items", json=data)
 if result:
     self.created_ids.append(result.get("id"))
 ```
 
-**For tests expecting specific error codes, use catch_response pattern:**
+**For tests expecting specific error codes:**
+Use `expected_status` parameter - DO NOT use self.client directly!
 ```python
 @task
 def test_duplicate_creation_409(self):
     """Create duplicate - expect 409 Conflict"""
-    if not self.created_ids:
+    if not self.duplicate_name:
         return
-    # Use same unique field to trigger conflict
     data = {"name": self.duplicate_name}  # Same name as existing
-    with self.client.post("/items", json=data, catch_response=True) as response:
-        if response.status_code == 409:
-            response.success()  # Correctly rejected duplicate
-        elif response.status_code in [200, 201]:
-            response.failure("Expected 409 Conflict but got success - duplicate accepted!")
-        else:
-            response.success()  # Other errors are acceptable
+    # expected_status=[409] means 409 is a VALID (success) response
+    # If API returns 200/201, make_request will log it as failure
+    self.make_request("POST", "/items", expected_status=[409], json=data)
+
+@task
+def test_get_nonexistent_404(self):
+    """GET non-existent resource - expect 404"""
+    fake_id = "nonexistent-id-99999"
+    # 404 is the expected valid response for this test
+    self.make_request("GET", f"/items/{fake_id}", expected_status=[404])
 ```
 
 **For auth tests, temporarily modify headers:**
@@ -121,13 +127,12 @@ def test_unauthorized_401(self):
     original_headers = self.default_headers.copy()
     if "Authorization" in self.default_headers:
         del self.default_headers["Authorization"]
-    with self.client.get("/protected", catch_response=True) as response:
-        if response.status_code == 401:
-            response.success()
-        else:
-            response.failure(f"Expected 401, got {response.status_code}")
+    # Use expected_status=[401] - 401 is the VALID response for this test
+    self.make_request("GET", "/protected", expected_status=[401])
     self.default_headers = original_headers
 ```
+
+**NEVER use self.client.get/post/delete directly** - always use make_request()!
 
 === CRITICAL: OUTPUT REQUIREMENTS ===
 
@@ -247,6 +252,18 @@ def test_duplicate_409(self):
     # Proceed with duplicate test
 ```
 
+=== CRITICAL MISTAKES TO AVOID ===
+
+**DO NOT** make these common errors:
+1. **NEVER use self.client directly** - always use self.make_request()
+2. **NEVER invent endpoint paths** - only use paths from ENDPOINTS IN THIS TAG
+3. **NEVER hardcode resource IDs** - always create resources first and store the returned ID
+4. **NEVER access .status_code on make_request() result** - it returns dict or None
+5. **NEVER use Unicode characters** - ASCII only (codes 0-127)
+6. **NEVER import modules not listed in ALLOWED IMPORTS**
+7. **ALWAYS use expected_status parameter for error tests** (e.g., expected_status=[409] for conflict tests)
+8. **ALWAYS check state variables before using them** (e.g., if not self.shared_resource_id: return)
+
 === OUTPUT FORMAT ===
 
 <analysis>
@@ -294,17 +311,12 @@ class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
     - Resource cleanup
     """
 
-    # Shared state for data flow
-    created_ids = []
-    shared_resource_id = None
-    duplicate_name = None  # For 409 conflict tests
-
     def on_start(self):
-        """Initialize orchestrator state"""
+        """Initialize orchestrator state - use instance variables to avoid state leaking"""
         super().on_start()
-        self.created_ids = []
-        self.shared_resource_id = None
-        self.duplicate_name = None
+        self.created_ids = []  # Store created resource IDs for cleanup
+        self.shared_resource_id = None  # Current resource for CRUD operations
+        self.duplicate_name = None  # For 409 conflict tests
         {% if auth_endpoints %}
         # Login if auth is required
         self.login_and_get_token()
@@ -361,23 +373,15 @@ class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
         if not self.duplicate_name:
             return
         data = {"name": self.duplicate_name}
-        with self.client.post("/path", json=data, catch_response=True) as response:
-            if response.status_code == 409:
-                response.success()
-            elif response.status_code in [200, 201]:
-                response.failure("Expected 409 but duplicate was accepted")
-            else:
-                response.success()  # Other rejections are fine
+        # Use expected_status=[409] - 409 is the VALID response for this test
+        self.make_request("POST", "/path", expected_status=[409], json=data)
 
     @task
     def test_get_nonexistent_404(self):
         """GET non-existent resource - expect 404"""
         fake_id = "nonexistent-id-99999"
-        with self.client.get(f"/path/{fake_id}", catch_response=True) as response:
-            if response.status_code == 404:
-                response.success()
-            else:
-                response.failure(f"Expected 404, got {response.status_code}")
+        # Use expected_status=[404] - 404 is the expected response
+        self.make_request("GET", f"/path/{fake_id}", expected_status=[404])
 
     # === AUTH TESTS ===
 
@@ -387,11 +391,8 @@ class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
         original_headers = self.default_headers.copy()
         if "Authorization" in self.default_headers:
             del self.default_headers["Authorization"]
-        with self.client.get("/path", catch_response=True) as response:
-            if response.status_code == 401:
-                response.success()
-            else:
-                response.success()  # API may not require auth
+        # Use expected_status=[401] - 401 is the expected response
+        self.make_request("GET", "/path", expected_status=[401])
         self.default_headers = original_headers
 
     @task
@@ -399,11 +400,8 @@ class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
         """Request with expired/invalid token - expect 401"""
         original_headers = self.default_headers.copy()
         self.default_headers["Authorization"] = "Bearer expired-invalid-token"
-        with self.client.get("/path", catch_response=True) as response:
-            if response.status_code == 401:
-                response.success()
-            else:
-                response.success()  # API may accept any token
+        # Use expected_status=[401] - 401 is the expected response
+        self.make_request("GET", "/path", expected_status=[401])
         self.default_headers = original_headers
 
     # === CONCURRENT CONFLICT TEST ===
@@ -424,13 +422,10 @@ class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
     def test_rate_limit_429(self):
         """Rapid requests to potentially trigger rate limit"""
         for i in range(10):
-            with self.client.get("/path", catch_response=True) as response:
-                if response.status_code == 429:
-                    response.success()  # Rate limit working
-                    logger.info("Rate limit triggered (429)")
-                    break
-                else:
-                    response.success()
+            # Use expected_status=[200, 429] - both are acceptable
+            result = self.make_request("GET", "/path", expected_status=[200, 429])
+            # Note: If 429 is returned, make_request treats it as success
+            # We can't break on 429 with make_request, so we just run all iterations
 
     # === CLEANUP: DELETE RESOURCE ===
 
@@ -439,12 +434,8 @@ class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
         """DELETE - Remove the resource"""
         if self.shared_resource_id:
             self.make_request("DELETE", f"/path/{self.shared_resource_id}")
-            # Test double delete
-            with self.client.delete(f"/path/{self.shared_resource_id}", catch_response=True) as response:
-                if response.status_code == 404:
-                    response.success()  # Correctly returned 404 for deleted resource
-                else:
-                    response.success()  # Some APIs return 200/204 for idempotent delete
+            # Test double delete - expect 404 or 204 (idempotent)
+            self.make_request("DELETE", f"/path/{self.shared_resource_id}", expected_status=[404, 204, 200])
             # Remove from tracking
             if self.shared_resource_id in self.created_ids:
                 self.created_ids.remove(self.shared_resource_id)
