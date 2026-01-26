@@ -252,6 +252,57 @@ Adjust weights based on:
 - What you want to stress test most
 - User's custom requirements (if specified)
 
+=== ERROR HANDLING AND RECOVERY ===
+
+Generated tests should handle errors gracefully:
+
+**1. Null/None Checks:**
+Always check make_request() return value before using it:
+```python
+result = self.make_request("GET", "/items")
+if result:
+    # Safe to use result
+    items = result.get("items", [])
+else:
+    # Request failed - make_request already logged it
+    return  # Skip rest of test gracefully
+```
+
+**2. Missing Data Handling:**
+Check for required fields before using them:
+```python
+if result:
+    item_id = result.get("id")
+    if item_id:
+        self.created_ids.append(item_id)
+    else:
+        logger.warning("Response missing 'id' field")
+```
+
+**3. State-Dependent Tests:**
+Always verify prerequisites exist:
+```python
+@task
+def test_update_item(self):
+    if not self.created_ids:  # No items to update
+        return  # Skip gracefully
+    item_id = self.created_ids[-1]
+    # Now safe to proceed
+```
+
+**4. Exception Handling:**
+Don't let exceptions crash the entire test:
+```python
+@task
+def test_complex_operation(self):
+    try:
+        result = self.make_request(...)
+        # Process result
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        # Continue with other tests
+```
+
 === CONSTRAINTS ===
 - ALL test values must be SHORT: max 50 characters per field
 - Keep total code under 100 lines

@@ -192,6 +192,61 @@ is determined by task definition order, not weight.
 Note: The orchestrator pattern is designed to run complete CRUD cycles.
 Each pass through the orchestrator represents one full lifecycle test.
 
+=== ERROR HANDLING AND RECOVERY ===
+
+Orchestrators have complex state - errors must be handled gracefully to avoid
+cascading failures across the CRUD lifecycle.
+
+**1. State Guards:**
+Always check state before using it:
+```python
+@task
+def step_2_read_resource(self):
+    if not self.shared_resource_id:  # Step 1 (create) failed
+        return  # Skip gracefully - no resource to read
+    self.make_request("GET", f"/items/{self.shared_resource_id}")
+```
+
+**2. Cleanup on Failure:**
+The on_stop() method must clean up even if errors occurred:
+```python
+def on_stop(self):
+    for resource_id in self.created_ids:
+        try:
+            self.make_request("DELETE", f"/items/{resource_id}")
+        except:
+            pass  # Best effort cleanup - don't fail on cleanup errors
+    self.created_ids.clear()
+```
+
+**3. State Reset for Retries:**
+If a create fails, clear related state:
+```python
+@task
+def step_1_create_resource(self):
+    data = {"name": test_data_generator.generate_string(10)}
+    result = self.make_request("POST", "/items", json=data)
+    if result:
+        resource_id = result.get("id")
+        if resource_id:
+            self.created_ids.append(resource_id)
+            self.shared_resource_id = resource_id
+            self.duplicate_name = data.get("name")
+    else:
+        # Create failed - ensure state is clean
+        self.shared_resource_id = None
+```
+
+**4. Independent Test Recovery:**
+State-dependent tests should fail gracefully:
+```python
+@task
+def test_duplicate_409(self):
+    if not self.duplicate_name:  # Create didn't provide a name
+        return  # Can't test duplicates without original
+    # Proceed with duplicate test
+```
+
 === OUTPUT FORMAT ===
 
 <analysis>
