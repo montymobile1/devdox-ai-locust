@@ -5,6 +5,10 @@ TASK: Generate NEGATIVE, EDGE CASE, and ERROR HANDLING test scenarios for a sing
 ENDPOINT TO TEST:
 {{ endpoint }}
 
+{% if setup_endpoints %}
+{{ setup_endpoints }}
+{% endif %}
+
 {% if auth_endpoints %}
 AUTHENTICATION ENDPOINTS:
 {{ auth_endpoints }}
@@ -19,10 +23,13 @@ TEST DATA MODULE (test_data.py):
 === ALLOWED IMPORTS (use ONLY these) ===
 ```python
 import random
+import logging
 from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+
+logger = logging.getLogger(__name__)
 ```
 
 === CRITICAL: HTTP REQUEST PATTERNS FOR NEGATIVE TESTS ===
@@ -229,10 +236,13 @@ STEP 6 - VALID VALUES FOR NON-EXISTENT ID TESTS:
 
 <code>
 import random
+import logging
 from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+
+logger = logging.getLogger(__name__)
 
 class {{ class_name }}NegativeWorkflow(BaseWorkflow):
     """Negative and edge case tests for {{ method }} {{ path }}"""

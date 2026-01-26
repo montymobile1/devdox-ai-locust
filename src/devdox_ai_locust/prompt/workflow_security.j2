@@ -5,6 +5,10 @@ TASK: Generate SECURITY test scenarios for a single API endpoint.
 ENDPOINT TO TEST:
 {{ endpoint }}
 
+{% if setup_endpoints %}
+{{ setup_endpoints }}
+{% endif %}
+
 {% if auth_endpoints %}
 AUTHENTICATION ENDPOINTS:
 {{ auth_endpoints }}
@@ -19,10 +23,13 @@ TEST DATA MODULE (test_data.py):
 === ALLOWED IMPORTS (use ONLY these) ===
 ```python
 import random
+import logging
 from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+
+logger = logging.getLogger(__name__)
 ```
 
 === CRITICAL: HTTP REQUEST PATTERNS FOR SECURITY TESTS ===
@@ -160,10 +167,13 @@ Status codes from spec = Success (proper handling)
 
 <code>
 import random
+import logging
 from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+
+logger = logging.getLogger(__name__)
 
 SQL_PAYLOADS = ["' OR '1'='1", "'; DROP TABLE users; --"]
 XSS_PAYLOADS = ["<script>alert('XSS')</script>"]

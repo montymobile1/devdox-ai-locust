@@ -270,6 +270,7 @@ class ScenarioWorkflowGenerator:
                 base_workflow_content=base_workflow_content,
                 test_data_content=test_data_content,
                 auth_endpoints=auth_endpoints,
+                all_endpoints=endpoints,  # Pass all endpoints for CREATE endpoint lookup
             )
             if progress_callback:
                 await progress_callback(endpoint, scenarios)
@@ -291,6 +292,7 @@ class ScenarioWorkflowGenerator:
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
         tag_name: str = "default",
+        all_endpoints: Optional[List[Any]] = None,
     ) -> Dict[ScenarioType, str]:
         """
         Generate all scenario workflow files for a single endpoint using LLM.
@@ -301,6 +303,7 @@ class ScenarioWorkflowGenerator:
             test_data_content: Content of test_data.py
             auth_endpoints: Authentication endpoints (optional)
             tag_name: Tag/group name for this endpoint (used for debug logging)
+            all_endpoints: All endpoints from OpenAPI spec (for finding related CREATE endpoints)
 
         Returns:
             Dict mapping ScenarioType to generated code content
@@ -320,6 +323,7 @@ class ScenarioWorkflowGenerator:
                 test_data_content,
                 auth_endpoints,
                 tag_name,
+                all_endpoints,
             )
             for scenario_type in scenario_types
         ]
@@ -337,6 +341,7 @@ class ScenarioWorkflowGenerator:
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
         tag_name: str = "default",
+        all_endpoints: Optional[List[Any]] = None,
     ) -> str:
         """
         Generate a scenario using LLM for a single endpoint.
@@ -348,6 +353,7 @@ class ScenarioWorkflowGenerator:
             test_data_content: Test data code
             auth_endpoints: Auth endpoints
             tag_name: Tag/group name for debug logging
+            all_endpoints: All endpoints from OpenAPI spec (for finding related CREATE endpoints)
 
         Returns:
             Generated Python code
@@ -372,6 +378,12 @@ class ScenarioWorkflowGenerator:
         # Extract expected status codes from OpenAPI spec responses
         expected_status_codes = self._extract_expected_status_codes(endpoint)
 
+        # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
+        setup_endpoints_section = ""
+        if all_endpoints and endpoint.method.upper() != "POST":
+            related_create_endpoints = self._find_related_create_endpoints(endpoint, all_endpoints)
+            setup_endpoints_section = self._format_related_create_endpoints(related_create_endpoints)
+
         # Render prompt
         prompt = template.render(
             endpoint=endpoint_details,
@@ -383,6 +395,7 @@ class ScenarioWorkflowGenerator:
             method=endpoint.method,
             path=endpoint.path,
             endpoint_expected_status=expected_status_codes,
+            setup_endpoints=setup_endpoints_section,
         )
 
         # Call LLM with validation retry (error-aware on retry)
@@ -596,9 +609,59 @@ class ScenarioWorkflowGenerator:
         - Field descriptions
         - Constraints (minLength, maxLength, pattern, enum, min, max, etc.)
         - Nested objects and arrays
+        - oneOf/anyOf union types with discriminator info
         """
         lines = []
         prefix = "  " * indent
+
+        # Handle oneOf/anyOf union types (discriminated unions)
+        one_of = schema.get("oneOf") or schema.get("anyOf")
+        discriminator = schema.get("discriminator")
+
+        if one_of and isinstance(one_of, list):
+            # This is a union type - format it specially
+            if discriminator:
+                prop_name = discriminator.get("propertyName", "type")
+                lines.append(f"{prefix}Schema: DISCRIMINATED UNION")
+                lines.append(f"{prefix}  *** DISCRIMINATOR FIELD: {prop_name} (REQUIRED) ***")
+                lines.append(f"{prefix}  You MUST include '{prop_name}' to specify which variant to use.")
+                lines.append(f"{prefix}")
+
+                # Get mapping if available
+                mapping = discriminator.get("mapping", {})
+                if mapping:
+                    lines.append(f"{prefix}  Valid '{prop_name}' values and their schemas:")
+                    for disc_value, ref in mapping.items():
+                        lines.append(f"{prefix}    - {prop_name}=\"{disc_value}\":")
+                        # Try to resolve the reference and show fields
+                        variant_schema = self._resolve_ref_in_union(ref, one_of)
+                        if variant_schema:
+                            variant_props = variant_schema.get("properties", {})
+                            variant_required = variant_schema.get("required", [])
+                            for vp_name, vp_schema in variant_props.items():
+                                if vp_name == prop_name:
+                                    continue  # Skip discriminator field, already shown
+                                vp_type = vp_schema.get("type", "any")
+                                req_marker = " (REQUIRED)" if vp_name in variant_required else ""
+                                lines.append(f"{prefix}        {vp_name}: {vp_type}{req_marker}")
+                        lines.append(f"{prefix}")
+            else:
+                # oneOf/anyOf without discriminator
+                lines.append(f"{prefix}Schema: UNION TYPE (oneOf/anyOf)")
+                lines.append(f"{prefix}  Send ONE of the following object types:")
+                for i, variant in enumerate(one_of, 1):
+                    variant_schema = variant
+                    if "$ref" in variant:
+                        # Just note the reference, we can't resolve it fully here
+                        lines.append(f"{prefix}  Option {i}: {variant['$ref']}")
+                    else:
+                        variant_props = variant.get("properties", {})
+                        if variant_props:
+                            lines.append(f"{prefix}  Option {i}:")
+                            for vp_name, vp_schema in variant_props.items():
+                                vp_type = vp_schema.get("type", "any")
+                                lines.append(f"{prefix}    - {vp_name}: {vp_type}")
+            return lines
 
         schema_type = schema.get("type", "object")
         required_fields = schema.get("required", [])
@@ -680,6 +743,67 @@ class ScenarioWorkflowGenerator:
 
         return lines
 
+    def _resolve_ref_in_union(self, ref: str, one_of: List[dict]) -> Optional[dict]:
+        """
+        Try to resolve a $ref within a oneOf/anyOf array.
+
+        When a discriminator mapping references a schema like "#/components/schemas/CreditCard",
+        we look for that $ref in the oneOf array and return its inline schema if available.
+
+        Args:
+            ref: The $ref string (e.g., "#/components/schemas/CreditCard")
+            one_of: The oneOf/anyOf array from the parent schema
+
+        Returns:
+            The resolved schema dict, or None if not found
+        """
+        for variant in one_of:
+            if variant.get("$ref") == ref:
+                # Found the reference, but it's not resolved here
+                # We need to look for inline properties or allOf patterns
+                if "properties" in variant:
+                    return variant
+                # Check if it's an allOf with the ref and additional properties
+                if "allOf" in variant:
+                    # Merge allOf schemas
+                    merged = {"properties": {}, "required": []}
+                    for sub in variant["allOf"]:
+                        if "properties" in sub:
+                            merged["properties"].update(sub["properties"])
+                        if "required" in sub:
+                            merged["required"].extend(sub["required"])
+                    if merged["properties"]:
+                        return merged
+
+            # Sometimes the oneOf items have the schema inline, not as $ref
+            # Check if this variant has a $ref that matches
+            if "allOf" in variant:
+                for sub in variant["allOf"]:
+                    if sub.get("$ref") == ref:
+                        # Found it in allOf - return the merged schema
+                        merged = {"properties": {}, "required": []}
+                        for all_sub in variant["allOf"]:
+                            if "properties" in all_sub:
+                                merged["properties"].update(all_sub["properties"])
+                            if "required" in all_sub:
+                                merged["required"].extend(all_sub["required"])
+                        if merged["properties"]:
+                            return merged
+
+        # If the variant has inline properties, return it directly
+        for variant in one_of:
+            variant_props = variant.get("properties", {})
+            if variant_props:
+                # Check if this variant matches the ref name
+                # Extract schema name from ref: "#/components/schemas/CreditCard" -> "CreditCard"
+                ref_name = ref.split("/")[-1].lower() if ref else ""
+                # Check if any property const value matches
+                for prop_name, prop_schema in variant_props.items():
+                    if prop_schema.get("const", "").lower() == ref_name.replace("_", ""):
+                        return variant
+
+        return None
+
     def _format_response_schema(self, schema: dict, indent: int = 0) -> List[str]:
         """
         Format a response JSON Schema for the LLM prompt.
@@ -732,6 +856,158 @@ class ScenarioWorkflowGenerator:
             lines.append(f"{prefix}type: {schema_type}")
 
         return lines
+
+    def _find_related_create_endpoints(
+        self,
+        target_endpoint: Any,
+        all_endpoints: List[Any],
+    ) -> List[Tuple[Any, float, str]]:
+        """
+        Find CREATE (POST) endpoints related to the target endpoint using fuzzy matching.
+
+        Uses tag similarity and path segment matching to find relevant POST endpoints
+        that could be used as setup steps (e.g., creating items before testing GET/PUT/DELETE).
+
+        Args:
+            target_endpoint: The endpoint being tested
+            all_endpoints: All endpoints from the OpenAPI spec
+
+        Returns:
+            List of (endpoint, score, reason) tuples, sorted by relevance score (highest first).
+            Returns empty list if the target is itself a POST endpoint.
+        """
+        # Skip if target is already a POST - it doesn't need setup endpoints
+        if target_endpoint.method.upper() == "POST":
+            return []
+
+        results: List[Tuple[Any, float, str]] = []
+        target_path = target_endpoint.path.lower()
+        target_tags = set(getattr(target_endpoint, "tags", []) or [])
+
+        # Extract resource name from path (e.g., "/users/{id}" -> "users")
+        target_path_segments = [s for s in target_path.strip("/").split("/") if not s.startswith("{")]
+
+        for endpoint in all_endpoints:
+            # Only consider POST endpoints
+            if endpoint.method.upper() != "POST":
+                continue
+
+            # Don't return the target itself
+            if endpoint.path == target_endpoint.path and endpoint.method == target_endpoint.method:
+                continue
+
+            score = 0.0
+            reasons = []
+
+            # Factor 1: Tag matching (high weight)
+            endpoint_tags = set(getattr(endpoint, "tags", []) or [])
+            common_tags = target_tags & endpoint_tags
+            if common_tags:
+                score += 50.0 * len(common_tags)  # 50 points per matching tag
+                reasons.append(f"shares tag(s): {', '.join(common_tags)}")
+
+            # Factor 2: Path segment matching
+            endpoint_path = endpoint.path.lower()
+            endpoint_segments = [s for s in endpoint_path.strip("/").split("/") if not s.startswith("{")]
+
+            # Check for exact base path match (e.g., "/users" matches "/users/{id}")
+            if endpoint_segments and target_path_segments:
+                # First segment match is most important (resource type)
+                if endpoint_segments[0] == target_path_segments[0]:
+                    score += 30.0
+                    reasons.append(f"same resource type: {endpoint_segments[0]}")
+
+                # Additional matching segments add smaller bonus
+                common_segments = set(endpoint_segments) & set(target_path_segments)
+                if len(common_segments) > 1:
+                    score += 5.0 * (len(common_segments) - 1)
+                    reasons.append(f"path segments: {', '.join(common_segments)}")
+
+            # Factor 3: Path contains target resource name
+            # e.g., target is GET /orders/{id}/items, look for POST /items or POST /orders/{id}/items
+            if target_path_segments:
+                primary_resource = target_path_segments[-1] if target_path_segments else ""
+                if primary_resource and primary_resource in endpoint_path:
+                    score += 20.0
+                    if f"same endpoint resource: {primary_resource}" not in reasons:
+                        reasons.append(f"creates resource: {primary_resource}")
+
+            # Factor 4: Boost for simpler paths (collection endpoints like POST /users)
+            # These are more likely to be general create endpoints
+            if len(endpoint_segments) == 1 and score > 0:
+                score += 10.0
+                reasons.append("collection endpoint")
+
+            # Only include if there's some relevance
+            if score > 0:
+                reason_str = "; ".join(reasons)
+                results.append((endpoint, score, reason_str))
+
+        # Sort by score (highest first) and return
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
+
+    def _format_related_create_endpoints(
+        self,
+        related_endpoints: List[Tuple[Any, float, str]],
+    ) -> str:
+        """
+        Format related CREATE endpoints for the LLM prompt.
+
+        Handles edge cases:
+        - Edge 1: Pass available endpoints with descriptions (even if not perfect match)
+        - Edge 2: Return message saying no CREATE endpoints available
+        - Edge 3: Rank and pass all with guidance message
+
+        Args:
+            related_endpoints: List of (endpoint, score, reason) from _find_related_create_endpoints
+
+        Returns:
+            Formatted string for the LLM prompt, or empty string for POST endpoints
+        """
+        if not related_endpoints:
+            # Edge case 2: No CREATE endpoints found
+            return """
+=== SETUP ENDPOINTS (for creating test data) ===
+No CREATE (POST) endpoints found that are related to this resource.
+You may need to use test_data_generator or assume test data already exists.
+Do NOT invent or call POST endpoints that are not documented here.
+"""
+
+        lines = []
+        lines.append("=== SETUP ENDPOINTS (for creating test data) ===")
+        lines.append("")
+        lines.append("These POST endpoints can be used to create resources before testing.")
+        lines.append("They are ranked by relevance to the endpoint you are testing.")
+        lines.append("Use ONLY these endpoints for setup - do NOT invent endpoints that don't exist.")
+        lines.append("")
+
+        # Edge case 3: Pass all ranked endpoints with guidance
+        for i, (endpoint, score, reason) in enumerate(related_endpoints, 1):
+            operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+            summary = getattr(endpoint, "summary", "") or "No summary"
+            description = getattr(endpoint, "description", "") or ""
+
+            lines.append(f"--- Rank #{i} (relevance: {score:.0f}) ---")
+            lines.append(f"POST {endpoint.path}")
+            lines.append(f"Operation ID: {operation_id}")
+            lines.append(f"Why relevant: {reason}")
+            lines.append(f"Summary: {summary}")
+            if description:
+                lines.append(f"Description: {description[:150]}")
+
+            # Include request body schema so LLM knows what fields to send
+            if hasattr(endpoint, "request_body") and endpoint.request_body:
+                rb = endpoint.request_body
+                schema = getattr(rb, "schema", {})
+                if schema and isinstance(schema, dict):
+                    lines.append("Request Body Schema:")
+                    schema_lines = self._format_schema(schema, indent=1)
+                    lines.extend(schema_lines)
+
+            lines.append("")
+
+        return "\n".join(lines)
 
     def _extract_expected_status_codes(self, endpoint: Any) -> List[int]:
         """
