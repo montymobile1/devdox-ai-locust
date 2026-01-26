@@ -1373,7 +1373,17 @@ class ScenarioWorkflowGenerator:
             if items_type == "boolean":
                 return "[test_data_generator.generate_boolean() for _ in range(3)]"
             if items_type == "array":
-                return "[[test_data_generator.generate_string() for _ in range(2)] for _ in range(3)]"
+                # Nested array - check inner items type
+                inner_items = field_items.get("items", {}) if isinstance(field_items, dict) else {}
+                inner_type = inner_items.get("type", "string") if isinstance(inner_items, dict) else "string"
+                if inner_type == "integer":
+                    return "[[test_data_generator.generate_integer() for _ in range(2)] for _ in range(3)]"
+                elif inner_type == "number":
+                    return "[[test_data_generator.generate_float() for _ in range(2)] for _ in range(3)]"
+                elif inner_type == "boolean":
+                    return "[[test_data_generator.generate_boolean() for _ in range(2)] for _ in range(3)]"
+                else:
+                    return "[[test_data_generator.generate_string() for _ in range(2)] for _ in range(3)]"
             return "[test_data_generator.generate_string() for _ in range(3)]"
 
         # Fallback for unknown types
@@ -1585,9 +1595,14 @@ class ScenarioWorkflowGenerator:
                             for vp_name, vp_schema in variant_props.items():
                                 if vp_name == prop_name:
                                     continue  # Skip discriminator field, already shown
-                                vp_type = vp_schema.get("type", "any")
+                                # Unwrap nullable schema for proper type detection
+                                unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
+                                vp_type = unwrapped_vp.get("type", "any")
                                 req_marker = " (REQUIRED)" if vp_name in variant_required else ""
+                                # Get the pre-computed generator instruction
+                                generator = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
                                 lines.append(f"{prefix}        {vp_name}: {vp_type}{req_marker}")
+                                lines.append(f"{prefix}            USE: {generator}")
                         lines.append(f"{prefix}")
             else:
                 # oneOf/anyOf without discriminator
@@ -1603,8 +1618,11 @@ class ScenarioWorkflowGenerator:
                         if variant_props:
                             lines.append(f"{prefix}  Option {i}:")
                             for vp_name, vp_schema in variant_props.items():
-                                vp_type = vp_schema.get("type", "any")
+                                unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
+                                vp_type = unwrapped_vp.get("type", "any")
+                                generator = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
                                 lines.append(f"{prefix}    - {vp_name}: {vp_type}")
+                                lines.append(f"{prefix}        USE: {generator}")
             return lines
 
         schema_type = schema.get("type", "object")

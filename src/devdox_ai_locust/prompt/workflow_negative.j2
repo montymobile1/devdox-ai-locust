@@ -360,6 +360,18 @@ def test_boundary_value(self):
 12. **NEVER leave path segments empty** to test missing parameters
     - WRONG: `/payments//verify` - this creates a different route → 404
     - RIGHT: `/payments/nonexistent-id-99999/verify` - tests with invalid but present value
+13. **NEVER use VALID enum values in negative tests for enum fields**
+    - If testing invalid enum: use values OUTSIDE the allowed list (e.g., "invalid_value", "unknown")
+    - WRONG: Testing with "low" when enum is ["low", "medium", "high"] → returns 200!
+    - RIGHT: Testing with "super_high" or "invalid_priority" → returns 422
+14. **NEVER use None in URL paths** - always guard AFTER resource creation:
+    ```python
+    # CORRECT - guard AFTER creation attempt
+    if not self.item_id:
+        self.create_item()
+    if self.item_id:  # REQUIRED: Check again after creation
+        self.make_request("GET", f"/items/{self.item_id}")
+    ```
 
 === OUTPUT FORMAT ===
 

@@ -282,6 +282,7 @@ self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expe
 7. **ALWAYS use expected_status with BOTH success (2xx) AND rejection (4xx) codes**
 8. **NEVER inject payloads into path parameters** - they are URL routing, not input validation
    Path param injection always returns 404, which is NOT a vulnerability finding
+9. **NEVER use None in URL paths** - always guard AFTER resource creation
 
 === OUTPUT FORMAT ===
 

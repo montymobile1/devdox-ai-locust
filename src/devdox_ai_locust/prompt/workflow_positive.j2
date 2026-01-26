@@ -441,12 +441,25 @@ def test_success_with_valid_data(self):
 1. **NEVER invent endpoint paths** - only use paths shown in the ENDPOINT TO TEST section
 2. **NEVER hardcode IDs** (like `/items/1`) - always create resources first and use returned IDs
 3. **NEVER ignore enum constraints** - if "allowed values:" is shown, use EXACTLY one of those values
-4. **NEVER ignore pattern constraints** - if "pattern=" is shown, generate values matching that pattern
+4. **NEVER ignore pattern/USE constraints** - if "USE:" is shown, copy that generator call EXACTLY
 5. **NEVER use self.client directly** - always use self.make_request()
 6. **NEVER access .status_code on make_request() result** - it returns dict or None
 7. **NEVER include 4xx status codes in expected_status for positive tests** - only use 2xx codes
 8. **NEVER use Unicode characters** - ASCII only (codes 0-127)
 9. **NEVER import modules not listed in ALLOWED IMPORTS**
+10. **NEVER use None in URL paths** - always guard AFTER resource creation:
+    ```python
+    # WRONG - if creation fails, item_id might still be None
+    if not self.item_id:
+        self.create_item()
+    self.make_request("GET", f"/items/{self.item_id}")  # BUG!
+
+    # CORRECT - guard AFTER creation attempt
+    if not self.item_id:
+        self.create_item()
+    if self.item_id:  # REQUIRED: Check again after creation
+        self.make_request("GET", f"/items/{self.item_id}")
+    ```
 
 === OUTPUT FORMAT ===
 
