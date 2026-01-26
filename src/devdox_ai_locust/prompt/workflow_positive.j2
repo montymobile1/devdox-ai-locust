@@ -264,7 +264,7 @@ RULES (violations will cause test failures):
 
 === CRITICAL: DELETE OPERATIONS MUST BE SELF-CONTAINED ===
 
-**DELETE tasks MUST create their own resource WITHIN THE TASK before deleting it:**
+**DELETE tasks MUST create AND delete the resource WITHIN THE SAME TASK METHOD:**
 ```python
 @task(get_task_weight(1))
 def test_delete_item(self):
@@ -283,10 +283,33 @@ def test_delete_item(self):
     self.make_request("{{ method }}", f"{{ path }}", expected_status={{ endpoint_expected_status }})
 ```
 
-**WHY:** In load testing, multiple users run concurrently. If you:
-- Create in on_start() and delete in a task → Other tasks may try to use the deleted resource
-- Share resource IDs across tasks → Race conditions cause 404 errors
-- Use self.created_ids from other tasks → Already-deleted resources cause failures
+**WHY DELETE MUST BE SELF-CONTAINED:** Tasks run repeatedly with different weights. If you:
+- Have separate "create" (weight=1) and "delete" (weight=10) tasks → DELETE runs 10x per CREATE
+- Store ID in self.post_id and don't reset after delete → Same ID deleted repeatedly → 404!
+- Share resource IDs across tasks → Already-deleted resources cause failures
+
+**NEVER split create and delete into separate tasks:**
+```python
+# WRONG - This pattern causes 404 errors!
+@task(get_task_weight(1))  # Runs 1x
+def create_resource(self):
+    result = self.make_request("POST", "/items", json=data)
+    self.item_id = result.get("id")  # Stored, never cleared
+
+@task(get_task_weight(10))  # Runs 10x - will try to delete same ID 10 times!
+def delete_resource(self):
+    if self.item_id:
+        self.make_request("DELETE", f"/items/{self.item_id}")  # 1st: 204, 2nd-10th: 404!
+
+# CORRECT - Create and delete in SAME task
+@task(get_task_weight(1))
+def test_delete_item(self):
+    result = self.make_request("POST", "/items", json=data)
+    if result:
+        item_id = result.get("id")
+        if item_id:
+            self.make_request("DELETE", f"/items/{item_id}")  # Always deletes fresh resource
+```
 
 **NEVER do this:**
 ```python
@@ -559,6 +582,24 @@ def test_success_with_valid_data(self):
 
     # CORRECT - use integer bounds
     expiry_month = test_data_generator.generate_integer(min_val=1, max_val=12)  # YES
+    ```
+17. **NEVER split DELETE into separate "create" and "delete" tasks** - this causes repeated 404s:
+    ```python
+    # WRONG - DELETE runs 10x more than CREATE, causing 404s after first delete
+    @task(get_task_weight(1))
+    def create_resource(self):
+        self.item_id = result.get("id")  # Stored once
+
+    @task(get_task_weight(10))
+    def delete_resource(self):
+        self.make_request("DELETE", f"/items/{self.item_id}")  # Tries to delete same ID 10x!
+
+    # CORRECT - create and delete in SAME task method
+    @task(get_task_weight(1))
+    def test_delete_item(self):
+        result = self.make_request("POST", "/items", json=data)
+        if result and result.get("id"):
+            self.make_request("DELETE", f"/items/{result.get('id')}")
     ```
 
 === CRITICAL: CONDITIONAL RESPONSE ENDPOINTS ===
