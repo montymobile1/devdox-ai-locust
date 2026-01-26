@@ -1161,7 +1161,12 @@ class ScenarioWorkflowGenerator:
         # For simplicity, we just escape quotes - regex patterns rarely have quotes
         return value.replace('"', '\\"')
 
-    def _get_type_instruction(self, field_schema: dict, _object_ancestors: Optional[frozenset] = None) -> str:
+    def _get_type_instruction(
+        self,
+        field_schema: dict,
+        _object_ancestors: Optional[frozenset] = None,
+        field_name: str = "",
+    ) -> str:
         """Map a field schema to a Python code instruction for generating a valid value.
 
         Handles enums, patterns, formats, string/integer/number/boolean/array/object types,
@@ -1172,6 +1177,7 @@ class ScenarioWorkflowGenerator:
             field_schema: The (already unwrapped) field schema dict
             _object_ancestors: Optional frozenset of schema IDs for circular reference detection
                              (passed through to _precompute_object_instruction for nested objects)
+            field_name: Optional field name for inferring the appropriate generator
 
         Returns:
             Python code string for generating a valid test value
@@ -1184,6 +1190,7 @@ class ScenarioWorkflowGenerator:
         field_enum = field_schema.get("enum")
         field_pattern = field_schema.get("pattern")
         field_items = field_schema.get("items", {})
+        field_name_lower = field_name.lower() if field_name else ""
 
         # Enum: always takes priority
         if field_enum:
@@ -1194,32 +1201,74 @@ class ScenarioWorkflowGenerator:
             escaped = self._escape_for_raw_string(field_pattern)
             return f'test_data_generator.generate_string(pattern=r"{escaped}")'
 
-        # Format-specific generators
+        # Format-specific generators - use dedicated methods that return strings directly
+        # IMPORTANT: These methods return strings, NOT datetime objects!
         if field_format == "date":
-            return "test_data_generator.random_date()"
+            return "test_data_generator.random_date()"  # Returns "2024-03-15" string
         if field_format == "date-time":
-            return "datetime.now().isoformat()"
+            return "test_data_generator.random_datetime()"  # Returns "2024-03-15T14:30:00" string
+        if field_format == "time":
+            return "test_data_generator.random_time()"  # Returns "14:30:00" string
         if field_format == "email":
             return "test_data_generator.generate_email()"
         if field_format == "uuid":
             return "test_data_generator.random_uuid()"
         if field_format in ("uri", "url"):
-            return 'f"https://example.com/test/{test_data_generator.generate_string(length=8)}"'
+            return "test_data_generator.random_uri()"
         if field_format == "ipv4":
-            return 'f"192.168.{random.randint(1,254)}.{random.randint(1,254)}"'
+            return "test_data_generator.random_ipv4()"
         if field_format == "ipv6":
-            return 'f"2001:db8::{random.randint(1,9999):x}"'
+            return "test_data_generator.random_ipv6()"
         if field_format == "hostname":
-            return 'f"{test_data_generator.generate_string(length=6)}.example.com"'
-        if field_format == "time":
-            return 'f"{random.randint(0,23):02d}:{random.randint(0,59):02d}:00"'
+            return "test_data_generator.random_hostname()"
+        if field_format == "byte":
+            return "test_data_generator.random_base64()"
 
         # Type-based generators
         if field_type == "string":
-            length = field_schema.get("maxLength", 10)
-            if isinstance(length, int) and length > 50:
-                length = 10
-            elif not isinstance(length, int):
+            min_length = field_schema.get("minLength", 0)
+            max_length = field_schema.get("maxLength", 50)
+
+            # Infer generator from field name (generic patterns, not hardcoded)
+            if field_name_lower:
+                # Country codes: 2-3 char fields with "country" in name
+                if "country" in field_name_lower and max_length <= 3:
+                    return "test_data_generator.random_country_code()"
+                # Currency codes: 3-char fields with "currency" in name
+                if "currency" in field_name_lower and max_length <= 4:
+                    return "test_data_generator.random_currency_code()"
+                # Locale fields
+                if "locale" in field_name_lower:
+                    return "test_data_generator.random_locale()"
+                # Color fields
+                if "color" in field_name_lower or "colour" in field_name_lower:
+                    return "test_data_generator.random_hex_color()"
+                # Date/time fields by name (when format isn't specified)
+                if any(kw in field_name_lower for kw in ["created_at", "updated_at", "modified_at", "timestamp"]):
+                    return "test_data_generator.random_datetime()"
+                if any(kw in field_name_lower for kw in ["birth_date", "start_date", "end_date", "date"]) and "time" not in field_name_lower:
+                    return "test_data_generator.random_date()"
+                # Email fields by name
+                if "email" in field_name_lower:
+                    return "test_data_generator.generate_email()"
+                # URL fields by name
+                if any(kw in field_name_lower for kw in ["url", "uri", "website", "link"]):
+                    return "test_data_generator.random_uri()"
+                # Phone fields by name
+                if "phone" in field_name_lower:
+                    return "test_data_generator.random_ipv4()"  # Faker phone can have issues, use simple format
+                # IP address fields by name
+                if "ipv4" in field_name_lower or "ip_address" in field_name_lower:
+                    return "test_data_generator.random_ipv4()"
+                if "ipv6" in field_name_lower:
+                    return "test_data_generator.random_ipv6()"
+                # Hostname fields by name
+                if "hostname" in field_name_lower or "host" in field_name_lower:
+                    return "test_data_generator.random_hostname()"
+
+            # Default string generation with length constraints
+            length = max_length if isinstance(max_length, int) and max_length <= 50 else 10
+            if not isinstance(length, int):
                 length = 10
             return f"test_data_generator.generate_string(length={length})"
 
@@ -2513,7 +2562,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                         if not isinstance(vp_schema, dict):
                             continue
                         unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
-                        instruction = self._get_type_instruction(unwrapped_vp)
+                        instruction = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
                         lines.append(f"    \"{vp_name}\": {instruction}")
                     lines.append("")
             return "\n".join(lines)
@@ -2536,8 +2585,8 @@ Do NOT invent or call POST endpoints that are not documented here.
             field_format = unwrapped.get("format", "")
             required_marker = " [REQUIRED]" if field_name in required_list else ""
 
-            # Use shared type→instruction mapper
-            instruction = self._get_type_instruction(unwrapped)
+            # Use shared type→instruction mapper (pass field_name for inference)
+            instruction = self._get_type_instruction(unwrapped, field_name=field_name)
 
             lines.append(f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}")
 
@@ -2571,8 +2620,8 @@ Do NOT invent or call POST endpoints that are not documented here.
             # Unwrap nullable pattern
             unwrapped, _ = self._unwrap_nullable_schema(prop_schema)
 
-            # Delegate to shared type→instruction mapper with ancestry tracking
-            val = self._get_type_instruction(unwrapped, _object_ancestors=new_ancestors)
+            # Delegate to shared type→instruction mapper with ancestry tracking and field name
+            val = self._get_type_instruction(unwrapped, _object_ancestors=new_ancestors, field_name=prop_name)
             parts.append(f'"{prop_name}": {val}')
 
         return "{" + ", ".join(parts) + "}"

@@ -227,31 +227,87 @@ class TestDataGenerator:
         return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
     def _generate_from_pattern(self, pattern: str) -> str:
-        """Generate a string that matches a simple regex pattern."""
+        """Generate a string that matches a regex pattern.
+
+        Handles common patterns generically by detecting pattern structure.
+        Falls back to Faker or random strings for unrecognized patterns.
+        """
         import re as _re
         # Strip anchors
         p = pattern.lstrip('^').rstrip('$')
 
-        # Handle common patterns
+        # Email pattern detection (contains @ or common email regex parts)
+        if '@' in p or r'[\w\.-]+@' in p or 'email' in p.lower():
+            return fake.email()
+
+        # URL/URI pattern detection
+        if 'http' in p.lower() or 'url' in p.lower() or r'://' in p:
+            return fake.url()
+
+        # Phone pattern detection (contains + or phone-like digit patterns)
+        if r'\+?' in p and r'\d{1,14}' in p:
+            # Generate international phone format
+            return '+1' + ''.join(random.choices(string.digits, k=10))
+
+        # UUID pattern detection
+        if 'uuid' in p.lower() or r'[0-9a-f]{8}-' in p.lower():
+            return str(uuid.uuid4())
+
+        # ZIP code patterns: \d{5} or \d{5}(-\d{4})?
+        zip_match = _re.match(r'^\\d\{5\}(\(-\\d\{4\}\)\?)?$', p)
+        if zip_match:
+            base = ''.join(random.choices(string.digits, k=5))
+            if random.choice([True, False]) and '(-' in p:
+                return base + '-' + ''.join(random.choices(string.digits, k=4))
+            return base
+
         # Pure digits with length: \d{N} or [0-9]{N}
         digit_match = _re.match(r'^\\d\{(\d+)\}$', p) or _re.match(r'^\[0-9\]\{(\d+)\}$', p)
         if digit_match:
             n = int(digit_match.group(1))
             return ''.join(random.choices(string.digits, k=n))
 
-        # Prefix + digits: PREFIX-\d+ or PREFIX\d{N}
-        prefix_match = _re.match(r'^([A-Za-z_-]+)[\\-]?\\d([+*]|\{(\d+)\})$', p)
+        # Variable length digits: \d+ or \d*
+        if p in [r'\d+', r'\d*']:
+            return ''.join(random.choices(string.digits, k=random.randint(4, 8)))
+
+        # Prefix + separator + digits: PREFIX-\d{N} or PREFIX-\d+
+        # Match patterns like: EMP-\d{6}, ORD-\d+, SKU-\d{8}
+        # Use [A-Za-z_]+ (without dash) to avoid capturing the separator
+        prefix_match = _re.match(r'^([A-Za-z_]+)-\\d([+*]|\{(\d+)\})$', p)
         if prefix_match:
-            prefix = prefix_match.group(1).replace('\\', '')
+            prefix = prefix_match.group(1)
             count = int(prefix_match.group(3)) if prefix_match.group(3) else random.randint(4, 8)
-            separator = '-' if '-' in p or '\\-' in p else ''
-            return prefix + separator + ''.join(random.choices(string.digits, k=count))
+            return prefix + '-' + ''.join(random.choices(string.digits, k=count))
+
+        # Prefix without separator + digits: PREFIX\d{N}
+        prefix_no_sep_match = _re.match(r'^([A-Za-z_]+)\\d([+*]|\{(\d+)\})$', p)
+        if prefix_no_sep_match:
+            prefix = prefix_no_sep_match.group(1)
+            count = int(prefix_no_sep_match.group(3)) if prefix_no_sep_match.group(3) else random.randint(4, 8)
+            return prefix + ''.join(random.choices(string.digits, k=count))
 
         # Alphanumeric with length: [a-zA-Z0-9]{N}
         alnum_match = _re.match(r'^\[a-zA-Z0-9\]\{(\d+)\}$', p)
         if alnum_match:
             n = int(alnum_match.group(1))
             return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
+
+        # Hex color pattern: #[0-9a-fA-F]{6}
+        if '#' in p and ('0-9a-f' in p.lower() or '0-9A-F' in p):
+            return '#' + ''.join(random.choices('0123456789ABCDEF', k=6))
+
+        # IPv4 pattern detection
+        if r'[0-9]{1,3}\.' in p or r'\d{1,3}\.' in p:
+            return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+
+        # Credit card pattern (16 digits, possibly grouped)
+        if r'\d{16}' in p or r'\d{4}' in p:
+            return ''.join(random.choices(string.digits, k=16))
+
+        # Hostname pattern detection
+        if r'[a-zA-Z0-9]' in p and r'\.' in p and ('com' in p or r'\w' in p):
+            return fake.domain_name()
 
         # Fallback: generate alphanumeric string
         return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
@@ -320,9 +376,109 @@ class TestDataGenerator:
         return str(uuid.uuid4())
 
     def random_date(self, start_days_ago: int = 365, end_days_ahead: int = 365) -> str:
+        """Generate a random date string in ISO format (YYYY-MM-DD).
+
+        Returns:
+            str: Date string like '2024-03-15'. This is already a string,
+                 do NOT call .isoformat() on the result.
+        """
         start_date = datetime.now() - timedelta(days=start_days_ago)
         end_date = datetime.now() + timedelta(days=end_days_ahead)
         return fake.date_between(start_date=start_date, end_date=end_date).isoformat()
+
+    def random_datetime(self, start_days_ago: int = 365, end_days_ahead: int = 365) -> str:
+        """Generate a random datetime string in ISO format.
+
+        Returns:
+            str: Datetime string like '2024-03-15T14:30:00'. This is already a string,
+                 do NOT call .isoformat() on the result.
+        """
+        start_date = datetime.now() - timedelta(days=start_days_ago)
+        end_date = datetime.now() + timedelta(days=end_days_ahead)
+        random_dt = fake.date_time_between(start_date=start_date, end_date=end_date)
+        return random_dt.isoformat()
+
+    def random_time(self) -> str:
+        """Generate a random time string in HH:MM:SS format.
+
+        Returns:
+            str: Time string like '14:30:00'.
+        """
+        return f"{random.randint(0, 23):02d}:{random.randint(0, 59):02d}:{random.randint(0, 59):02d}"
+
+    def random_ipv4(self) -> str:
+        """Generate a random IPv4 address.
+
+        Returns:
+            str: IPv4 address like '192.168.1.100'.
+        """
+        return f"{random.randint(1, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
+
+    def random_ipv6(self) -> str:
+        """Generate a random IPv6 address.
+
+        Returns:
+            str: IPv6 address like '2001:0db8:85a3:0000:0000:8a2e:0370:7334'.
+        """
+        return ':'.join(''.join(random.choices('0123456789abcdef', k=4)) for _ in range(8))
+
+    def random_hostname(self) -> str:
+        """Generate a random hostname.
+
+        Returns:
+            str: Hostname like 'server-42.example.com'.
+        """
+        return fake.domain_name()
+
+    def random_uri(self) -> str:
+        """Generate a random URI.
+
+        Returns:
+            str: URI like 'https://example.com/path'.
+        """
+        return fake.url()
+
+    def random_country_code(self) -> str:
+        """Generate a random ISO 3166-1 alpha-2 country code.
+
+        Returns:
+            str: Country code like 'US', 'GB', 'DE'.
+        """
+        return fake.country_code()
+
+    def random_currency_code(self) -> str:
+        """Generate a random ISO 4217 currency code.
+
+        Returns:
+            str: Currency code like 'USD', 'EUR', 'GBP'.
+        """
+        return fake.currency_code()
+
+    def random_locale(self) -> str:
+        """Generate a random locale string.
+
+        Returns:
+            str: Locale like 'en_US', 'de_DE'.
+        """
+        return fake.locale()
+
+    def random_hex_color(self) -> str:
+        """Generate a random hex color code.
+
+        Returns:
+            str: Hex color like '#A3F5B2'.
+        """
+        return fake.hex_color()
+
+    def random_base64(self, length: int = 16) -> str:
+        """Generate a random base64-encoded string.
+
+        Returns:
+            str: Base64 string.
+        """
+        import base64
+        raw = ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+        return base64.b64encode(raw.encode()).decode()
 
 
 # Global instance for easy access

@@ -1426,8 +1426,9 @@ class TestGetTypeInstruction:
         assert "random_date" in gen._get_type_instruction({"type": "string", "format": "date"})
 
     def test_format_datetime(self):
+        """date-time format uses dedicated random_datetime() method."""
         gen = self._get_generator()
-        assert "isoformat" in gen._get_type_instruction({"type": "string", "format": "date-time"})
+        assert "random_datetime" in gen._get_type_instruction({"type": "string", "format": "date-time"})
 
     def test_format_email(self):
         gen = self._get_generator()
@@ -1438,28 +1439,28 @@ class TestGetTypeInstruction:
         assert "random_uuid" in gen._get_type_instruction({"type": "string", "format": "uuid"})
 
     def test_format_uri_randomized(self):
-        """URI format generates randomized URLs, not hardcoded."""
+        """URI format uses dedicated random_uri() method."""
         gen = self._get_generator()
         result = gen._get_type_instruction({"type": "string", "format": "uri"})
-        assert "generate_string" in result  # randomized part
+        assert "random_uri" in result
 
     def test_format_ipv4_randomized(self):
-        """IPv4 format generates randomized IPs."""
+        """IPv4 format uses dedicated random_ipv4() method."""
         gen = self._get_generator()
         result = gen._get_type_instruction({"type": "string", "format": "ipv4"})
-        assert "random.randint" in result
+        assert "random_ipv4" in result
 
     def test_format_hostname_randomized(self):
-        """Hostname format generates randomized hostnames."""
+        """Hostname format uses dedicated random_hostname() method."""
         gen = self._get_generator()
         result = gen._get_type_instruction({"type": "string", "format": "hostname"})
-        assert "generate_string" in result
+        assert "random_hostname" in result
 
     def test_format_time_randomized(self):
-        """Time format generates randomized times."""
+        """Time format uses dedicated random_time() method."""
         gen = self._get_generator()
         result = gen._get_type_instruction({"type": "string", "format": "time"})
-        assert "random.randint" in result
+        assert "random_time" in result
 
     def test_string_type(self):
         gen = self._get_generator()
@@ -1842,7 +1843,7 @@ class TestPrecomputePositiveFieldsRefactored:
         assert result == ""
 
     def test_randomized_format_values(self):
-        """Format values (uri, ipv4, etc.) use randomized generators."""
+        """Format values (uri, ipv4, etc.) use dedicated generator methods."""
         gen = self._get_generator()
         endpoint = Mock()
         body = Mock()
@@ -1855,8 +1856,10 @@ class TestPrecomputePositiveFieldsRefactored:
         }
         endpoint.request_body = body
         result = gen._precompute_positive_fields(endpoint)
-        # All should have randomized components
-        assert "generate_string" in result or "random.randint" in result
+        # All should use dedicated format methods
+        assert "random_uri" in result
+        assert "random_ipv4" in result
+        assert "random_hostname" in result
 
 
 class TestNegativeInjectionWithAllOf:
@@ -2097,3 +2100,151 @@ class TestFifthSweepFixes:
         # The registry returns [200, 201, 204] for POST positive scenarios
         assert "expected_status=" in result
         assert "[200, 201, 204]" in result  # Fallback from registry
+
+
+class TestSixthSweepFixes:
+    """Tests for sixth sweep fixes: pattern generation, format generators, field name inference."""
+
+    def test_prefix_pattern_instruction_generated(self):
+        """Pattern like ^EMP-\\d{6}$ should generate correct instruction."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        # Test that the instruction uses generate_string with pattern
+        result = gen._get_type_instruction({"type": "string", "pattern": "^EMP-\\d{6}$"})
+        assert 'pattern=' in result
+        # The pattern should be preserved for generate_string to handle
+        assert 'EMP-' in result or 'generate_string' in result
+
+    def test_field_name_inference_country_code(self):
+        """Fields named 'country' with maxLength<=3 should use random_country_code()."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        result = gen._get_type_instruction(
+            {"type": "string", "maxLength": 2},
+            field_name="country"
+        )
+        assert "random_country_code" in result
+
+    def test_field_name_inference_currency_code(self):
+        """Fields named 'currency' with maxLength<=4 should use random_currency_code()."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        result = gen._get_type_instruction(
+            {"type": "string", "maxLength": 3},
+            field_name="currency_code"
+        )
+        assert "random_currency_code" in result
+
+    def test_field_name_inference_created_at(self):
+        """Fields named 'created_at' should use random_datetime() even without format."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        result = gen._get_type_instruction(
+            {"type": "string"},  # No format specified
+            field_name="created_at"
+        )
+        assert "random_datetime" in result
+
+    def test_field_name_inference_email(self):
+        """Fields named 'email' should use generate_email() even without format."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        result = gen._get_type_instruction(
+            {"type": "string"},  # No format specified
+            field_name="user_email"
+        )
+        assert "generate_email" in result
+
+    def test_field_name_inference_color(self):
+        """Fields named 'color' should use random_hex_color()."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        result = gen._get_type_instruction(
+            {"type": "string"},
+            field_name="background_color"
+        )
+        assert "random_hex_color" in result
+
+    def test_format_byte_uses_base64(self):
+        """Format 'byte' should use random_base64()."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        result = gen._get_type_instruction({"type": "string", "format": "byte"})
+        assert "random_base64" in result
+
+    def test_precompute_positive_fields_passes_field_name(self):
+        """_precompute_positive_fields should pass field names for inference."""
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        from devdox_ai_locust.ai_config import AIEnhancementConfig
+
+        gen = ScenarioWorkflowGenerator(
+            prompt_dir=Mock(),
+            ai_client=Mock(),
+            ai_config=AIEnhancementConfig(),
+        )
+
+        endpoint = Mock()
+        body = Mock()
+        body.schema = {
+            "properties": {
+                "country": {"type": "string", "maxLength": 2},
+                "created_at": {"type": "string"},
+                "user_email": {"type": "string"},
+            }
+        }
+        endpoint.request_body = body
+        result = gen._precompute_positive_fields(endpoint)
+
+        # All fields should use inferred generators
+        assert "random_country_code" in result
+        assert "random_datetime" in result
+        assert "generate_email" in result
