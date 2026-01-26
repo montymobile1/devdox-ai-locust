@@ -615,7 +615,31 @@ def test_success_with_valid_data(self):
     }
     ```
     If the field is a oneOf/anyOf (discriminated union), generate one valid variant with its discriminator.
-15. **ALWAYS use f-strings for path interpolation** - path templates MUST be interpolated:
+
+15. **Discriminated unions (oneOf/anyOf) require the DISCRIMINATOR field with exact enum value:**
+    ```python
+    # Schema shows: pets is array of Pet, where Pet is oneOf: [Dog, Cat]
+    # Dog has: pet_type="dog", name, breed, bark_volume
+    # Cat has: pet_type="cat", name, breed, meow_loudness
+
+    # WRONG - pet_type must be exact discriminator value, not random string!
+    "pets": [{
+        "pet_type": test_data_generator.generate_string(),  # NO! Must be "dog" or "cat"!
+        "name": test_data_generator.generate_string()
+    }]
+
+    # CORRECT - use exact discriminator value and include ALL fields for that variant
+    "pets": [{
+        "pet_type": "dog",  # Exact discriminator value
+        "name": test_data_generator.generate_string(),
+        "breed": test_data_generator.generate_string(),
+        "bark_volume": test_data_generator.generate_integer(min_val=1, max_val=10)
+    }]
+    ```
+    The discriminator field (usually `type`, `pet_type`, `payment_type`, etc.) MUST be one of
+    the exact enum values from the schema, and you MUST include all required fields for that variant.
+
+16. **ALWAYS use f-strings for path interpolation** - path templates MUST be interpolated:
     ```python
     # WRONG - literal {category} sent to server, causes 422
     category = "electronics"
