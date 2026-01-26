@@ -43,41 +43,11 @@ class _TeeOutput:
         return self.original.isatty()
 
 
-def _extract_flags_from_argv():
-    """Extract flag names (without values) from sys.argv for log filename."""
-    flags = []
-    argv = sys.argv[1:]  # Skip script name
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg.startswith('--'):
-            # Long flag: --users, --host, etc.
-            flag_name = arg.lstrip('-').split('=')[0]  # Handle --flag=value
-            flags.append(flag_name)
-        i += 1
-    return flags
-
-
-def _flags_to_camel_case(flags):
-    """Convert flag names to camelCase string."""
-    if not flags:
-        return ""
-    return "".join(flag.replace("-", " ").title().replace(" ", "") for flag in flags)
-
-
 def _setup_auto_logging():
     """Setup automatic logging when locustfile is loaded."""
     log_dir = Path(__file__).parent
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Build filename with command flags
-    flags = _extract_flags_from_argv()
-    flags_str = _flags_to_camel_case(flags)
-    if flags_str:
-        log_filename = f"{log_dir.name}_locustRun{flags_str}_{timestamp}.log"
-    else:
-        log_filename = f"{log_dir.name}_locustRun_{timestamp}.log"
-
+    log_filename = f"{log_dir.name}_locust_run_{timestamp}.log"
     log_path = log_dir / log_filename
 
     log_file = open(log_path, "w", encoding="utf-8")

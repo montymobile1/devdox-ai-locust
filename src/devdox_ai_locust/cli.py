@@ -44,60 +44,19 @@ class TeeOutput:
         return self.original.isatty()
 
 
-def _extract_flags_from_argv() -> List[str]:
-    """Extract flag names (without values) from sys.argv for log filename."""
-    flags = []
-    argv = sys.argv[1:]  # Skip script name
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg.startswith('--'):
-            # Long flag: --output, --host, etc.
-            flag_name = arg.lstrip('-').split('=')[0]  # Handle --flag=value
-            flags.append(flag_name)
-        elif arg.startswith('-') and len(arg) == 2:
-            # Short flag: -o, -H, etc. (skip as they're duplicates of long flags)
-            pass
-        i += 1
-    return flags
-
-
-def _flags_to_camel_case(flags: List[str]) -> str:
-    """Convert flag names to camelCase string.
-
-    Example: ['output', 'host', 'auth'] -> 'OutputHostAuth'
-    """
-    if not flags:
-        return ""
-    # Capitalize each flag and join
-    return "".join(flag.replace("-", " ").title().replace(" ", "") for flag in flags)
-
-
-def _setup_logging(output_dir: Path, command_type: str, include_flags: bool = True) -> Tuple[Path, TextIO]:
+def _setup_logging(output_dir: Path, command_type: str) -> Tuple[Path, TextIO]:
     """Setup tee logging to capture all terminal output.
 
     Args:
         output_dir: Directory to save the log file
         command_type: Type of command (e.g., 'generate', 'run')
-        include_flags: Whether to include command flags in filename
 
     Returns:
         Tuple of (log_path, log_file)
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dir_name = output_dir.name
-
-    # Build filename with command flags
-    if include_flags:
-        flags = _extract_flags_from_argv()
-        flags_str = _flags_to_camel_case(flags)
-        if flags_str:
-            log_filename = f"{dir_name}_{command_type}{flags_str}_{timestamp}.log"
-        else:
-            log_filename = f"{dir_name}_{command_type}_{timestamp}.log"
-    else:
-        log_filename = f"{dir_name}_{command_type}_{timestamp}.log"
-
+    log_filename = f"{dir_name}_{command_type}_{timestamp}.log"
     log_path = output_dir / log_filename
 
     log_file = open(log_path, "w", encoding="utf-8")
@@ -463,19 +422,34 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     active_workers: set = set()  # Set of active endpoint short_info strings
     active_lock = asyncio.Lock()
 
-    # Milestone tracking for log-friendly progress
+    # Progress tracking - milestones + heartbeat for user feedback
     printed_milestones: set = set()
-    milestones = [25, 50, 75, 100]
+    milestones = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    last_heartbeat_count = 0
+    heartbeat_interval = max(5, num_endpoints // 20)  # Every 5% or minimum 5 endpoints
 
-    def check_and_print_milestone():
-        """Print progress at 25%, 50%, 75%, 100% milestones"""
+    def check_and_print_progress():
+        """Print progress - milestones at 10% intervals, heartbeat between them"""
+        nonlocal last_heartbeat_count
         total_processed = completed_count + failed_count
-        if num_endpoints > 0:
-            percent = (total_processed * 100) // num_endpoints
-            for milestone in milestones:
-                if percent >= milestone and milestone not in printed_milestones:
-                    printed_milestones.add(milestone)
-                    console.print(f"  • Progress: {milestone}% ({total_processed}/{num_endpoints} endpoints)")
+        if num_endpoints <= 0:
+            return
+
+        percent = (total_processed * 100) // num_endpoints
+
+        # Check for milestone
+        milestone_printed = False
+        for milestone in milestones:
+            if percent >= milestone and milestone not in printed_milestones:
+                printed_milestones.add(milestone)
+                console.print(f"  ✓ {milestone}% complete ({total_processed}/{num_endpoints} endpoints)")
+                last_heartbeat_count = total_processed
+                milestone_printed = True
+
+        # Heartbeat between milestones to show system is working
+        if not milestone_printed and (total_processed - last_heartbeat_count) >= heartbeat_interval:
+            console.print(f"    ... processing ({total_processed}/{num_endpoints})")
+            last_heartbeat_count = total_processed
 
     # Process endpoint and save files (resilient - catches and tracks errors)
     async def process_and_save_endpoint(endpoint: Any) -> List[Dict[str, Any]]:
@@ -525,7 +499,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 completed_count += 1
                 created_files.extend(local_files)
                 active_workers.discard(short_info)
-                check_and_print_milestone()
+                check_and_print_progress()
 
             return local_files
 
@@ -561,7 +535,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 })
                 created_files.extend(fallback_files)  # Use pre-LLM templates
                 active_workers.discard(short_info)
-                check_and_print_milestone()
+                check_and_print_progress()
                 # Print full traceback so user can debug (no truncation)
                 console.print(
                     f"\n   [yellow]⚠[/yellow] {tag_dir_name}/{operation_id} failed, using base template:"
