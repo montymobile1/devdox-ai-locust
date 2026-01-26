@@ -503,7 +503,8 @@ class OpenAPIParser:
                 # without further recursion (one level of fields only)
                 resolved = self._resolve_reference(schema)
                 if not resolved:
-                    return None
+                    logger.warning(f"Circular reference {ref} could not be resolved")
+                    return {"type": "object"}  # Safe placeholder for unresolvable circular refs
                 # Return a shallow copy without recursing into its nested refs
                 result = dict(resolved)
                 result.pop("$ref", None)
@@ -513,7 +514,8 @@ class OpenAPIParser:
             new_ancestors = _ancestors | {ref}
             resolved = self._resolve_reference(schema)
             if not resolved:
-                return None
+                logger.warning(f"Reference {ref} could not be resolved")
+                return {"type": "object"}  # Safe placeholder for unresolvable refs
             # Continue resolving the resolved schema
             return self._resolve_schema_deep(resolved, new_ancestors)
 
