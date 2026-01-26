@@ -1918,7 +1918,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         if typed_fields:
             examples = []
-            for name, ftype in typed_fields[:3]:  # Limit to 3 examples
+            for name, ftype in typed_fields:
                 if ftype == "integer" or ftype == "number":
                     examples.append(f'"{name}": "not_a_number" (expects {ftype})')
                 elif ftype == "boolean":
@@ -1928,19 +1928,19 @@ Do NOT invent or call POST endpoints that are not documented here.
             scenarios.append(f"WRONG_TYPE: Send wrong type: {examples}")
 
         if enum_fields:
-            for name, values in enum_fields[:3]:  # Limit
+            for name, values in enum_fields:
                 scenarios.append(
                     f"INVALID_ENUM: Field \"{name}\" allows only {values}, send \"INVALID_VALUE_XYZ\""
                 )
 
         if pattern_fields:
-            for name, pattern in pattern_fields[:3]:  # Limit
+            for name, pattern in pattern_fields:
                 scenarios.append(
                     f"INVALID_PATTERN: Field \"{name}\" must match pattern {pattern}, send \"!!!invalid!!!\""
                 )
 
         if numeric_fields:
-            for name, min_val, max_val in numeric_fields[:3]:  # Limit
+            for name, min_val, max_val in numeric_fields:
                 if min_val is not None:
                     scenarios.append(
                         f"BOUNDARY: Field \"{name}\" has min={min_val}, send {min_val - 1}"
@@ -1953,7 +1953,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         if not scenarios:
             # Fallback: at least test invalid query params if available
             if query_params:
-                for name, ptype in query_params[:2]:
+                for name, ptype in query_params:
                     if "int" in ptype.lower():
                         scenarios.append(f"INVALID_QUERY: Send \"{name}=not_a_number\" (expects integer)")
                     else:
