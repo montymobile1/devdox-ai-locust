@@ -191,65 +191,28 @@ Before writing code, you MUST reason through these steps:
   - You MUST use allow_redirects=False to capture the actual redirect status code
   - Without allow_redirects=False, the HTTP client auto-follows redirects
 
+{% if positive_fields %}
+**STEP 2 - USE THESE EXACT FIELD GENERATORS (pre-computed from schema):**
+{{ positive_fields }}
+
+Use these EXACT generators for each field. Do NOT substitute with other generators.
+NEVER use generate_string() for enum, date, email, uuid, or formatted fields.
+ALL array elements MUST be the SAME type as specified above.
+{% else %}
 **STEP 2 - EXTRACT SCHEMA FIELDS:**
 - List ALL required fields from the Schema (exact names!)
 - List optional fields if any
 - Note the type of each field (string, integer, boolean, etc.)
 - **CRITICAL**: Check for "allowed values:" - these are ENUM fields, you MUST use one of those exact values!
 - **CRITICAL**: Check for "pattern=" constraints - the value must match that regex pattern!
+{% endif %}
 
 **STEP 3 - PLAN STATE-DEPENDENT TESTS:**
 - If endpoint has path params like {id}: you MUST create the resource first, then use the returned ID
 - If it's a simple POST with no path params: just send valid data
 - NEVER use hardcoded IDs like /items/1 - they will 404!
 
-**STEP 4 - PLAN TEST DATA GENERATION:**
-
-**CRITICAL: ENUM FIELDS (highest priority)**
-If a field shows "allowed values:" or is an enum type, you MUST use:
-    random.choice([<exact allowed values from schema>])
-NEVER use generate_string() or generate_integer() for enum fields.
-Using the wrong value for an enum ALWAYS causes 422.
-
-**CRITICAL: ARRAY FIELDS**
-If a field is an array with items type defined:
-- ALL elements MUST be the SAME type as the items schema specifies
-- string array: ["abc", "def", "ghi"] - NEVER mix in integers, floats, or booleans
-- integer array: [1, 2, 3] - NEVER mix in strings or floats
-- float array: [1.0, 2.5, 3.7] - NEVER mix in strings or booleans
-- Use list comprehension: [test_data_generator.generate_string() for _ in range(3)]
-
-**CRITICAL: STRING FORMAT MAPPING (mandatory)**
-If a field has a "format" attribute, you MUST use the correct generator:
-| Format      | Generator                                    |
-|-------------|----------------------------------------------|
-| date        | test_data_generator.random_date()            |
-| date-time   | datetime.now().isoformat()                   |
-| time        | "12:30:00"                                   |
-| email       | test_data_generator.generate_email()         |
-| uri/url     | "https://example.com/test"                   |
-| uuid        | test_data_generator.random_uuid()            |
-| ipv4        | "192.168.1.1"                                |
-| ipv6        | "::1"                                        |
-| hostname    | "test.example.com"                           |
-| password    | test_data_generator.generate_string(12)      |
-NEVER use generate_string() for formatted fields - it produces random chars that fail validation.
-
-For each field, decide how to generate valid data:
-  - **ENUM fields**: random.choice([exact values]) - NEVER generate_string()
-  - **PATTERN fields**: Generate a value that MATCHES the pattern
-    Example: pattern='^(asc|desc)$' → use "asc" or "desc"
-    Example: pattern='^[A-Z]{3}-\d{4}$' → use "ABC-1234"
-  - Regular strings: test_data_generator.generate_string(length=10)
-  - Emails: test_data_generator.generate_email()
-  - Integers (no enum): test_data_generator.generate_integer(min_val=1, max_val=100)
-  - Floats: test_data_generator.generate_float()
-  - Booleans: test_data_generator.generate_boolean()
-  - UUIDs: test_data_generator.random_uuid()
-  - Dates: test_data_generator.random_date()
-  - Datetimes: datetime.now().isoformat()
-
-**STEP 5 - SET TASK WEIGHTS:**
+**STEP 4 - SET TASK WEIGHTS:**
 Set @task weights to reflect realistic traffic patterns:
 - **GET endpoints**: weight=10 (most common - read operations)
 - **POST endpoints**: weight=3 (moderate - create operations)
@@ -267,7 +230,7 @@ def test_create_item(self):
     ...
 ```
 
-**STEP 6 - WRITE THE CODE:**
+**STEP 5 - WRITE THE CODE:**
 Based on your analysis, write the complete workflow class.
 
 === WEIGHT GUIDANCE ===
@@ -408,19 +371,21 @@ Has path params: [yes/no, list them]
 Needs request body: [yes/no]
 expected_status={{ endpoint_expected_status }}
 
+{% if positive_fields %}
+STEP 2 - FIELD GENERATORS (from pre-computed instructions above):
+[Confirm you will use the exact generators listed in STEP 2]
+{% else %}
 STEP 2 - SCHEMA FIELDS:
 Required: [list exact field names and types]
 Optional: [list exact field names and types]
 Enums: [list fields with "allowed values:" and their valid values, or "none"]
 Patterns: [list fields with pattern constraints, or "none"]
+{% endif %}
 
 STEP 3 - STATE DEPENDENCY:
 [Explain if you need to create resource first or not]
 
-STEP 4 - DATA GENERATION PLAN:
-[Map each field to generation method - use random.choice() for enums!]
-
-STEP 5 - TEST METHODS TO GENERATE:
+STEP 4 - TEST METHODS TO GENERATE:
 [List the @task methods you will create]
 </analysis>
 

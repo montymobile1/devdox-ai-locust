@@ -672,10 +672,21 @@ class ScenarioWorkflowGenerator:
                 return None
             injection_points = injection_points_result
 
-        # Pre-compute negative test scenarios
+        # Pre-compute negative test scenarios - skip if no valid tests possible
         negative_scenarios = ""
         if scenario_type == ScenarioType.NEGATIVE:
             negative_scenarios = self._precompute_negative_scenarios(endpoint)
+            if not negative_scenarios:
+                logger.info(
+                    f"Skipping negative workflow for [{endpoint.method} {endpoint.path}] - "
+                    f"no testable scenarios (no path params, body fields, or query params)"
+                )
+                return None
+
+        # Pre-compute positive field details - skip if nothing to test
+        positive_fields = ""
+        if scenario_type == ScenarioType.POSITIVE:
+            positive_fields = self._precompute_positive_fields(endpoint)
 
         # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
         setup_endpoints_section = ""
@@ -697,6 +708,7 @@ class ScenarioWorkflowGenerator:
             "expected_status_info": expected_status_info,
             "injection_points": injection_points,
             "negative_scenarios": negative_scenarios,
+            "positive_fields": positive_fields,
             "setup_endpoints": setup_endpoints_section,
             "custom_requirement": custom_requirement or "",
             "db_type": db_type,
@@ -1965,6 +1977,121 @@ Do NOT invent or call POST endpoints that are not documented here.
         lines = ["TESTABLE NEGATIVE SCENARIOS (implement ONLY these):"]
         for s in scenarios:
             lines.append(f"  - {s}")
+
+        return "\n".join(lines)
+
+    def _precompute_positive_fields(self, endpoint: Any) -> str:
+        """
+        Pre-compute field generation instructions for positive tests.
+
+        Extracts field names, types, formats, enums, patterns, and constraints
+        from the request body schema and formats them as explicit instructions
+        so the LLM doesn't have to guess from the endpoint description.
+
+        Returns:
+            Formatted string with exact field generation instructions, or empty string.
+        """
+        lines: List[str] = []
+
+        # Check if endpoint has request body
+        if not hasattr(endpoint, "request_body") or not endpoint.request_body:
+            # No request body - nothing to pre-compute for field generation
+            return ""
+
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not schema or not isinstance(schema, dict):
+            return ""
+
+        properties = schema.get("properties", {})
+        if not properties:
+            return ""
+
+        required_list = schema.get("required", [])
+
+        lines.append("FIELD GENERATION INSTRUCTIONS (use these EXACTLY):")
+        lines.append(f"Required fields: {required_list if required_list else 'none'}")
+        lines.append("")
+
+        for field_name, field_schema in properties.items():
+            if not isinstance(field_schema, dict):
+                continue
+
+            field_type = field_schema.get("type", "string")
+            field_format = field_schema.get("format", "")
+            field_enum = field_schema.get("enum")
+            field_pattern = field_schema.get("pattern")
+            field_items = field_schema.get("items", {})
+            required_marker = " [REQUIRED]" if field_name in required_list else ""
+
+            # Determine exact generation instruction
+            if field_enum:
+                instruction = f"random.choice({field_enum})"
+            elif field_pattern:
+                instruction = f"value matching pattern: {field_pattern}"
+            elif field_format == "date":
+                instruction = "test_data_generator.random_date()"
+            elif field_format == "date-time":
+                instruction = "datetime.now().isoformat()"
+            elif field_format == "email":
+                instruction = "test_data_generator.generate_email()"
+            elif field_format == "uuid":
+                instruction = "test_data_generator.random_uuid()"
+            elif field_format in ("uri", "url"):
+                instruction = '"https://example.com/test"'
+            elif field_format == "ipv4":
+                instruction = '"192.168.1.1"'
+            elif field_format == "ipv6":
+                instruction = '"::1"'
+            elif field_format == "hostname":
+                instruction = '"test.example.com"'
+            elif field_format == "time":
+                instruction = '"12:30:00"'
+            elif field_type == "string":
+                length = field_schema.get("maxLength", 10)
+                if length > 50:
+                    length = 10
+                instruction = f"test_data_generator.generate_string(length={length})"
+            elif field_type == "integer":
+                exclusive_min = field_schema.get("exclusiveMinimum")
+                exclusive_max = field_schema.get("exclusiveMaximum")
+                min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 1)
+                max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000)
+                exclusive = exclusive_min is not None or exclusive_max is not None
+                if exclusive:
+                    instruction = f"test_data_generator.generate_integer(min_val={min_val}, max_val={max_val}, exclusive=True)"
+                else:
+                    instruction = f"test_data_generator.generate_integer(min_val={min_val}, max_val={max_val})"
+            elif field_type == "number":
+                exclusive_min = field_schema.get("exclusiveMinimum")
+                exclusive_max = field_schema.get("exclusiveMaximum")
+                min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 0.0)
+                max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000.0)
+                exclusive = exclusive_min is not None or exclusive_max is not None
+                if exclusive:
+                    instruction = f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val}, exclusive=True)"
+                else:
+                    instruction = f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val})"
+            elif field_type == "boolean":
+                instruction = "test_data_generator.generate_boolean()"
+            elif field_type == "array":
+                items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
+                items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
+                if items_enum:
+                    instruction = f"[random.choice({items_enum}) for _ in range(3)]"
+                elif items_type == "string":
+                    instruction = "[test_data_generator.generate_string() for _ in range(3)]"
+                elif items_type == "integer":
+                    instruction = "[test_data_generator.generate_integer() for _ in range(3)]"
+                elif items_type == "number":
+                    instruction = "[test_data_generator.generate_float() for _ in range(3)]"
+                elif items_type == "boolean":
+                    instruction = "[test_data_generator.generate_boolean() for _ in range(3)]"
+                else:
+                    instruction = "[test_data_generator.generate_string() for _ in range(3)]"
+            else:
+                instruction = "test_data_generator.generate_string(length=10)"
+
+            lines.append(f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}")
 
         return "\n".join(lines)
 
