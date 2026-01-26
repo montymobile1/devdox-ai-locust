@@ -84,6 +84,10 @@ class GenerationProgress:
         reason_text = f" ({reason})" if reason else ""
         self.console.print(f"    [dim]├─[/dim] [dim]⊘ {scenario} skipped{reason_text}[/dim]")
 
+    def scenario_detail(self, endpoint_info: str, scenario: str, detail: str) -> None:
+        """Log a sub-step detail within a scenario (pre-computation, LLM call, validation)."""
+        self.console.print(f"    [dim]│    {scenario}: {detail}[/dim]", highlight=False)
+
     def scenario_retry(self, endpoint_info: str, scenario: str, attempt: int, max_attempts: int, error: str) -> None:
         """Log a retry attempt for a scenario."""
         self.console.print(

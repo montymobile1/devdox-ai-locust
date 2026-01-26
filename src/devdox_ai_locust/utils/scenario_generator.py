@@ -700,9 +700,24 @@ class ScenarioWorkflowGenerator:
 
         # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
         setup_endpoints_section = ""
+        setup_count = 0
         if all_endpoints and endpoint.method.upper() != "POST":
             related_create_endpoints = self._find_related_create_endpoints(endpoint, all_endpoints)
+            setup_count = len(related_create_endpoints)
             setup_endpoints_section = self._format_related_create_endpoints(related_create_endpoints)
+
+        # Log pre-computation results
+        if self.progress:
+            detail_parts = [f"expected_status={expected_status_codes}"]
+            if setup_count:
+                detail_parts.append(f"{setup_count} setup endpoints")
+            if positive_fields:
+                detail_parts.append("fields pre-computed")
+            if negative_scenarios:
+                detail_parts.append("scenarios pre-computed")
+            if injection_points:
+                detail_parts.append("injection points found")
+            self.progress.scenario_detail(endpoint_info, scenario_name, ", ".join(detail_parts))
 
         # Build context dict for template rendering
         template_context = {
@@ -796,6 +811,10 @@ class ScenarioWorkflowGenerator:
                     request_data=llm_request_data,
                 )
 
+            if self.progress:
+                attempt_label = f"attempt {attempt + 1}/{max_validation_retries}" if attempt > 0 else "calling LLM"
+                self.progress.scenario_detail(endpoint_info, scenario_name, attempt_label)
+
             content = await self._call_ai_service(current_prompt, scenario_type.value)
 
             # Record raw LLM response
@@ -867,6 +886,10 @@ class ScenarioWorkflowGenerator:
                     checks=[{"check": "python_syntax", "passed": is_valid, "error": error}],
                 )
 
+            if not is_valid:
+                if self.progress:
+                    self.progress.scenario_detail(endpoint_info, scenario_name, f"syntax FAILED: {error[:120]}")
+
             if is_valid:
                 # Syntax OK - now run semantic validation
                 all_endpoint_paths = []
@@ -926,6 +949,13 @@ class ScenarioWorkflowGenerator:
                         f"[{endpoint.method} {endpoint.path}]: "
                         f"{len(semantic_result.violations)} violation(s)"
                     )
+                    if self.progress:
+                        violations_summary = "; ".join(
+                            f"[{v.rule}] {v.message[:80]}" for v in semantic_result.violations[:3]
+                        )
+                        self.progress.scenario_detail(
+                            endpoint_info, scenario_name, f"semantic FAILED: {violations_summary}"
+                        )
             else:
                 is_semantic_error = False
 
@@ -956,15 +986,15 @@ class ScenarioWorkflowGenerator:
                         validation_result={"valid": False, "error": error},
                     )
                 error_type = "Semantic" if last_is_semantic else "Syntax"
-                error_msg = f"{error_type}: {error[:200]}"
                 logger.warning(
                     f"{error_type} validation failed for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
-                    f"{error[:200]}. Retrying..."
+                    f"{error}. Retrying..."
                 )
                 if self.progress:
                     self.progress.scenario_retry(
-                        endpoint_info, scenario_name, attempt + 1, max_validation_retries, error_msg
+                        endpoint_info, scenario_name, attempt + 1, max_validation_retries,
+                        f"{error_type}: {error}"
                     )
                 await asyncio.sleep(1)
             else:
@@ -1436,10 +1466,16 @@ class ScenarioWorkflowGenerator:
         all_endpoints: List[Any],
     ) -> List[Tuple[Any, float, str]]:
         """
-        Find CREATE (POST) endpoints related to the target endpoint using fuzzy matching.
+        Find CREATE (POST) endpoints that are hierarchical parents of the target endpoint.
 
-        Uses tag similarity and path segment matching to find relevant POST endpoints
-        that could be used as setup steps (e.g., creating items before testing GET/PUT/DELETE).
+        Uses path prefix matching to find POST endpoints that create resources
+        at each level of the target's path hierarchy. Only endpoints sharing
+        the same path namespace are considered.
+
+        For target: GET /api/v1/foo/users/{user_id}/posts/{post_id}/comments
+        Parent paths are:
+          - /api/v1/foo/users (creates user → user_id)
+          - /api/v1/foo/users/{user_id}/posts (creates post → post_id)
 
         Args:
             target_endpoint: The endpoint being tested
@@ -1454,71 +1490,128 @@ class ScenarioWorkflowGenerator:
             return []
 
         results: List[Tuple[Any, float, str]] = []
-        target_path = target_endpoint.path.lower()
+        target_path = target_endpoint.path
         target_tags = set(getattr(target_endpoint, "tags", []) or [])
 
-        # Extract resource name from path (e.g., "/users/{id}" -> "users")
-        target_path_segments = [s for s in target_path.strip("/").split("/") if not s.startswith("{")]
+        # Build the hierarchy of parent paths from the target endpoint.
+        # For /a/b/{id}/c/{id2}/d, parent paths are:
+        #   /a/b (creates resource with id)
+        #   /a/b/{id}/c (creates resource with id2)
+        parent_paths = self._extract_parent_paths(target_path)
+
+        # Extract the static path prefix (segments before first {param})
+        target_prefix = self._get_static_prefix(target_path)
 
         for endpoint in all_endpoints:
-            # Only consider POST endpoints
             if endpoint.method.upper() != "POST":
                 continue
-
-            # Don't return the target itself
             if endpoint.path == target_endpoint.path and endpoint.method == target_endpoint.method:
                 continue
 
             score = 0.0
             reasons = []
+            candidate_path = endpoint.path
 
-            # Factor 1: Tag matching (high weight)
+            # Factor 1 (highest): Exact parent path match
+            # The POST endpoint's path matches one of the target's hierarchy levels
+            for i, parent in enumerate(parent_paths):
+                if self._paths_match(candidate_path, parent):
+                    # Higher score for deeper matches (more specific)
+                    score += 100.0 + (i * 10.0)
+                    reasons.append(f"parent path level {i + 1}: {parent}")
+                    break
+
+            # Factor 2: Shared path prefix (namespace matching)
+            # Only consider endpoints in the same namespace
+            if score == 0:
+                candidate_prefix = self._get_static_prefix(candidate_path)
+                common_prefix_len = self._common_prefix_length(target_prefix, candidate_prefix)
+                # Require at least 3 segments in common (e.g., /api/v1/comprehensive)
+                # to avoid matching /api/v1/users with /api/v1/comprehensive/nested/users
+                if common_prefix_len >= 3:
+                    score += 20.0 + (common_prefix_len * 5.0)
+                    reasons.append(f"shared prefix ({common_prefix_len} segments)")
+
+            # Factor 3: Tag matching (tiebreaker, lower weight than path matching)
             endpoint_tags = set(getattr(endpoint, "tags", []) or [])
             common_tags = target_tags & endpoint_tags
-            if common_tags:
-                score += 50.0 * len(common_tags)  # 50 points per matching tag
-                reasons.append(f"shares tag(s): {', '.join(common_tags)}")
+            if common_tags and score > 0:
+                score += 10.0 * len(common_tags)
+                reasons.append(f"same tag: {', '.join(common_tags)}")
 
-            # Factor 2: Path segment matching
-            endpoint_path = endpoint.path.lower()
-            endpoint_segments = [s for s in endpoint_path.strip("/").split("/") if not s.startswith("{")]
-
-            # Check for exact base path match (e.g., "/users" matches "/users/{id}")
-            if endpoint_segments and target_path_segments:
-                # First segment match is most important (resource type)
-                if endpoint_segments[0] == target_path_segments[0]:
-                    score += 30.0
-                    reasons.append(f"same resource type: {endpoint_segments[0]}")
-
-                # Additional matching segments add smaller bonus
-                common_segments = set(endpoint_segments) & set(target_path_segments)
-                if len(common_segments) > 1:
-                    score += 5.0 * (len(common_segments) - 1)
-                    reasons.append(f"path segments: {', '.join(common_segments)}")
-
-            # Factor 3: Path contains target resource name
-            # e.g., target is GET /orders/{id}/items, look for POST /items or POST /orders/{id}/items
-            if target_path_segments:
-                primary_resource = target_path_segments[-1] if target_path_segments else ""
-                if primary_resource and primary_resource in endpoint_path:
-                    score += 20.0
-                    if f"same endpoint resource: {primary_resource}" not in reasons:
-                        reasons.append(f"creates resource: {primary_resource}")
-
-            # Factor 4: Boost for simpler paths (collection endpoints like POST /users)
-            # These are more likely to be general create endpoints
-            if len(endpoint_segments) == 1 and score > 0:
-                score += 10.0
-                reasons.append("collection endpoint")
-
-            # Only include if there's some relevance
             if score > 0:
                 reason_str = "; ".join(reasons)
                 results.append((endpoint, score, reason_str))
 
-        # Sort by score (highest first) and return
         results.sort(key=lambda x: x[1], reverse=True)
         return results
+
+    @staticmethod
+    def _extract_parent_paths(path: str) -> List[str]:
+        """
+        Extract parent hierarchy paths from a parameterized path.
+
+        For /api/v1/users/{user_id}/posts/{post_id}/comments:
+        Returns: ['/api/v1/users', '/api/v1/users/{user_id}/posts']
+
+        Each parent path is where a POST would create the resource
+        whose ID is used as a path parameter in the target.
+        """
+        segments = path.strip("/").split("/")
+        parents = []
+        for i, seg in enumerate(segments):
+            if seg.startswith("{") and seg.endswith("}"):
+                # Everything before this param is a parent path
+                parent = "/" + "/".join(segments[:i])
+                if parent != "/":
+                    parents.append(parent)
+        return parents
+
+    @staticmethod
+    def _get_static_prefix(path: str) -> List[str]:
+        """Get path segments before the first path parameter."""
+        segments = path.strip("/").split("/")
+        prefix = []
+        for seg in segments:
+            if seg.startswith("{"):
+                break
+            prefix.append(seg.lower())
+        return prefix
+
+    @staticmethod
+    def _common_prefix_length(prefix_a: List[str], prefix_b: List[str]) -> int:
+        """Count how many leading segments match between two prefixes."""
+        count = 0
+        for a, b in zip(prefix_a, prefix_b):
+            if a == b:
+                count += 1
+            else:
+                break
+        return count
+
+    @staticmethod
+    def _paths_match(candidate: str, parent: str) -> bool:
+        """
+        Check if a candidate POST path matches a parent path pattern.
+
+        Handles path parameter wildcards: /users/{id}/posts matches
+        /users/{user_id}/posts because both have a param at the same position.
+        """
+        c_segments = candidate.strip("/").split("/")
+        p_segments = parent.strip("/").split("/")
+
+        if len(c_segments) != len(p_segments):
+            return False
+
+        for c, p in zip(c_segments, p_segments):
+            c_is_param = c.startswith("{") and c.endswith("}")
+            p_is_param = p.startswith("{") and p.endswith("}")
+            if c_is_param or p_is_param:
+                # Both are params or one is param - matches
+                continue
+            if c.lower() != p.lower():
+                return False
+        return True
 
     def _format_related_create_endpoints(
         self,
@@ -1767,11 +1860,9 @@ Do NOT invent or call POST endpoints that are not documented here.
         Logic:
         1. Try to get codes from spec responses (with descriptions)
         2. Filter by scenario type (2xx for positive, 4xx for negative, all <500 for security)
-        3. If filter returns empty, use FallbackHttpResponseRegistry
-        4. Auth codes (401/403) included for negative/security when auth is enabled
-
-        The result is passed directly to the prompt template. The template
-        does not need to know whether codes came from spec or fallback.
+        3. If spec defines responses but filter is empty: return empty (caller handles skip)
+        4. If spec defines NO responses at all: use FallbackHttpResponseRegistry
+        5. Auth codes (401/403) included for negative/security when auth is enabled
 
         Returns:
             List of (code, description) tuples ready for the template.
@@ -1795,7 +1886,15 @@ Do NOT invent or call POST endpoints that are not documented here.
         if filtered:
             return sorted(filtered, key=lambda x: x[0])
 
-        # Step 4: No matching codes from spec - use fallback
+        # Step 4: Spec defines responses but none match this scenario type
+        # For POSITIVE: spec is source of truth - no 2xx means no success case, skip
+        # For NEGATIVE/SECURITY: endpoints may reject input even without documented 4xx codes
+        if spec_codes and scenario_type == ScenarioType.POSITIVE:
+            # Spec explicitly defines responses (e.g., only 431) but no 2xx codes.
+            # Return empty to signal the caller should skip positive workflow.
+            return []
+
+        # Step 5: Spec defines NO responses at all - use fallback
         exclude_auth = not has_auth
         response_block = self._fallback_registry.get_responses(
             methods=method,
