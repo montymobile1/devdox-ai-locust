@@ -336,6 +336,194 @@ class ScenarioWorkflowGenerator:
 
         return dict(zip(scenario_types, llm_results))
 
+    async def generate_tag_orchestrator(
+        self,
+        tag_name: str,
+        tag_endpoints: List[Any],
+        base_workflow_content: str,
+        test_data_content: str,
+        auth_endpoints: Optional[List[Any]] = None,
+        custom_requirement: Optional[str] = None,
+    ) -> str:
+        """
+        Generate an orchestrator workflow for a tag that sequences endpoints with data flow.
+
+        The orchestrator includes:
+        - CRUD lifecycle (create -> read -> update -> delete)
+        - State-dependent tests (409 conflict, double delete, operation on deleted)
+        - Auth tests (401 unauthorized, 403 forbidden, expired token)
+        - Concurrent conflict tests
+        - Resource limit tests (429)
+        - Cleanup in on_stop()
+
+        Args:
+            tag_name: Name of the tag/resource group
+            tag_endpoints: All endpoints in this tag
+            base_workflow_content: Content of base_workflow.py
+            test_data_content: Content of test_data.py
+            auth_endpoints: Authentication endpoints (optional)
+            custom_requirement: User-provided custom requirements
+
+        Returns:
+            Generated orchestrator Python code
+
+        Raises:
+            CodeValidationError: If generated code fails syntax validation
+            AIServiceError: If AI service fails after all retries
+        """
+        # Load orchestrator template
+        template = self.prompt_env.get_template("workflow_orchestrator.j2")
+
+        # Format all endpoints in this tag with full details
+        endpoints_list = self._format_endpoints_for_orchestrator(tag_endpoints)
+
+        # Build class name from tag name
+        class_name = self._tag_to_class_name(tag_name)
+
+        # Render prompt
+        prompt = template.render(
+            tag_name=tag_name,
+            endpoints_list=endpoints_list,
+            auth_endpoints=self._format_endpoints_list(auth_endpoints) if auth_endpoints else "",
+            base_workflow=base_workflow_content,
+            test_data_content=test_data_content,
+            class_name=class_name,
+            custom_requirement=custom_requirement or "",
+        )
+
+        # Call LLM with validation retry
+        max_validation_retries = 2
+        last_error = None
+        last_code = None
+        current_prompt = prompt
+
+        for attempt in range(max_validation_retries):
+            if attempt > 0 and last_error and last_code:
+                current_prompt = self._render_fix_prompt(last_code, last_error)
+
+            content = await self._call_ai_service(current_prompt, f"orchestrator_{tag_name}")
+
+            if not content:
+                raise AIServiceError(f"AI service returned empty response for orchestrator [{tag_name}]")
+
+            # Detect HTML error page
+            if content.strip().startswith('<') and '<html' in content.lower():
+                raise AIServiceError(f"API returned HTML error page for orchestrator [{tag_name}]")
+
+            # Extract and clean code
+            extracted = self._extract_code(content)
+            sanitized = self._sanitize_unicode(extracted)
+            after_class_fix = self._fix_orchestrator_class_name(sanitized, class_name)
+            after_bytes_fix = self._fix_bytes_literals(after_class_fix)
+            after_regex_fix = self._fix_regex_strings(after_bytes_fix)
+            content = after_regex_fix
+
+            is_valid, error = self._validate_python_code(content)
+
+            if is_valid:
+                if attempt > 0:
+                    console.print(
+                        f"[green]✓ Retry SUCCEEDED[/green] for orchestrator [{tag_name}] "
+                        f"on attempt {attempt + 1}/{max_validation_retries}"
+                    )
+                return content
+
+            last_error = error
+            last_code = content
+
+            if attempt < max_validation_retries - 1:
+                console.print(
+                    f"[yellow]⚠ Validation failed[/yellow] for orchestrator [{tag_name}], "
+                    f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying..."
+                )
+                await asyncio.sleep(1)
+
+        raise CodeValidationError(
+            "orchestrator",
+            last_error,
+            last_code,
+            endpoint_info=f"tag: {tag_name}"
+        )
+
+    def _format_endpoints_for_orchestrator(self, endpoints: List[Any]) -> str:
+        """Format all endpoints in a tag for the orchestrator prompt."""
+        lines = []
+
+        # Group by HTTP method for clarity
+        by_method = {"POST": [], "GET": [], "PUT": [], "PATCH": [], "DELETE": []}
+        for ep in endpoints:
+            method = ep.method.upper()
+            if method in by_method:
+                by_method[method].append(ep)
+            else:
+                by_method.setdefault("OTHER", []).append(ep)
+
+        for method, eps in by_method.items():
+            if eps:
+                lines.append(f"\n{method} endpoints:")
+                for ep in eps:
+                    operation_id = getattr(ep, "operation_id", "") or self._generate_operation_id(ep)
+                    summary = getattr(ep, "summary", "") or "No summary"
+                    lines.append(f"  - {ep.path}")
+                    lines.append(f"    Operation ID: {operation_id}")
+                    lines.append(f"    Summary: {summary}")
+
+                    # Include request body schema for POST/PUT/PATCH
+                    if method in ["POST", "PUT", "PATCH"] and hasattr(ep, "request_body") and ep.request_body:
+                        rb = ep.request_body
+                        schema = getattr(rb, "schema", {})
+                        if schema and isinstance(schema, dict):
+                            lines.append("    Request Body Schema:")
+                            schema_lines = self._format_schema(schema, indent=3)
+                            lines.extend(schema_lines)
+
+                    # Include response schema for understanding ID field
+                    if hasattr(ep, "responses") and ep.responses:
+                        if isinstance(ep.responses, dict):
+                            for status_code, response in ep.responses.items():
+                                if str(status_code).startswith("2"):
+                                    resp_schema = getattr(response, "schema", None) if hasattr(response, "schema") else None
+                                    if resp_schema:
+                                        lines.append(f"    Response ({status_code}) Schema:")
+                                        schema_lines = self._format_response_schema(resp_schema, indent=3)
+                                        lines.extend(schema_lines)
+                                    break
+
+        return "\n".join(lines)
+
+    def _tag_to_class_name(self, tag_name: str) -> str:
+        """Convert tag name to valid Python class name."""
+        sanitized = self._sanitize_identifier(tag_name)
+        words = sanitized.replace("_", " ").split()
+        return "".join(word.capitalize() for word in words) or "Default"
+
+    def _fix_orchestrator_class_name(self, code: str, expected_class_name: str) -> str:
+        """Fix orchestrator class name to match expected naming convention."""
+        import re
+
+        expected_full_name = f"{expected_class_name}Orchestrator"
+
+        # Find class definition that inherits from BaseWorkflow and SequentialTaskSet
+        pattern = r'class\s+(\w+)\s*\([^)]*(?:BaseWorkflow|SequentialTaskSet)[^)]*\)\s*:'
+        match = re.search(pattern, code)
+
+        if match:
+            actual_class_name = match.group(1)
+            if actual_class_name != expected_full_name:
+                logger.debug(f"Fixing orchestrator class name: {actual_class_name} -> {expected_full_name}")
+                code = re.sub(
+                    rf'\bclass\s+{re.escape(actual_class_name)}\s*\(',
+                    f'class {expected_full_name}(',
+                    code
+                )
+                code = re.sub(
+                    rf'\b{re.escape(actual_class_name)}\b',
+                    expected_full_name,
+                    code
+                )
+
+        return code
+
     async def _generate_llm_scenario(
         self,
         scenario_type: ScenarioType,

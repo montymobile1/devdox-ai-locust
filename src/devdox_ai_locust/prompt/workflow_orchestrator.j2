@@ -1,0 +1,341 @@
+TASK: Generate an ORCHESTRATOR workflow that sequences multiple endpoints with data flow and state-dependent tests.
+
+{% if custom_requirement %}
+=== USER CUSTOM REQUIREMENTS ===
+{{ custom_requirement }}
+
+Apply these requirements when generating tests. They take priority over default behavior.
+{% endif %}
+
+=== CONTEXT ===
+
+TAG/RESOURCE: {{ tag_name }}
+
+ENDPOINTS IN THIS TAG (use ONLY these):
+{{ endpoints_list }}
+
+{% if auth_endpoints %}
+AUTHENTICATION ENDPOINTS:
+{{ auth_endpoints }}
+{% endif %}
+
+BASE WORKFLOW (inherit from this):
+{{ base_workflow }}
+
+TEST DATA MODULE (test_data.py):
+{{ test_data_content }}
+
+=== ALLOWED IMPORTS (use ONLY these) ===
+```python
+import random
+import logging
+import time
+from datetime import datetime
+from locust import task, SequentialTaskSet
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator
+
+logger = logging.getLogger(__name__)
+```
+
+=== PURPOSE OF ORCHESTRATOR ===
+
+The orchestrator workflow sequences endpoints to test:
+1. **Data Flow**: Create resources, store IDs, use them in subsequent operations
+2. **CRUD Lifecycle**: Create → Read → Update → Delete sequence
+3. **State-Dependent Tests**: 409 Conflict, double delete, operation on deleted resource
+4. **Auth Tests**: 401 Unauthorized (no auth), 403 Forbidden, expired token
+5. **Concurrent Conflict Tests**: Rapid updates to same resource
+6. **Resource Limit Tests**: Trigger rate limiting (429)
+7. **Cleanup**: Delete created resources in on_stop()
+
+=== CRITICAL: HTTP REQUEST PATTERNS ===
+
+**For normal CRUD operations, use self.make_request():**
+```python
+result = self.make_request("POST", "/items", json=data)
+if result:
+    self.created_ids.append(result.get("id"))
+```
+
+**For tests expecting specific error codes, use catch_response pattern:**
+```python
+@task
+def test_duplicate_creation_409(self):
+    """Create duplicate - expect 409 Conflict"""
+    if not self.created_ids:
+        return
+    # Use same unique field to trigger conflict
+    data = {"name": self.duplicate_name}  # Same name as existing
+    with self.client.post("/items", json=data, catch_response=True) as response:
+        if response.status_code == 409:
+            response.success()  # Correctly rejected duplicate
+        elif response.status_code in [200, 201]:
+            response.failure("Expected 409 Conflict but got success - duplicate accepted!")
+        else:
+            response.success()  # Other errors are acceptable
+```
+
+**For auth tests, temporarily modify headers:**
+```python
+@task
+def test_unauthorized_401(self):
+    """Test without auth - expect 401"""
+    original_headers = self.default_headers.copy()
+    if "Authorization" in self.default_headers:
+        del self.default_headers["Authorization"]
+    with self.client.get("/protected", catch_response=True) as response:
+        if response.status_code == 401:
+            response.success()
+        else:
+            response.failure(f"Expected 401, got {response.status_code}")
+    self.default_headers = original_headers
+```
+
+=== CRITICAL: OUTPUT REQUIREMENTS ===
+
+**ASCII ONLY**: Your output MUST contain ONLY ASCII characters (codes 0-127).
+- NO Unicode characters (Chinese, Arabic, emoji, etc.)
+- NO special characters outside standard ASCII
+- Variable names: a-z, A-Z, 0-9, underscore ONLY
+
+=== CHAIN OF THOUGHT INSTRUCTIONS ===
+
+Before writing code, reason through:
+
+**STEP 1 - IDENTIFY CRUD ENDPOINTS:**
+- Which endpoint creates resources? (POST without {id})
+- Which endpoints read resources? (GET)
+- Which endpoints update resources? (PUT/PATCH with {id})
+- Which endpoints delete resources? (DELETE with {id})
+
+**STEP 2 - PLAN DATA FLOW:**
+- What ID field does POST return? (id, _id, uuid, etc.)
+- How to store IDs for later use?
+- Which endpoints need the stored ID?
+
+**STEP 3 - PLAN STATE-DEPENDENT TESTS:**
+- 409 Conflict: What makes a duplicate? (same name, email, etc.)
+- Double delete: Delete same ID twice
+- Operation on deleted: GET/PUT after DELETE
+
+**STEP 4 - PLAN AUTH TESTS:**
+- 401 Unauthorized: Remove auth header
+- 403 Forbidden: Access another user's resource (if applicable)
+- Expired token: Use invalid token
+
+**STEP 5 - PLAN CLEANUP:**
+- Delete all created resources in on_stop()
+
+=== CONSTRAINTS ===
+- Keep total code under 200 lines
+- Use SequentialTaskSet for ordered execution
+- Store IDs in self.created_ids list
+- Store a shared ID in self.shared_resource_id for conflict tests
+- Always check if IDs exist before using them
+- BYTES LITERALS MUST BE ASCII ONLY
+- Use RAW STRINGS for regex patterns
+
+=== OUTPUT FORMAT ===
+
+<analysis>
+STEP 1 - CRUD ENDPOINTS:
+POST (create): [endpoint]
+GET (read): [endpoints]
+PUT/PATCH (update): [endpoints]
+DELETE: [endpoint]
+
+STEP 2 - DATA FLOW:
+ID field from POST response: [field name]
+Endpoints needing ID: [list]
+
+STEP 3 - STATE TESTS:
+Duplicate field for 409: [field]
+Can test double delete: [yes/no]
+
+STEP 4 - AUTH TESTS:
+Protected endpoints: [list]
+
+STEP 5 - CLEANUP:
+Delete endpoint: [endpoint]
+</analysis>
+
+<code>
+import random
+import logging
+import time
+from datetime import datetime
+from locust import task, SequentialTaskSet
+from workflows.base_workflow import BaseWorkflow
+from test_data import test_data_generator
+
+logger = logging.getLogger(__name__)
+
+
+class {{ class_name }}Orchestrator(BaseWorkflow, SequentialTaskSet):
+    """
+    Orchestrator for {{ tag_name }} - sequences CRUD operations with data flow.
+
+    Includes:
+    - CRUD lifecycle (create -> read -> update -> delete)
+    - State-dependent tests (409 conflict, double delete)
+    - Auth tests (401, 403)
+    - Resource cleanup
+    """
+
+    # Shared state for data flow
+    created_ids = []
+    shared_resource_id = None
+    duplicate_name = None  # For 409 conflict tests
+
+    def on_start(self):
+        """Initialize orchestrator state"""
+        super().on_start()
+        self.created_ids = []
+        self.shared_resource_id = None
+        self.duplicate_name = None
+        {% if auth_endpoints %}
+        # Login if auth is required
+        self.login_and_get_token()
+        {% endif %}
+
+    def on_stop(self):
+        """Cleanup: delete all created resources"""
+        for resource_id in self.created_ids:
+            try:
+                self.make_request("DELETE", f"/path/{resource_id}")
+            except:
+                pass  # Best effort cleanup
+        self.created_ids.clear()
+        {% if auth_endpoints %}
+        self.logout()
+        {% endif %}
+        super().on_stop()
+
+    # === CRUD LIFECYCLE ===
+
+    @task
+    def step_1_create_resource(self):
+        """POST - Create resource and store ID for later use"""
+        data = {
+            # Generate valid data for required fields
+        }
+        result = self.make_request("POST", "/path", json=data)
+        if result:
+            resource_id = result.get("id")
+            if resource_id:
+                self.created_ids.append(resource_id)
+                self.shared_resource_id = resource_id
+                # Store duplicate field for 409 test
+                self.duplicate_name = data.get("name")
+
+    @task
+    def step_2_read_resource(self):
+        """GET - Read the created resource"""
+        if self.shared_resource_id:
+            self.make_request("GET", f"/path/{self.shared_resource_id}")
+
+    @task
+    def step_3_update_resource(self):
+        """PUT/PATCH - Update the resource"""
+        if self.shared_resource_id:
+            data = {"field": "updated_value"}
+            self.make_request("PUT", f"/path/{self.shared_resource_id}", json=data)
+
+    # === STATE-DEPENDENT TESTS ===
+
+    @task
+    def test_duplicate_creation_409(self):
+        """Create duplicate - expect 409 Conflict"""
+        if not self.duplicate_name:
+            return
+        data = {"name": self.duplicate_name}
+        with self.client.post("/path", json=data, catch_response=True) as response:
+            if response.status_code == 409:
+                response.success()
+            elif response.status_code in [200, 201]:
+                response.failure("Expected 409 but duplicate was accepted")
+            else:
+                response.success()  # Other rejections are fine
+
+    @task
+    def test_get_nonexistent_404(self):
+        """GET non-existent resource - expect 404"""
+        fake_id = "nonexistent-id-99999"
+        with self.client.get(f"/path/{fake_id}", catch_response=True) as response:
+            if response.status_code == 404:
+                response.success()
+            else:
+                response.failure(f"Expected 404, got {response.status_code}")
+
+    # === AUTH TESTS ===
+
+    @task
+    def test_unauthorized_401(self):
+        """Request without auth - expect 401"""
+        original_headers = self.default_headers.copy()
+        if "Authorization" in self.default_headers:
+            del self.default_headers["Authorization"]
+        with self.client.get("/path", catch_response=True) as response:
+            if response.status_code == 401:
+                response.success()
+            else:
+                response.success()  # API may not require auth
+        self.default_headers = original_headers
+
+    @task
+    def test_expired_token_401(self):
+        """Request with expired/invalid token - expect 401"""
+        original_headers = self.default_headers.copy()
+        self.default_headers["Authorization"] = "Bearer expired-invalid-token"
+        with self.client.get("/path", catch_response=True) as response:
+            if response.status_code == 401:
+                response.success()
+            else:
+                response.success()  # API may accept any token
+        self.default_headers = original_headers
+
+    # === CONCURRENT CONFLICT TEST ===
+
+    @task
+    def test_concurrent_updates(self):
+        """Rapid updates to same resource - may trigger conflicts"""
+        if not self.shared_resource_id:
+            return
+        for i in range(3):
+            data = {"field": f"concurrent_update_{i}"}
+            self.make_request("PUT", f"/path/{self.shared_resource_id}", json=data)
+            time.sleep(0.1)
+
+    # === RESOURCE LIMIT TEST ===
+
+    @task
+    def test_rate_limit_429(self):
+        """Rapid requests to potentially trigger rate limit"""
+        for i in range(10):
+            with self.client.get("/path", catch_response=True) as response:
+                if response.status_code == 429:
+                    response.success()  # Rate limit working
+                    logger.info("Rate limit triggered (429)")
+                    break
+                else:
+                    response.success()
+
+    # === CLEANUP: DELETE RESOURCE ===
+
+    @task
+    def step_final_delete_resource(self):
+        """DELETE - Remove the resource"""
+        if self.shared_resource_id:
+            self.make_request("DELETE", f"/path/{self.shared_resource_id}")
+            # Test double delete
+            with self.client.delete(f"/path/{self.shared_resource_id}", catch_response=True) as response:
+                if response.status_code == 404:
+                    response.success()  # Correctly returned 404 for deleted resource
+                else:
+                    response.success()  # Some APIs return 200/204 for idempotent delete
+            # Remove from tracking
+            if self.shared_resource_id in self.created_ids:
+                self.created_ids.remove(self.shared_resource_id)
+            self.shared_resource_id = None
+</code>

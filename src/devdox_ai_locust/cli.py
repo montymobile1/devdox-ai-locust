@@ -561,6 +561,50 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 
     console.print(f"[green]✓[/green] Workflows generated ({completed_count + failed_count}/{num_endpoints} endpoints)")
 
+    # Generate orchestrator for each tag
+    console.print(f"\n→ Generating orchestrators ({num_tags} tags)...")
+    orchestrator_files = []
+    orchestrator_failures = []
+
+    for tag_name, tag_endpoints in grouped_endpoints.items():
+        tag_dir_name = sanitize_dir_name(tag_name)
+        tag_dir = workflows_dir / tag_dir_name
+
+        try:
+            orchestrator_code = await scenario_gen.generate_tag_orchestrator(
+                tag_name=tag_name,
+                tag_endpoints=tag_endpoints,
+                base_workflow_content=base_workflow_content,
+                test_data_content=test_data_content,
+                auth_endpoints=auth_endpoints if auth else None,
+                custom_requirement=custom_requirement,
+            )
+
+            # Save orchestrator file
+            orchestrator_path = tag_dir / "orchestrator_workflow.py"
+            async with aiofiles.open(orchestrator_path, 'w', encoding='utf-8') as f:
+                await f.write(orchestrator_code)
+            orchestrator_files.append({
+                "path": str(orchestrator_path),
+                "size": len(orchestrator_code),
+                "tag": tag_name,
+            })
+            console.print(f"  [green]✓[/green] {tag_dir_name}/orchestrator_workflow.py")
+
+        except Exception as e:
+            orchestrator_failures.append({
+                "tag": tag_name,
+                "error": str(e),
+            })
+            console.print(f"  [yellow]⚠[/yellow] {tag_dir_name}/orchestrator_workflow.py failed: {str(e)[:100]}")
+
+    created_files.extend(orchestrator_files)
+
+    if orchestrator_failures:
+        console.print(f"[yellow]⚠[/yellow] Orchestrators: {len(orchestrator_files)}/{num_tags} succeeded")
+    else:
+        console.print(f"[green]✓[/green] All {num_tags} orchestrators generated")
+
     # Show summary
     rate_info = scenario_gen.get_rate_limit_info()
     console.print(f"\n[dim]Final rate limit: {rate_info.requests_per_minute} RPM, "
@@ -607,6 +651,13 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     init_lines.append(
                         f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
                     )
+            # Import orchestrator if it exists
+            orchestrator_path = tag_dir / "orchestrator_workflow.py"
+            if orchestrator_path.exists():
+                orchestrator_class = to_class_name(tag_dir_name) + "Orchestrator"
+                init_lines.append(
+                    f"from .orchestrator_workflow import {orchestrator_class}"
+                )
             tag_init = tag_dir / "__init__.py"
             tag_init.write_text("\n".join(init_lines) + "\n", encoding='utf-8')
     console.print("[green]✓[/green] Workflow __init__.py files created")
