@@ -511,9 +511,8 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         tag_dir_name = sanitize_dir_name(tag_name)
         operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
         endpoint_info = f"{endpoint.method} {endpoint.path}"
-        short_info = f"{endpoint.method} {endpoint.path[:45]}..." if len(endpoint.path) > 45 else endpoint_info
 
-        progress.endpoint_start(short_info)
+        progress.endpoint_start(endpoint_info)
 
         try:
             # Create endpoint directory
@@ -554,7 +553,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 successful_endpoints.add(id(endpoint))
                 created_files.extend(local_files)
 
-            progress.endpoint_done(short_info, scenarios_generated=len(local_files))
+            progress.endpoint_done(endpoint_info, scenarios_generated=len(local_files))
             return local_files
 
         except Exception as e:
@@ -616,7 +615,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             # Pass detailed error info to progress
             error_code = getattr(e, 'code', None)
             error_msg = getattr(e, 'error', str(e))
-            progress.endpoint_failed(short_info, e)
+            progress.endpoint_failed(endpoint_info, e)
             return fallback_files
 
     # Process all endpoints in parallel with live progress

@@ -11,6 +11,7 @@ Verbose mode adds detailed analysis metadata for each endpoint.
 """
 
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -148,8 +149,7 @@ class GenerationProgress:
         # Milestone tracking (25%, 50%, 75%, 100%)
         self._printed_milestones: set = set()
 
-        # Verbose mode: track current endpoint analysis
-        self._current_analysis: Optional[EndpointAnalysis] = None
+        # Verbose mode: track endpoint analyses by endpoint_info key (thread-safe for parallel processing)
         self._endpoint_analyses: Dict[str, EndpointAnalysis] = {}
 
     def start(self) -> None:
@@ -233,14 +233,16 @@ class GenerationProgress:
         pass
 
     def set_endpoint_analysis(self, endpoint_info: str, analysis: EndpointAnalysis) -> None:
-        """Set the analysis data for current endpoint (verbose mode)."""
-        self._current_analysis = analysis
+        """Set the analysis data for an endpoint (verbose mode)."""
+        # Store by endpoint_info key to avoid race conditions with parallel processing
         self._endpoint_analyses[endpoint_info] = analysis
 
     def record_scenario_result(self, endpoint_info: str, scenario: str, result: ScenarioResult) -> None:
         """Record the result of a scenario generation."""
-        if self._current_analysis:
-            self._current_analysis.scenarios[scenario] = result
+        # Look up by endpoint_info to handle parallel processing correctly
+        analysis = self._endpoint_analyses.get(endpoint_info)
+        if analysis:
+            analysis.scenarios[scenario] = result
 
     def scenario_start(self, endpoint_info: str, scenario: str) -> None:
         """Called when starting a specific scenario."""
@@ -255,9 +257,10 @@ class GenerationProgress:
     def scenario_skipped(self, endpoint_info: str, scenario: str, reason: str = "") -> None:
         """Called when a scenario is skipped."""
         self.skipped += 1
-        # Record in analysis if available
-        if self._current_analysis:
-            self._current_analysis.scenarios[scenario] = ScenarioResult(
+        # Record in analysis if available - look up by endpoint_info for thread safety
+        analysis = self._endpoint_analyses.get(endpoint_info)
+        if analysis:
+            analysis.scenarios[scenario] = ScenarioResult(
                 scenario_type=scenario,
                 status="skipped",
                 skip_reason=reason,
@@ -295,15 +298,18 @@ class GenerationProgress:
         """Called when an endpoint finishes processing."""
         self.completed += 1
 
-        if self.verbose and self._current_analysis:
+        # Look up analysis by endpoint_info for thread-safe parallel processing
+        analysis = self._endpoint_analyses.get(endpoint_info)
+        if self.verbose and analysis:
             # Verbose mode: show full analysis
-            self._print_verbose_endpoint(endpoint_info, self._current_analysis)
+            self._print_verbose_endpoint(endpoint_info, analysis)
         else:
             # Normal mode: just show success
             self.console.print(f"  [green]✓[/green] {endpoint_info}")
 
-        # Clear current analysis
-        self._current_analysis = None
+        # Clean up this endpoint's analysis
+        if endpoint_info in self._endpoint_analyses:
+            del self._endpoint_analyses[endpoint_info]
         self._check_milestone()
 
     def _print_verbose_endpoint(self, endpoint_info: str, analysis: EndpointAnalysis) -> None:
@@ -441,9 +447,16 @@ class GenerationProgress:
         if line_match:
             line_number = int(line_match.group(1))
 
-        # Print failure immediately with context
+        # Print failure with FULL error and traceback - no truncation
         self.console.print(f"  [red]✗[/red] {endpoint_info}")
-        self.console.print(f"    [red]Error:[/red] {error_str[:200]}")
+        self.console.print(f"    [red]Error:[/red] {error_str}")
+
+        # Print full traceback
+        tb_str = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
+        self.console.print(f"    [dim]Traceback:[/dim]")
+        for line in tb_str.split('\n'):
+            if line.strip():
+                self.console.print(f"    [dim]{line}[/dim]")
 
         if line_number and code_snippet:
             lines = code_snippet.split('\n')

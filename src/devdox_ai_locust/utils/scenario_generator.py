@@ -21,7 +21,14 @@ from devdox_ai_locust.utils.code_validator import CodeValidator
 
 if TYPE_CHECKING:
     from devdox_ai_locust.utils.debug_recorder import DebugRecorder
-    from devdox_ai_locust.utils.generation_progress import GenerationProgress
+    from devdox_ai_locust.utils.generation_progress import (
+        GenerationProgress,
+        EndpointAnalysis,
+        SchemaAnalysis,
+        SetupAnalysis,
+        InjectionAnalysis,
+        ScenarioResult,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +338,13 @@ class ScenarioWorkflowGenerator:
             CodeValidationError: If generated code fails syntax validation
             AIServiceError: If AI service fails after all retries
         """
+        endpoint_info = f"{endpoint.method} {endpoint.path}"
+
+        # Verbose mode: build and set endpoint analysis before generation
+        if self.progress and self.progress.verbose:
+            analysis = self._build_endpoint_analysis(endpoint, all_endpoints)
+            self.progress.set_endpoint_analysis(endpoint_info, analysis)
+
         # Generate all 3 scenarios in parallel using LLM
         scenario_types = list(ScenarioType)
 
@@ -353,14 +367,36 @@ class ScenarioWorkflowGenerator:
         llm_results = await asyncio.gather(*llm_tasks, return_exceptions=True)
 
         # Separate successes from failures
-        endpoint_info = f"{endpoint.method} {endpoint.path}"
         results = {}
         errors = []
         for scenario_type, result in zip(scenario_types, llm_results):
             if isinstance(result, Exception):
                 errors.append((scenario_type, result))
+                # Record failure in verbose mode
+                if self.progress and self.progress.verbose:
+                    from devdox_ai_locust.utils.generation_progress import ScenarioResult
+                    self.progress.record_scenario_result(
+                        endpoint_info,
+                        scenario_type.value,
+                        ScenarioResult(
+                            scenario_type=scenario_type.value,
+                            status="failed",
+                            skip_reason=str(result)[:100],
+                        )
+                    )
             elif result is not None:
                 results[scenario_type] = result
+                # Record success in verbose mode
+                if self.progress and self.progress.verbose:
+                    from devdox_ai_locust.utils.generation_progress import ScenarioResult
+                    self.progress.record_scenario_result(
+                        endpoint_info,
+                        scenario_type.value,
+                        ScenarioResult(
+                            scenario_type=scenario_type.value,
+                            status="success",
+                        )
+                    )
 
         # If there are errors but also successes, return partial results
         if errors and results:
@@ -377,6 +413,154 @@ class ScenarioWorkflowGenerator:
             raise first_error
 
         return results
+
+    def _build_endpoint_analysis(
+        self,
+        endpoint: Any,
+        all_endpoints: Optional[List[Any]] = None,
+    ) -> "EndpointAnalysis":
+        """Build verbose analysis data for an endpoint.
+
+        This is called in verbose mode to provide detailed insight into
+        what the generator sees and decides for each endpoint.
+        """
+        # Import here to avoid circular import at module level
+        from devdox_ai_locust.utils.generation_progress import (
+            EndpointAnalysis,
+            SchemaAnalysis,
+            SetupAnalysis,
+            InjectionAnalysis,
+        )
+
+        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        endpoint_info = f"{endpoint.method} {endpoint.path}"
+
+        # Extract responses from spec
+        responses_defined = self._extract_expected_status_codes(endpoint)
+
+        # Determine source of truth
+        source_of_truth = "spec" if responses_defined else "fallback"
+
+        # Get content type
+        content_type = "application/json"
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            ct = getattr(endpoint.request_body, "content_type", None)
+            if ct:
+                content_type = ct
+
+        # Analyze schema
+        schema_analysis = SchemaAnalysis()
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            schema = getattr(endpoint.request_body, "schema", {})
+            if schema and isinstance(schema, dict):
+                properties, required_list = self._extract_all_properties(schema)
+                schema_analysis.total_fields = len(properties)
+                schema_analysis.required_fields = len(required_list)
+
+                # Check for discriminator
+                one_of = schema.get("oneOf") or schema.get("anyOf")
+                discriminator = schema.get("discriminator", {})
+                if one_of and discriminator:
+                    schema_analysis.schema_type = "discriminated_union"
+                    schema_analysis.discriminator = discriminator.get("propertyName", "")
+                    mapping = discriminator.get("mapping", {})
+                    schema_analysis.variants = list(mapping.keys()) if mapping else []
+
+                # Count constraints
+                for prop_name, prop_schema in properties.items():
+                    unwrapped, _ = self._unwrap_nullable_schema(prop_schema)
+                    if unwrapped.get("pattern"):
+                        schema_analysis.patterns_found += 1
+                    if unwrapped.get("enum"):
+                        schema_analysis.enums_found += 1
+                    if unwrapped.get("format"):
+                        schema_analysis.formats_found += 1
+                    if unwrapped.get("type") == "array":
+                        if unwrapped.get("minItems") or unwrapped.get("maxItems"):
+                            schema_analysis.arrays_with_constraints += 1
+
+        # Setup analysis
+        setup_analysis = SetupAnalysis()
+        if all_endpoints:
+            # Returns List[Tuple[endpoint, score, reason]]
+            setup_results = self._find_related_create_endpoints(endpoint, all_endpoints)
+            setup_analysis.setup_endpoints_found = len(setup_results)
+            if setup_results:
+                setup_analysis.needs_setup = True
+                # Extract endpoint from tuple (endpoint, score, reason)
+                setup_analysis.setup_endpoints = [
+                    f"{ep[0].method} {ep[0].path}" for ep in setup_results[:3]
+                ]
+
+        # Injection analysis
+        injection_analysis = InjectionAnalysis()
+        injection_result = self._precompute_injection_points(endpoint)
+        if injection_result:
+            # Count injection points from the result
+            lines = injection_result.split("\n")
+            for line in lines:
+                if "HIGH_RISK" in line:
+                    # Extract field name
+                    if ":" in line:
+                        field_name = line.split(":")[0].strip().lstrip("-").strip()
+                        injection_analysis.high_risk_fields.append(field_name)
+                injection_analysis.total_injectable += 1
+            # Determine locations
+            if hasattr(endpoint, "request_body") and endpoint.request_body:
+                injection_analysis.injection_locations.append("body")
+            if hasattr(endpoint, "parameters") and endpoint.parameters:
+                for param in endpoint.parameters:
+                    loc = getattr(param, "location", None) or getattr(param, "in_", "query")
+                    if hasattr(loc, "value"):
+                        loc = loc.value
+                    if loc == "query" and "query" not in injection_analysis.injection_locations:
+                        injection_analysis.injection_locations.append("query")
+
+        # Pre-computed fields
+        positive_fields = 0
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            schema = getattr(endpoint.request_body, "schema", {})
+            if schema:
+                properties, _ = self._extract_all_properties(schema)
+                positive_fields = len(properties)
+
+        # Negative scenarios
+        negative_scenarios = self._precompute_negative_scenarios(endpoint)
+        negative_types = []
+        if negative_scenarios:
+            for line in negative_scenarios.split("\n"):
+                if line.strip().startswith("-"):
+                    scenario_name = line.strip().lstrip("-").strip()
+                    if ":" in scenario_name:
+                        scenario_name = scenario_name.split(":")[0].strip()
+                    if scenario_name:
+                        negative_types.append(scenario_name)
+
+        # Build warnings
+        warnings = []
+        if not responses_defined:
+            warnings.append("No responses defined in spec - using fallback codes")
+        if schema_analysis.discriminator and not schema_analysis.variants:
+            warnings.append("Discriminator without mapping - may generate invalid data")
+
+        return EndpointAnalysis(
+            method=endpoint.method.upper(),
+            path=endpoint.path,
+            operation_id=operation_id,
+            responses_defined=responses_defined,
+            source_of_truth=source_of_truth,
+            content_type=content_type,
+            schema=schema_analysis,
+            strings_with_pattern=schema_analysis.patterns_found,
+            numbers_with_bounds=0,  # TODO: count these
+            fields_with_format=schema_analysis.formats_found,
+            setup=setup_analysis,
+            injection=injection_analysis,
+            positive_fields_precomputed=positive_fields,
+            negative_scenarios_precomputed=len(negative_types),
+            negative_scenario_types=negative_types[:5],
+            warnings=warnings,
+        )
 
     async def generate_tag_orchestrator(
         self,
