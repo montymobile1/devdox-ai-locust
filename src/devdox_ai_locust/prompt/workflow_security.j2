@@ -185,6 +185,11 @@ def test_sql_injection(self):
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
+=== CRITICAL: NO EMPTY PATH SEGMENTS ===
+- NEVER test paths with trailing slashes where a parameter should be (e.g., `/users/` instead of `/users/{id}`)
+- Empty path segments return 404 (route not found), not a useful security test result
+- Always use actual values (valid or malicious) in path parameters
+
 === WEIGHT GUIDANCE FOR SECURITY TESTS ===
 
 Security tests should have the lowest weights since they test attack scenarios,

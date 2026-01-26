@@ -314,6 +314,33 @@ def test_complex_operation(self):
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 
+=== CRITICAL: POSITIVE TESTS ONLY ===
+
+**This workflow is for POSITIVE (success) tests ONLY.**
+
+DO NOT include tests that:
+- Intentionally omit required parameters to test failure handling
+- Expect the API to fail (return 4xx errors)
+- Have names like `test_failure_*` or `test_missing_*`
+- Send intentionally invalid data
+
+Failure and error handling tests belong in the NEGATIVE workflow, not here.
+
+```python
+# WRONG - this is a failure test, belongs in negative workflow
+@task(1)
+def test_failure_with_missing_param(self):
+    data = b"binary_data"  # Missing required parameter
+    self.make_request("POST", "/endpoint", expected_status=[201], data=data)  # NO!
+
+# CORRECT - positive tests use ALL required parameters with valid values
+@task(10)
+def test_success_with_valid_data(self):
+    param_value = test_data_generator.generate_string(length=10)
+    data = b"binary_data"
+    self.make_request("POST", "/endpoint", expected_status=[201], params={"required_param": param_value}, data=data)
+```
+
 === OUTPUT FORMAT ===
 
 First, show your analysis in <analysis> tags.

@@ -216,12 +216,24 @@ def test_invalid_input(self):
 
 === CRITICAL: TEST GENERATION RULES ===
 
-**Rule 1 - ABSOLUTELY NO Empty Path Segment Tests:**
-- NEVER test empty path parameters by omitting the value (e.g., `/users/` instead of `/users/{id}`)
-- NEVER test paths like `/path/date/` with trailing slash and no value
+**Rule 1 - ABSOLUTELY NO Empty Path Segment Tests (CRITICAL!):**
+- NEVER test empty path parameters by omitting the value
+- NEVER generate URLs that end with a trailing slash where a parameter should be
 - Empty path segments cause 404 (route not found), NOT 422 (validation error)
 - This leads to false test failures - SKIP these tests entirely
-- If you find yourself writing a URL that ends with `/` where a parameter should be, STOP and remove that test
+
+FORBIDDEN PATTERNS (do NOT generate these):
+```python
+# WRONG - empty path segment, will get 404 not 422
+self.make_request("GET", "/resource/", expected_status=[400, 422])  # NO!
+self.make_request("PUT", "/endpoint/", expected_status=[400, 422], json={})  # NO!
+
+# CORRECT - use a non-existent ID instead
+self.make_request("GET", "/resource/nonexistent-id-12345", expected_status=[404])
+self.make_request("GET", "/endpoint/999999999", expected_status=[404])
+```
+
+If you find yourself writing `test_missing_id` or `test_missing_path_param` with a URL ending in `/`, DELETE that test entirely.
 
 **Rule 2 - Only Test Against Actual Constraints:**
 - ONLY generate special character tests if the field has a `pattern` constraint in the spec
@@ -255,6 +267,35 @@ def test_invalid_input(self):
 - Some APIs accept type coercion (e.g., `"123"` for an integer field)
 - Only test type errors if you're confident the API does strict type validation
 - Focus on clearly invalid types like `{"count": "not-a-number"}` rather than `{"count": "123"}`
+
+**Rule 7 - String Path Parameters Accept Any String Value:**
+- If a path parameter is `type: string`, it accepts ANY string value including "12345"
+- Do NOT expect 422 when passing integers to string path parameters - they are valid strings
+- Only expect 404 (not found) for non-existent string IDs
+- Example: `resource_id: string` accepts "12345", "abc", "nonexistent-id" - all are valid STRINGS
+```python
+# WRONG - string param accepts "12345" as a valid string
+self.make_request("GET", "/resource/12345", expected_status=[400, 422])  # NO!
+
+# CORRECT - for string params, non-existent IDs return 404, not 422
+self.make_request("GET", "/resource/nonexistent-id-12345", expected_status=[404])
+```
+
+**Rule 8 - Boundary Tests for Path IDs Should Expect 404:**
+- When testing boundary values for path parameter IDs (like 1, 0, -1, MAX_INT), the resource likely doesn't exist
+- Do NOT expect 200 for arbitrary ID values - the resource may not exist
+- For IDs without `minimum` constraint: -1 and 0 are valid integers, they return 404 (not found), not 422
+- For IDs with `minimum: 1` constraint: 0 and -1 return 422 (validation error)
+```python
+# WRONG - assumes resource with ID 1 exists
+self.make_request("GET", "/resource/1", expected_status=[200])  # NO!
+
+# CORRECT - resource may not exist
+self.make_request("GET", "/resource/1", expected_status=[200, 404])  # YES!
+
+# For negative IDs without minimum constraint - they are valid integers, just not found
+self.make_request("GET", "/resource/-1", expected_status=[404])  # Correct if no minimum constraint
+```
 
 === WEIGHT GUIDANCE FOR NEGATIVE TESTS ===
 
