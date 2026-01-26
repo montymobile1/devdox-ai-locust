@@ -438,7 +438,7 @@ def {method_name}(self):
             return task_method
 
         except Exception as e:
-            logger.error(f"Failed to generate task method for 535 endpoint: {e}")
+            logger.error(f"Failed to generate task method for {endpoint.method} {endpoint.path}: {e}")
             return ""
 
     def _generate_method_name(self, endpoint: Endpoint) -> str:

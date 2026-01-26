@@ -691,8 +691,10 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         # Show failure details
         console.print(f"\n[bold red]Failed Endpoints:[/bold red]")
         for failure in failed_endpoints[:10]:  # Show first 10
-            console.print(f"   • {failure['endpoint']}")
-            console.print(f"     [dim]{failure['error_type']}: {failure['error'][:200]}[/dim]")
+            console.print(f"   • {failure.get('endpoint', 'unknown')}")
+            error_msg = failure.get('error', 'Unknown error') or 'Unknown error'
+            error_type = failure.get('error_type', 'Error')
+            console.print(f"     [dim]{error_type}: {error_msg[:200]}[/dim]")
 
         if len(failed_endpoints) > 10:
             console.print(f"   ... and {len(failed_endpoints) - 10} more failures")
