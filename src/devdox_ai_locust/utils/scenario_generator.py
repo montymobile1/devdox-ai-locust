@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
+from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
+from devdox_ai_locust.utils.code_validator import CodeValidator
 
 if TYPE_CHECKING:
     from devdox_ai_locust.utils.debug_recorder import DebugRecorder
@@ -157,6 +159,8 @@ class ScenarioWorkflowGenerator:
         self._current_concurrency = self.DEFAULT_CONCURRENCY
         self._api_semaphore = asyncio.Semaphore(self._current_concurrency)
         self.debug_recorder = debug_recorder
+        self._fallback_registry = FallbackHttpResponseRegistry()
+        self._code_validator = CodeValidator()
 
         # Setup Jinja environment for prompts
         self.prompt_env = Environment(
@@ -343,7 +347,12 @@ class ScenarioWorkflowGenerator:
         # Let exceptions propagate naturally - no return_exceptions=True
         llm_results = await asyncio.gather(*llm_tasks)
 
-        return dict(zip(scenario_types, llm_results))
+        # Filter out None results (skipped scenarios, e.g., positive with no 2xx codes)
+        return {
+            scenario_type: result
+            for scenario_type, result in zip(scenario_types, llm_results)
+            if result is not None
+        }
 
     async def generate_tag_orchestrator(
         self,
@@ -637,15 +646,26 @@ class ScenarioWorkflowGenerator:
         # Extract expected status codes from OpenAPI spec responses
         all_status_codes = self._extract_expected_status_codes(endpoint)
 
-        # Filter status codes by scenario type to ensure correct test behavior:
-        # - POSITIVE tests should ONLY expect success codes (2xx)
-        #   If we pass 4xx codes, the test would treat errors as "success"
-        # - NEGATIVE tests should ONLY expect error codes (4xx)
-        #   These tests verify the API correctly REJECTS invalid input
-        # - SECURITY tests get all codes - template logic handles 500 specially
+        # Determine if auth is enabled (auth_endpoints provided means auth is active)
+        has_auth = bool(auth_endpoints)
+
+        # Filter status codes by scenario type using source-of-truth logic:
+        # - If spec defines responses: use only those (no supplementation from fallback)
+        # - If spec defines no responses: use FallbackHttpResponseRegistry
         expected_status_codes = self._filter_status_codes_for_scenario(
-            all_status_codes, scenario_type
+            all_status_codes, scenario_type,
+            method=endpoint.method.upper(),
+            exclude_auth=not has_auth,
         )
+
+        # Skip positive generation if spec defines responses but no 2xx codes
+        # (e.g., response-test endpoints that intentionally return 4xx/5xx)
+        if scenario_type == ScenarioType.POSITIVE and all_status_codes and not expected_status_codes:
+            logger.info(
+                f"Skipping positive workflow for [{endpoint.method} {endpoint.path}] - "
+                f"spec defines no 2xx codes (defined: {all_status_codes})"
+            )
+            return None
 
         # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
         setup_endpoints_section = ""
@@ -712,13 +732,17 @@ class ScenarioWorkflowGenerator:
         max_validation_retries = 2
         last_error = None
         last_code = None
+        last_is_semantic = False
         current_prompt = prompt  # Start with the original prompt
         all_errors: List[str] = []  # Track all errors for debug recording
 
         for attempt in range(max_validation_retries):
             # On retry, use error-aware fix prompt instead of original
             if attempt > 0 and last_error and last_code:
-                current_prompt = self._render_fix_prompt(last_code, last_error)
+                if last_is_semantic:
+                    current_prompt = self._render_semantic_fix_prompt(last_code, last_error)
+                else:
+                    current_prompt = self._render_fix_prompt(last_code, last_error)
 
             # Record LLM request
             if self.debug_recorder and self.debug_recorder.enabled:
@@ -809,41 +833,73 @@ class ScenarioWorkflowGenerator:
                 )
 
             if is_valid:
-                # Record final code
-                if self.debug_recorder and self.debug_recorder.enabled:
-                    await self.debug_recorder.record_final_code(
-                        tag=tag_name,
-                        endpoint_dir_name=endpoint_dir_name,
-                        scenario_type=scenario_name,
-                        code=content,
+                # Syntax OK - now run semantic validation
+                all_endpoint_paths = []
+                if all_endpoints:
+                    all_endpoint_paths = [
+                        getattr(ep, "path", "") for ep in all_endpoints
+                        if getattr(ep, "path", "")
+                    ]
+
+                semantic_result = self._code_validator.validate(
+                    code=content,
+                    scenario_type=scenario_type.value,
+                    endpoint_path=endpoint.path,
+                    all_endpoint_paths=all_endpoint_paths,
+                )
+
+                if semantic_result.is_valid:
+                    # Both syntax and semantic validation passed
+                    if self.debug_recorder and self.debug_recorder.enabled:
+                        await self.debug_recorder.record_final_code(
+                            tag=tag_name,
+                            endpoint_dir_name=endpoint_dir_name,
+                            scenario_type=scenario_name,
+                            code=content,
+                        )
+                        await self.debug_recorder.record_scenario_summary(
+                            tag=tag_name,
+                            endpoint_dir_name=endpoint_dir_name,
+                            scenario_type=scenario_name,
+                            summary={
+                                "success": True,
+                                "attempts": attempt + 1,
+                                "used_fallback": False,
+                                "code_length": len(content),
+                            },
+                        )
+                    if attempt > 0:
+                        console.print(
+                            f"[green]✓ Retry SUCCEEDED[/green] for {scenario_type.value} "
+                            f"[{endpoint.method} {endpoint.path}] on attempt {attempt + 1}/{max_validation_retries}"
+                        )
+                    return content
+                else:
+                    # Semantic validation failed - use semantic fix prompt on retry
+                    error = semantic_result.error_message
+                    is_semantic_error = True
+                    logger.info(
+                        f"Semantic validation failed for {scenario_type.value} "
+                        f"[{endpoint.method} {endpoint.path}]: "
+                        f"{len(semantic_result.violations)} violation(s)"
                     )
-                    # Record scenario summary
-                    await self.debug_recorder.record_scenario_summary(
-                        tag=tag_name,
-                        endpoint_dir_name=endpoint_dir_name,
-                        scenario_type=scenario_name,
-                        summary={
-                            "success": True,
-                            "attempts": attempt + 1,
-                            "used_fallback": False,
-                            "code_length": len(content),
-                        },
-                    )
-                if attempt > 0:
-                    console.print(
-                        f"[green]✓ Retry SUCCEEDED[/green] for {scenario_type.value} "
-                        f"[{endpoint.method} {endpoint.path}] on attempt {attempt + 1}/{max_validation_retries}"
-                    )
-                return content
+            else:
+                is_semantic_error = False
 
             # Save for error reporting and fix prompt on retry
             last_error = error
             last_code = content
+            last_is_semantic = is_semantic_error if is_valid else False
             all_errors.append(f"Attempt {attempt + 1}: {error}")
 
             if attempt < max_validation_retries - 1:
                 # Record retry attempt
                 if self.debug_recorder and self.debug_recorder.enabled:
+                    fix_prompt = (
+                        self._render_semantic_fix_prompt(content, error)
+                        if last_is_semantic
+                        else self._render_fix_prompt(content, error)
+                    )
                     await self.debug_recorder.record_retry_attempt(
                         tag=tag_name,
                         endpoint_dir_name=endpoint_dir_name,
@@ -851,15 +907,16 @@ class ScenarioWorkflowGenerator:
                         attempt=attempt + 1,
                         error=error,
                         bad_code=content,
-                        fix_prompt=self._render_fix_prompt(content, error),
+                        fix_prompt=fix_prompt,
                         llm_response="(pending next attempt)",
                         extracted_code="(pending next attempt)",
                         validation_result={"valid": False, "error": error},
                     )
+                error_type = "Semantic" if last_is_semantic else "Syntax"
                 console.print(
-                    f"[yellow]⚠ Validation failed[/yellow] for {scenario_type.value} "
+                    f"[yellow]⚠ {error_type} validation failed[/yellow] for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
-                    f"{error}. Retrying with fix prompt..."
+                    f"{error[:200]}. Retrying with fix prompt..."
                 )
                 await asyncio.sleep(1)
             else:
@@ -1433,59 +1490,88 @@ Do NOT invent or call POST endpoints that are not documented here.
         return "\n".join(lines)
 
     def _filter_status_codes_for_scenario(
-        self, status_codes: List[int], scenario_type: ScenarioType
+        self, status_codes: List[int], scenario_type: ScenarioType,
+        method: str = "GET", exclude_auth: bool = False,
     ) -> List[int]:
         """
-        Filter status codes based on scenario type to ensure correct test behavior.
+        Filter status codes based on scenario type.
 
-        This is CRITICAL for proper test logic:
-        - POSITIVE tests verify that VALID input returns SUCCESS (2xx)
-          If we pass 4xx codes, the positive test would incorrectly treat errors as "success"
-          and failures would not be logged.
-        - NEGATIVE tests verify that INVALID input is CORRECTLY REJECTED (4xx)
-          These tests send bad data and expect the API to reject it with 4xx.
-          A 4xx response means the test PASSED (API correctly rejected bad input).
-        - SECURITY tests need all codes because they check if injection causes 500 (crash)
-          vs 4xx (properly sanitized/rejected).
+        Source of truth logic:
+        - If OpenAPI spec defines responses: those are the ONLY codes used (no supplementation).
+          Filter by scenario type. If filtering empties it, return empty.
+        - If OpenAPI spec defines NO responses: use FallbackHttpResponseRegistry as fallback.
 
         Args:
-            status_codes: All status codes from OpenAPI spec
+            status_codes: All status codes from OpenAPI spec (empty if spec has no responses)
             scenario_type: The type of scenario being generated
+            method: HTTP method (GET, POST, etc.) for fallback registry lookup
+            exclude_auth: If True, exclude 401/403 from fallback codes
 
         Returns:
             Filtered list of status codes appropriate for the scenario type.
-            Returns sensible defaults if filtering results in empty list.
+            Empty list means "no applicable codes" (e.g., positive for an endpoint with no 2xx).
         """
         if not status_codes:
-            # No codes defined in spec - return empty, template will use defaults
-            return []
+            # No codes defined in spec - use FallbackHttpResponseRegistry
+            return self._get_fallback_codes(method, scenario_type, exclude_auth)
 
+        # Spec defines responses - those are the ONLY source of truth
         if scenario_type == ScenarioType.POSITIVE:
-            # Positive tests: ONLY 2xx success codes
-            # This ensures positive tests fail when API returns errors
-            filtered = [code for code in status_codes if 200 <= code < 300]
-            if not filtered:
-                # No 2xx codes in spec (unusual) - use common defaults
-                return [200]
-            return filtered
+            # Positive tests: ONLY 2xx success codes from spec
+            # If spec has no 2xx, return empty (caller should skip positive generation)
+            return sorted([code for code in status_codes if 200 <= code < 300])
 
         elif scenario_type == ScenarioType.NEGATIVE:
-            # Negative tests: ONLY 4xx client error codes
-            # These tests expect the API to REJECT invalid input with 4xx
-            # A 4xx response = test PASSED (API correctly rejected bad input)
-            filtered = [code for code in status_codes if 400 <= code < 500]
-            if not filtered:
-                # No 4xx codes in spec - use common validation error codes
-                return [400, 422]
-            return filtered
+            # Negative tests: ONLY 4xx client error codes from spec
+            # If spec has no 4xx, return empty (no negative test possible from spec)
+            return sorted([code for code in status_codes if 400 <= code < 500])
 
         elif scenario_type == ScenarioType.SECURITY:
-            # Security tests: Pass ALL codes
-            # Template logic handles: 4xx = success (rejected), 500 = failure (crashed)
-            return status_codes
+            # Security tests: all non-5xx codes from spec
+            # 5xx is excluded because it indicates vulnerability (logged as failure)
+            return sorted([code for code in status_codes if code < 500])
 
-        # Fallback - return all codes
-        return status_codes
+        return sorted(status_codes)
+
+    def _get_fallback_codes(
+        self, method: str, scenario_type: ScenarioType, exclude_auth: bool = False,
+    ) -> List[int]:
+        """
+        Get fallback status codes from FallbackHttpResponseRegistry when
+        the OpenAPI spec defines no responses for an endpoint.
+
+        Args:
+            method: HTTP method
+            scenario_type: Scenario type to filter for
+            exclude_auth: If True, exclude 401/403
+
+        Returns:
+            List of integer status codes appropriate for the scenario type
+        """
+        response_block = self._fallback_registry.get_responses(
+            methods=method.upper(),
+            exclude_auth=exclude_auth,
+        )
+
+        # Extract all codes from the response block for this method
+        method_responses = response_block.as_dict().get(method.upper(), {})
+        all_codes = []
+        for code_str in method_responses.keys():
+            try:
+                all_codes.append(int(code_str))
+            except (ValueError, TypeError):
+                pass
+
+        # Filter by scenario type
+        if scenario_type == ScenarioType.POSITIVE:
+            return sorted([code for code in all_codes if 200 <= code < 300])
+        elif scenario_type == ScenarioType.NEGATIVE:
+            return sorted([code for code in all_codes if 400 <= code < 500])
+        elif scenario_type == ScenarioType.SECURITY:
+            # Security: all non-5xx (5xx = vulnerability)
+            return sorted([code for code in all_codes if code < 500])
+
+        return sorted(all_codes)
 
     def _extract_expected_status_codes(self, endpoint: Any) -> List[int]:
         """
@@ -1934,6 +2020,36 @@ Code:
 ```
 
 Output the complete corrected Python code:"""
+
+    def _render_semantic_fix_prompt(self, failed_code: str, error_message: str) -> str:
+        """
+        Render the semantic fix prompt for code that passes syntax but fails semantic checks.
+
+        Args:
+            failed_code: The code that failed semantic validation
+            error_message: The semantic violation details
+
+        Returns:
+            Rendered semantic fix prompt string
+        """
+        try:
+            template = self.prompt_env.get_template("workflow_semantic_fix.j2")
+            return template.render(
+                failed_code=failed_code,
+                error_message=error_message,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to render semantic fix template: {e}. Falling back to inline prompt.")
+            return f"""Fix these semantic issues in the generated code:
+
+{error_message}
+
+Code:
+```python
+{failed_code}
+```
+
+Fix ALL the violations and output the complete corrected Python code:"""
 
     # Allowed imports for generated workflow code
     # This helps detect when LLM hallucinates imports that don't exist

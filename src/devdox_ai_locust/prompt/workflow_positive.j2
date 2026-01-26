@@ -59,6 +59,21 @@ from mongo_data_provider import MongoDataProvider
 
 logger = logging.getLogger(__name__)
 ```
+
+=== TEST DATA GENERATOR API (exact signatures - NO other parameters exist) ===
+```python
+test_data_generator.generate_string(length=10) -> str
+test_data_generator.generate_email() -> str
+test_data_generator.generate_integer(min_val=1, max_val=1000, default=None, exclusive=False) -> int
+test_data_generator.generate_float(min_val=0.0, max_val=1000.0, default=None, exclusive=False) -> float
+test_data_generator.generate_boolean() -> bool
+test_data_generator.random_uuid() -> str
+test_data_generator.random_date() -> str  # ISO format date
+```
+For exclusive bounds (gt/lt constraints): use exclusive=True
+  Example: gt=0, lt=100 → generate_integer(min_val=0, max_val=100, exclusive=True)
+Do NOT invent parameters not listed above.
+
 {% if db_type == "mongo" %}
 
 === MONGODB TEST DATA INTEGRATION ===
@@ -197,10 +212,39 @@ Before writing code, you MUST reason through these steps:
 - NEVER use hardcoded IDs like /items/1 - they will 404!
 
 **STEP 4 - PLAN TEST DATA GENERATION:**
-- For each field, decide how to generate valid data:
-  - **ENUM fields**: Use random.choice() with the EXACT allowed values from schema
-    Example: random.choice(["asc", "desc"]) for order parameter
-    Example: random.choice([10, 20, 30, 40, 50]) for LogLevel enum
+
+**CRITICAL: ENUM FIELDS (highest priority)**
+If a field shows "allowed values:" or is an enum type, you MUST use:
+    random.choice([<exact allowed values from schema>])
+NEVER use generate_string() or generate_integer() for enum fields.
+Using the wrong value for an enum ALWAYS causes 422.
+
+**CRITICAL: ARRAY FIELDS**
+If a field is an array with items type defined:
+- ALL elements MUST be the SAME type as the items schema specifies
+- string array: ["abc", "def", "ghi"] - NEVER mix in integers, floats, or booleans
+- integer array: [1, 2, 3] - NEVER mix in strings or floats
+- float array: [1.0, 2.5, 3.7] - NEVER mix in strings or booleans
+- Use list comprehension: [test_data_generator.generate_string() for _ in range(3)]
+
+**CRITICAL: STRING FORMAT MAPPING (mandatory)**
+If a field has a "format" attribute, you MUST use the correct generator:
+| Format      | Generator                                    |
+|-------------|----------------------------------------------|
+| date        | test_data_generator.random_date()            |
+| date-time   | datetime.now().isoformat()                   |
+| time        | "12:30:00"                                   |
+| email       | test_data_generator.generate_email()         |
+| uri/url     | "https://example.com/test"                   |
+| uuid        | test_data_generator.random_uuid()            |
+| ipv4        | "192.168.1.1"                                |
+| ipv6        | "::1"                                        |
+| hostname    | "test.example.com"                           |
+| password    | test_data_generator.generate_string(12)      |
+NEVER use generate_string() for formatted fields - it produces random chars that fail validation.
+
+For each field, decide how to generate valid data:
+  - **ENUM fields**: random.choice([exact values]) - NEVER generate_string()
   - **PATTERN fields**: Generate a value that MATCHES the pattern
     Example: pattern='^(asc|desc)$' → use "asc" or "desc"
     Example: pattern='^[A-Z]{3}-\d{4}$' → use "ABC-1234"
@@ -211,7 +255,7 @@ Before writing code, you MUST reason through these steps:
   - Booleans: test_data_generator.generate_boolean()
   - UUIDs: test_data_generator.random_uuid()
   - Dates: test_data_generator.random_date()
-  - Datetimes: Use datetime.now().isoformat() or similar ISO 8601 format
+  - Datetimes: datetime.now().isoformat()
 
 **STEP 5 - SET TASK WEIGHTS:**
 Set @task weights to reflect realistic traffic patterns:
@@ -313,6 +357,10 @@ def test_complex_operation(self):
 - BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
+- **NEVER leave placeholder comments** like "# Add other required fields" or "# TODO: complete"
+  You MUST generate ALL required fields for every code path. If a discriminated union has
+  multiple variants, generate complete valid data for ALL variants.
+- **NEVER copy example comments from this prompt** - generate real functional code, not examples
 
 === CRITICAL: POSITIVE TESTS ONLY ===
 
@@ -399,27 +447,18 @@ class {{ class_name }}PositiveWorkflow(BaseWorkflow):
 
     def on_start(self):
         super().on_start()
-        # Instance variable to avoid state leaking between test instances
         self.created_ids = []
 
     @task(10)
-    def test_success_with_valid_data(self):
-        # Build request data with VALID values
-        data = {"field": "value"}
-
-        # Use make_request() with SUCCESS codes only (2xx)
-        # NEVER include 4xx codes here - those belong in negative tests
-        # make_request() returns dict (JSON data) or None - NOT a response object
+    def test_valid_request(self):
+        data = {}  # Generate ALL required fields with valid values
         {% if endpoint_expected_status %}
         result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
         {% else %}
         result = self.make_request("{{ method }}", "{{ path }}", json=data)
         {% endif %}
-
-        # Check if request succeeded (result is dict or None)
         if result:
-            # Success - result contains JSON response data
-            # Example: item_id = result.get("id")
-            pass
-        # If result is None, make_request() already logged the failure
+            item_id = result.get("id")
+            if item_id:
+                self.created_ids.append(item_id)
 </code>

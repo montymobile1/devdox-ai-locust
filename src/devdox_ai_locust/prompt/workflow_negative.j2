@@ -41,6 +41,21 @@ from mongo_data_provider import MongoDataProvider
 
 logger = logging.getLogger(__name__)
 ```
+
+=== TEST DATA GENERATOR API (exact signatures - NO other parameters exist) ===
+```python
+test_data_generator.generate_string(length=10) -> str
+test_data_generator.generate_email() -> str
+test_data_generator.generate_integer(min_val=1, max_val=1000, default=None, exclusive=False) -> int
+test_data_generator.generate_float(min_val=0.0, max_val=1000.0, default=None, exclusive=False) -> float
+test_data_generator.generate_boolean() -> bool
+test_data_generator.random_uuid() -> str
+test_data_generator.random_date() -> str  # ISO format date
+```
+For exclusive bounds (gt/lt constraints): use exclusive=True
+  Example: gt=0, lt=100 → generate_integer(min_val=0, max_val=100, exclusive=True)
+Do NOT invent parameters not listed above.
+
 {% if db_type == "mongo" %}
 
 === MONGODB TEST DATA INTEGRATION ===
@@ -334,10 +349,19 @@ def test_boundary_value(self):
 4. **NEVER use self.client directly** - always use self.make_request()
 5. **NEVER access .status_code on make_request() result** - it returns dict or None
 6. **NEVER use success codes (2xx) in expected_status for negative tests** - only use 4xx codes
+   If your test expects 200/201/204, it belongs in the POSITIVE workflow, not here.
 7. **NEVER use Unicode characters** - ASCII only (codes 0-127)
 8. **NEVER import modules not listed in ALLOWED IMPORTS**
 9. **ALWAYS use valid values for OTHER fields when testing non-existent IDs**
    - When testing 404 with invalid ID, enum/pattern fields must still have VALID values
+10. **NEVER hardcode resource IDs** like `item_id = 1` or `item_id = 2`
+    - For non-existent resources: use 999999999 (integer) or "nonexistent-id-99999" (string)
+    - For existing resources: create first via setup endpoint, then use the returned ID
+    - Hardcoded IDs will almost always return 404 since the resource doesn't exist
+11. **NEVER invent endpoint paths** - only use paths from ENDPOINT TO TEST or SETUP ENDPOINTS sections
+12. **NEVER leave path segments empty** to test missing parameters
+    - WRONG: `/payments//verify` - this creates a different route → 404
+    - RIGHT: `/payments/nonexistent-id-99999/verify` - tests with invalid but present value
 
 === OUTPUT FORMAT ===
 

@@ -1,0 +1,51 @@
+You are fixing semantic issues in a Locust load test workflow.
+The code passes Python syntax validation but has logical/semantic problems.
+
+## The Code With Issues
+
+```python
+{{ failed_code }}
+```
+
+## Semantic Violations Found
+
+{{ error_message }}
+
+## Your Task
+
+Fix ALL the semantic violations listed above. The rules are:
+
+1. **template_boilerplate**: Remove any comments copied from the prompt template.
+   Generate real functional code instead of example comments.
+
+2. **placeholder_comment**: Replace placeholder comments with actual code.
+   You MUST generate ALL required fields - never leave TODOs or "Add other fields" comments.
+
+3. **path_param_injection**: Move security payloads OUT of URL path parameters.
+   Path params are URL routing. Inject into query params or request body instead.
+   If the endpoint has no body/query fields, remove the injection test entirely.
+
+4. **empty_path_segment**: Fix double slashes (//) in URLs.
+   Use a present but invalid value like "nonexistent-id-99999" instead of empty segments.
+
+5. **success_in_negative**: Remove 2xx codes from expected_status in negative tests.
+   Negative tests must ONLY expect 4xx error codes (400, 404, 422, etc.).
+   If the test expects success, it belongs in positive workflow - remove it from here.
+
+6. **hallucinated_endpoint**: Remove or replace invented endpoint paths.
+   Use ONLY the endpoint path provided in the original test context.
+   If you need a parent resource ID, generate it with test_data_generator instead of
+   calling an invented endpoint.
+
+## Requirements
+
+- Fix ALL violations listed above
+- Output the ENTIRE corrected file
+- The code must be valid Python that passes `ast.parse()`
+- Keep all imports and class structure intact
+- **ASCII ONLY**: Output ONLY ASCII characters (codes 0-127)
+- Do NOT add comments explaining the fix
+
+<code>
+Output the complete corrected code below:
+</code>

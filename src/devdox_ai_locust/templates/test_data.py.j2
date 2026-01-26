@@ -223,15 +223,23 @@ class TestDataGenerator:
 
         return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-    def generate_integer(self, min_val: int = 1, max_val: int = 1000, default: int = None) -> int:
+    def generate_integer(self, min_val: int = 1, max_val: int = 1000, default: int = None, exclusive: bool = False) -> int:
         if default is not None:
             return int(default) if not isinstance(default, int) else default
         # Convert to int in case LLM passes scientific notation floats (e.g., 9.2e18)
-        return random.randint(int(min_val), int(max_val))
+        min_val = int(min_val)
+        max_val = int(max_val)
+        if exclusive:
+            min_val += 1
+            max_val -= 1
+        return random.randint(min_val, max_val)
 
-    def generate_float(self, min_val: float = 0.0, max_val: float = 1000.0, default: float = None) -> float:
+    def generate_float(self, min_val: float = 0.0, max_val: float = 1000.0, default: float = None, exclusive: bool = False) -> float:
         if default is not None:
             return default
+        if exclusive:
+            min_val += 0.0001
+            max_val -= 0.0001
         return round(random.uniform(min_val, max_val), 2)
 
     def generate_boolean(self, default: bool = None) -> bool:

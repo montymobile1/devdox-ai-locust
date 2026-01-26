@@ -41,6 +41,20 @@ from mongo_data_provider import MongoDataProvider
 
 logger = logging.getLogger(__name__)
 ```
+
+=== TEST DATA GENERATOR API (exact signatures - NO other parameters exist) ===
+```python
+test_data_generator.generate_string(length=10) -> str
+test_data_generator.generate_email() -> str
+test_data_generator.generate_integer(min_val=1, max_val=1000, default=None, exclusive=False) -> int
+test_data_generator.generate_float(min_val=0.0, max_val=1000.0, default=None, exclusive=False) -> float
+test_data_generator.generate_boolean() -> bool
+test_data_generator.random_uuid() -> str
+test_data_generator.random_date() -> str  # ISO format date
+```
+For exclusive bounds (gt/lt constraints): use exclusive=True
+Do NOT invent parameters not listed above.
+
 {% if db_type == "mongo" %}
 
 === MONGODB TEST DATA INTEGRATION ===
@@ -184,6 +198,8 @@ def test_sql_injection(self):
 - BYTES LITERALS MUST BE ASCII ONLY
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
+- **NEVER leave placeholder comments** - generate ALL required code
+- **NEVER invent endpoint paths** - use ONLY the path from ENDPOINT TO TEST section
 
 === CRITICAL: NO EMPTY PATH SEGMENTS ===
 - NEVER test paths with trailing slashes where a parameter should be (e.g., `/users/` instead of `/users/{id}`)
@@ -216,6 +232,25 @@ def test_path_traversal(self):
 Security tests should not overwhelm the load test - keep total security traffic
 at roughly 5-10% of overall test traffic.
 
+=== CRITICAL: PATH PARAMETER INJECTION RULES ===
+
+Path parameters are part of URL ROUTING. Injecting payloads into path parameters will
+return 404 (route not found), which is NOT a security test result.
+
+- **NEVER inject security payloads into path parameters**
+- **VALID injection points**: request body fields, query parameters, header values
+- **INVALID injection points**: path parameters (they become part of the URL route)
+- If an endpoint has ONLY path parameters and no body/query fields: skip injection tests
+
+```python
+# WRONG - XSS in path param causes 404 (route not found), not a security test
+self.make_request("GET", f"/orders/{payload}/items", expected_status=[200, 422])
+
+# CORRECT - inject into query parameter or body field
+self.make_request("GET", f"/orders/valid-id/items", expected_status=[200, 400, 422],
+                  params={"filter": payload})
+```
+
 === CRITICAL MISTAKES TO AVOID ===
 
 **DO NOT** make these common errors:
@@ -226,6 +261,8 @@ at roughly 5-10% of overall test traffic.
 5. **NEVER use Unicode characters in payloads** - ASCII only (codes 0-127)
 6. **NEVER import modules not listed in ALLOWED IMPORTS**
 7. **ALWAYS use expected_status with BOTH success (2xx) AND rejection (4xx) codes**
+8. **NEVER inject payloads into path parameters** - they are URL routing, not input validation
+   Path param injection always returns 404, which is NOT a vulnerability finding
 
 === OUTPUT FORMAT ===
 
