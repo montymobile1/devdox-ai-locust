@@ -46,17 +46,29 @@ test_data_generator.random_base64(length=16) -> str # Returns base64-encoded str
 | (2-char country) | random_country_code()          |
 | (3-char currency) | random_currency_code()        |
 
-**FIELD NAME INFERENCE - Use the correct generator based on field name:**
-| Field name contains | Generator to use |
-|---------------------|------------------|
-| email               | generate_email()                 |
-| created_at, updated_at, timestamp | random_datetime()  |
-| birth_date, start_date, end_date | random_date()       |
-| url, uri, website, link | random_uri()                 |
-| ipv4, ip_address    | random_ipv4()                    |
-| country (2-3 char)  | random_country_code()            |
-| currency (3-4 char) | random_currency_code()           |
-| rgb, color, red, green, blue | generate_integer(min_val=0, max_val=255) |
+**FIELD NAME INFERENCE (CRITICAL - overrides pattern constraints!):**
+
+When a field NAME suggests a semantic type, use the dedicated generator EVEN IF the schema
+has a pattern constraint. Semantic generators produce more reliable valid data than regex generation.
+
+| Field name contains | Generator to use | Notes |
+|---------------------|------------------|-------|
+| email               | generate_email()                 | ALWAYS - even if pattern exists |
+| created_at, updated_at, timestamp | random_datetime()  | ALWAYS - produces ISO format |
+| birth_date, start_date, end_date | random_date()       | ALWAYS - produces ISO format |
+| url, uri, website, link, homepage | random_uri()       | ALWAYS - even if pattern exists |
+| hostname, domain    | random_hostname()                | ALWAYS - produces valid domains |
+| ipv4, ip_address    | random_ipv4()                    | ALWAYS - produces valid IPs |
+| country (2-3 char)  | random_country_code()            | For ISO country codes |
+| currency (3-4 char) | random_currency_code()           | For ISO currency codes |
+| rgb, color, red, green, blue, alpha | generate_integer(min_val=0, max_val=255) | Color values 0-255 |
+
+**IMPORTANT**: Field name inference takes PRIORITY over pattern constraints:
+- If field is named "email" but has `pattern: ^[\w.-]+@[\w.-]+$` → use generate_email()
+- If field is named "website" but has `pattern: ^https?://.*` → use random_uri()
+- If field is named "hostname" but has `pattern: ^[a-z0-9.-]+$` → use random_hostname()
+
+Rationale: Pattern-based string generation often fails to produce semantically valid data.
 
 **COMMON MISTAKES TO AVOID:**
 ```python
@@ -100,5 +112,20 @@ params = {"date": timestamp}  # OK: timestamp is already "2024-03-15"
 - For enum fields: use random.choice([...]) with the EXACT enum values, NEVER generate_string()
 - For object-type fields: generate a dict with correct nested structure, NEVER generate_string()
 - For array-type fields: generate a list with elements of the correct type, NEVER a string
+
+**HANDLING EMOJI AND UNICODE PATTERNS:**
+- If a field has a pattern with emoji/Unicode characters (e.g., `^(👍|👎|❤️)$`), the characters
+  may be stripped during output. Use random.choice() with ASCII alternatives instead:
+```python
+# If the schema shows emoji pattern but you can't output Unicode:
+# Option 1: Use enum if provided
+"emoji": random.choice(["thumbs_up", "thumbs_down", "heart"])
+
+# Option 2: Use simple ASCII characters
+"reaction": random.choice(["like", "dislike", "love"])
+
+# WRONG - empty or corrupted pattern from Unicode stripping
+"emoji": test_data_generator.generate_string(pattern=r"^(||)$")  # Produces invalid output!
+```
 
 CRITICAL: Do NOT invent parameters beyond what is listed above. Do NOT use parameters like "format", "regex", etc.

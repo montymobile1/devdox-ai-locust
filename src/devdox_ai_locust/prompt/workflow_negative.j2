@@ -303,6 +303,44 @@ self.make_request("GET", "/resource/1", expected_status=[200, 404])  # YES!
 self.make_request("GET", "/resource/-1", expected_status=[404])  # Correct if no minimum constraint
 ```
 
+**Rule 9 - NEVER Use Small IDs (1, 2, 3) for Boundary/Edge Case Tests:**
+- Small IDs like 1, 2, 3 often EXIST in test databases (seed data, fixtures, etc.)
+- Using ID=1 as "edge case minimum" will return 200 (resource found) instead of 404
+- For non-existent ID tests, ALWAYS use large numbers like 999999999
+- For minimum boundary tests on INTEGER IDs, use 0 or -1 (which don't exist as valid DB IDs)
+```python
+# WRONG - ID 1 likely exists in the database!
+def test_edge_case_min(self):
+    user_id = 1  # WRONG! This user probably exists!
+    self.make_request("GET", f"/users/{user_id}", expected_status=[404, 422])  # Will get 200!
+
+# CORRECT - use IDs that definitely don't exist
+def test_nonexistent_id(self):
+    user_id = 999999999  # Large number unlikely to exist
+    self.make_request("GET", f"/users/{user_id}", expected_status=[404, 422])
+
+def test_boundary_zero(self):
+    user_id = 0  # Zero is not a valid DB ID
+    self.make_request("GET", f"/users/{user_id}", expected_status=[404, 422])
+```
+
+**Rule 10 - NEVER Test Empty String for Path Parameters:**
+- Using `item_id = ""` in path creates a trailing slash URL like `/resource/`
+- This matches the LIST endpoint, not the GET-by-ID endpoint
+- The LIST endpoint returns 200 with an empty list, not 404
+- SKIP empty string tests for path parameters entirely
+```python
+# WRONG - creates /resource/ which is the LIST endpoint
+def test_edge_case_empty_string(self):
+    item_id = ""
+    self.make_request("GET", f"/resource/{item_id}", expected_status=[404, 422])  # Gets 200!
+
+# CORRECT - don't test empty strings for path params, test non-existent IDs instead
+def test_nonexistent_id(self):
+    item_id = 999999999
+    self.make_request("GET", f"/resource/{item_id}", expected_status=[404, 422])
+```
+
 === WEIGHT GUIDANCE FOR NEGATIVE TESTS ===
 
 Task weights for negative tests should be lower than positive tests since they
@@ -364,7 +402,13 @@ def test_boundary_value(self):
     - If testing invalid enum: use values OUTSIDE the allowed list (e.g., "invalid_value", "unknown")
     - WRONG: Testing with "low" when enum is ["low", "medium", "high"] → returns 200!
     - RIGHT: Testing with "super_high" or "invalid_priority" → returns 422
-14. **NEVER use None in URL paths** - always guard AFTER resource creation:
+14. **NEVER use small IDs (1, 2, 3) as "edge case" tests** - they likely exist in the database:
+    - WRONG: `user_id = 1` for "edge case minimum" → returns 200 (user exists!)
+    - RIGHT: `user_id = 999999999` for non-existent, `user_id = 0` for boundary
+15. **NEVER test empty string for path parameters** - creates trailing slash that hits LIST endpoint:
+    - WRONG: `item_id = ""` → creates `/items/` which is the LIST endpoint, returns 200
+    - RIGHT: Skip empty string tests for path params entirely
+16. **NEVER use None in URL paths** - always guard AFTER resource creation:
     ```python
     # CORRECT - guard AFTER creation attempt
     if not self.item_id:

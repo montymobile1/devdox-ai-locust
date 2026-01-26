@@ -521,6 +521,25 @@ def test_success_with_valid_data(self):
         count = len(result) if isinstance(result, list) else len(result.get("items", []))
         logger.info(f"Retrieved {count} items")  # 0 items is still success
     ```
+14. **NEVER use generate_string() for nested object fields** - if a field expects an object/dict, generate
+    a proper dict structure, not a string:
+    ```python
+    # WRONG - preferred_payment expects an object, not a string
+    data = {
+        "name": test_data_generator.generate_string(),
+        "preferred_payment": test_data_generator.generate_string()  # WRONG! API expects object!
+    }
+
+    # CORRECT - generate proper nested object structure
+    data = {
+        "name": test_data_generator.generate_string(),
+        "preferred_payment": {  # Object with proper structure
+            "payment_type": "credit_card",
+            "card_number": test_data_generator.generate_string(pattern=r"^[0-9]{16}$")
+        }
+    }
+    ```
+    If the field is a oneOf/anyOf (discriminated union), generate one valid variant with its discriminator.
 
 === CRITICAL: CONDITIONAL RESPONSE ENDPOINTS ===
 
