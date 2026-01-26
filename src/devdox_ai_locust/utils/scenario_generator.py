@@ -14,9 +14,12 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from devdox_ai_locust.utils.debug_recorder import DebugRecorder
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -134,6 +137,7 @@ class ScenarioWorkflowGenerator:
         ai_client: Any,
         ai_config: Any,
         max_concurrency: int = MAX_CONCURRENCY,
+        debug_recorder: Optional["DebugRecorder"] = None,
     ):
         """
         Initialize the scenario generator.
@@ -143,6 +147,7 @@ class ScenarioWorkflowGenerator:
             ai_client: Together AI client for LLM calls
             ai_config: AI configuration (model, timeout, etc.)
             max_concurrency: Maximum concurrent API calls
+            debug_recorder: Optional debug recorder for capturing intermediate states
         """
         self.prompt_dir = prompt_dir
         self.ai_client = ai_client
@@ -151,6 +156,7 @@ class ScenarioWorkflowGenerator:
         self._max_concurrency = max_concurrency
         self._current_concurrency = self.DEFAULT_CONCURRENCY
         self._api_semaphore = asyncio.Semaphore(self._current_concurrency)
+        self.debug_recorder = debug_recorder
 
         # Setup Jinja environment for prompts
         self.prompt_env = Environment(
@@ -397,6 +403,25 @@ class ScenarioWorkflowGenerator:
             db_type=db_type,
         )
 
+        # Record orchestrator context and prompt
+        if self.debug_recorder and self.debug_recorder.enabled:
+            orchestrator_context = {
+                "tag_name": tag_name,
+                "endpoints_count": len(tag_endpoints),
+                "class_name": class_name,
+                "custom_requirement": custom_requirement or "",
+                "db_type": db_type,
+                "endpoints_list": endpoints_list,
+            }
+            await self.debug_recorder.record_orchestrator_context(
+                tag=tag_name,
+                context=orchestrator_context,
+            )
+            await self.debug_recorder.record_orchestrator_prompt(
+                tag=tag_name,
+                prompt=prompt,
+            )
+
         # Call LLM with validation retry
         max_validation_retries = 2
         last_error = None
@@ -407,7 +432,28 @@ class ScenarioWorkflowGenerator:
             if attempt > 0 and last_error and last_code:
                 current_prompt = self._render_fix_prompt(last_code, last_error)
 
+            # Record LLM request
+            if self.debug_recorder and self.debug_recorder.enabled:
+                await self.debug_recorder.record_orchestrator_llm_request(
+                    tag=tag_name,
+                    request_data={
+                        "model": self.ai_config.model,
+                        "max_tokens": self.ai_config.max_tokens,
+                        "temperature": self.ai_config.temperature,
+                        "timeout": self.ai_config.timeout,
+                        "attempt": attempt + 1,
+                        "is_retry": attempt > 0,
+                    },
+                )
+
             content = await self._call_ai_service(current_prompt, f"orchestrator_{tag_name}")
+
+            # Record LLM response
+            if self.debug_recorder and self.debug_recorder.enabled:
+                await self.debug_recorder.record_orchestrator_llm_response(
+                    tag=tag_name,
+                    response=content or "(empty response)",
+                )
 
             if not content:
                 raise AIServiceError(f"AI service returned empty response for orchestrator [{tag_name}]")
@@ -427,6 +473,18 @@ class ScenarioWorkflowGenerator:
             is_valid, error = self._validate_python_code(content)
 
             if is_valid:
+                # Record final orchestrator code
+                if self.debug_recorder and self.debug_recorder.enabled:
+                    await self.debug_recorder.record_orchestrator_final(
+                        tag=tag_name,
+                        code=content,
+                        summary={
+                            "success": True,
+                            "attempts": attempt + 1,
+                            "used_fallback": False,
+                            "code_length": len(content),
+                        },
+                    )
                 if attempt > 0:
                     console.print(
                         f"[green]✓ Retry SUCCEEDED[/green] for orchestrator [{tag_name}] "
@@ -595,34 +653,100 @@ class ScenarioWorkflowGenerator:
             related_create_endpoints = self._find_related_create_endpoints(endpoint, all_endpoints)
             setup_endpoints_section = self._format_related_create_endpoints(related_create_endpoints)
 
+        # Build context dict for template rendering
+        template_context = {
+            "endpoint": endpoint_details,
+            "auth_endpoints": self._format_endpoints_list(auth_endpoints) if auth_endpoints else "",
+            "base_workflow": base_workflow_content,
+            "test_data_content": test_data_content,
+            "class_name": class_name,
+            "operation_id": operation_id,
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "endpoint_expected_status": expected_status_codes,
+            "setup_endpoints": setup_endpoints_section,
+            "custom_requirement": custom_requirement or "",
+            "db_type": db_type,
+        }
+
         # Render prompt
-        prompt = template.render(
-            endpoint=endpoint_details,
-            auth_endpoints=self._format_endpoints_list(auth_endpoints) if auth_endpoints else "",
-            base_workflow=base_workflow_content,
-            test_data_content=test_data_content,
-            class_name=class_name,
-            operation_id=operation_id,
-            method=endpoint.method,
-            path=endpoint.path,
-            endpoint_expected_status=expected_status_codes,
-            setup_endpoints=setup_endpoints_section,
-            custom_requirement=custom_requirement or "",
-            db_type=db_type,
-        )
+        prompt = template.render(**template_context)
+
+        # Get endpoint directory name for debug recording
+        endpoint_dir_name = self.get_endpoint_dir_name(endpoint)
+
+        # Record endpoint details and context
+        if self.debug_recorder and self.debug_recorder.enabled:
+            await self.debug_recorder.record_endpoint_details(
+                tag=tag_name,
+                endpoint_dir_name=endpoint_dir_name,
+                endpoint=endpoint,
+                formatted_details=endpoint_details,
+            )
+            # Record context without large content (base_workflow, test_data) to save space
+            context_for_debug = {
+                "endpoint_details": endpoint_details,
+                "class_name": class_name,
+                "operation_id": operation_id,
+                "method": endpoint.method,
+                "path": endpoint.path,
+                "expected_status_codes": expected_status_codes,
+                "setup_endpoints": setup_endpoints_section,
+                "custom_requirement": custom_requirement or "",
+                "db_type": db_type,
+            }
+            await self.debug_recorder.record_scenario_context(
+                tag=tag_name,
+                endpoint_dir_name=endpoint_dir_name,
+                scenario_type=scenario_name,
+                context=context_for_debug,
+            )
+            await self.debug_recorder.record_scenario_prompt(
+                tag=tag_name,
+                endpoint_dir_name=endpoint_dir_name,
+                scenario_type=scenario_name,
+                prompt=prompt,
+            )
 
         # Call LLM with validation retry (error-aware on retry)
         max_validation_retries = 2
         last_error = None
         last_code = None
         current_prompt = prompt  # Start with the original prompt
+        all_errors: List[str] = []  # Track all errors for debug recording
 
         for attempt in range(max_validation_retries):
             # On retry, use error-aware fix prompt instead of original
             if attempt > 0 and last_error and last_code:
                 current_prompt = self._render_fix_prompt(last_code, last_error)
 
+            # Record LLM request
+            if self.debug_recorder and self.debug_recorder.enabled:
+                llm_request_data = {
+                    "model": self.ai_config.model,
+                    "max_tokens": self.ai_config.max_tokens,
+                    "temperature": self.ai_config.temperature,
+                    "timeout": self.ai_config.timeout,
+                    "attempt": attempt + 1,
+                    "is_retry": attempt > 0,
+                }
+                await self.debug_recorder.record_llm_request(
+                    tag=tag_name,
+                    endpoint_dir_name=endpoint_dir_name,
+                    scenario_type=scenario_name,
+                    request_data=llm_request_data,
+                )
+
             content = await self._call_ai_service(current_prompt, scenario_type.value)
+
+            # Record raw LLM response
+            if self.debug_recorder and self.debug_recorder.enabled:
+                await self.debug_recorder.record_llm_response(
+                    tag=tag_name,
+                    endpoint_dir_name=endpoint_dir_name,
+                    scenario_type=scenario_name,
+                    response=content or "(empty response)",
+                )
 
             if not content:
                 raise AIServiceError(f"AI service returned empty response for {scenario_type.value} [{endpoint.method} {endpoint.path}]")
@@ -637,6 +761,15 @@ class ScenarioWorkflowGenerator:
 
             # Extract code from response
             extracted = self._extract_code(content)
+
+            # Record extracted code
+            if self.debug_recorder and self.debug_recorder.enabled:
+                await self.debug_recorder.record_extracted_code(
+                    tag=tag_name,
+                    endpoint_dir_name=endpoint_dir_name,
+                    scenario_type=scenario_name,
+                    code=extracted,
+                )
 
             # Sanitize any non-ASCII Unicode characters the LLM may have injected
             sanitized = self._sanitize_unicode(extracted)
@@ -653,9 +786,49 @@ class ScenarioWorkflowGenerator:
 
             content = after_regex_fix
 
+            # Record processed code (after all fixes)
+            if self.debug_recorder and self.debug_recorder.enabled:
+                await self.debug_recorder.record_processed_code(
+                    tag=tag_name,
+                    endpoint_dir_name=endpoint_dir_name,
+                    scenario_type=scenario_name,
+                    code=content,
+                )
+
             is_valid, error = self._validate_python_code(content)
 
+            # Record validation result
+            if self.debug_recorder and self.debug_recorder.enabled:
+                await self.debug_recorder.record_validation_result(
+                    tag=tag_name,
+                    endpoint_dir_name=endpoint_dir_name,
+                    scenario_type=scenario_name,
+                    is_valid=is_valid,
+                    error=error if not is_valid else None,
+                    checks=[{"check": "python_syntax", "passed": is_valid, "error": error}],
+                )
+
             if is_valid:
+                # Record final code
+                if self.debug_recorder and self.debug_recorder.enabled:
+                    await self.debug_recorder.record_final_code(
+                        tag=tag_name,
+                        endpoint_dir_name=endpoint_dir_name,
+                        scenario_type=scenario_name,
+                        code=content,
+                    )
+                    # Record scenario summary
+                    await self.debug_recorder.record_scenario_summary(
+                        tag=tag_name,
+                        endpoint_dir_name=endpoint_dir_name,
+                        scenario_type=scenario_name,
+                        summary={
+                            "success": True,
+                            "attempts": attempt + 1,
+                            "used_fallback": False,
+                            "code_length": len(content),
+                        },
+                    )
                 if attempt > 0:
                     console.print(
                         f"[green]✓ Retry SUCCEEDED[/green] for {scenario_type.value} "
@@ -666,8 +839,23 @@ class ScenarioWorkflowGenerator:
             # Save for error reporting and fix prompt on retry
             last_error = error
             last_code = content
+            all_errors.append(f"Attempt {attempt + 1}: {error}")
 
             if attempt < max_validation_retries - 1:
+                # Record retry attempt
+                if self.debug_recorder and self.debug_recorder.enabled:
+                    await self.debug_recorder.record_retry_attempt(
+                        tag=tag_name,
+                        endpoint_dir_name=endpoint_dir_name,
+                        scenario_type=scenario_name,
+                        attempt=attempt + 1,
+                        error=error,
+                        bad_code=content,
+                        fix_prompt=self._render_fix_prompt(content, error),
+                        llm_response="(pending next attempt)",
+                        extracted_code="(pending next attempt)",
+                        validation_result={"valid": False, "error": error},
+                    )
                 console.print(
                     f"[yellow]⚠ Validation failed[/yellow] for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "

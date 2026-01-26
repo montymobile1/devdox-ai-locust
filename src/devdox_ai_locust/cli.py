@@ -14,6 +14,7 @@ from .ai_config import AIEnhancementConfig
 from .config import Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
+from devdox_ai_locust.utils.debug_recorder import DebugRecorder
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
@@ -264,6 +265,7 @@ async def _generate_and_create_tests(
     auth: bool = False,
     db_type: str = "",
     timeout: int = 120,
+    debug_recorder: Optional[DebugRecorder] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
     together_client = AsyncTogether(api_key=api_key)
@@ -282,6 +284,7 @@ async def _generate_and_create_tests(
         db_type,
         host,
         custom_requirement,
+        debug_recorder,
     )
 
 
@@ -295,6 +298,7 @@ async def _generate_scenario_based_tests(
     db_type: str,
     host: Optional[str] = None,
     custom_requirement: Optional[str] = None,
+    debug_recorder: Optional[DebugRecorder] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
@@ -319,6 +323,7 @@ async def _generate_scenario_based_tests(
         prompt_dir=prompt_dir,
         ai_client=ai_client,
         ai_config=ai_config,
+        debug_recorder=debug_recorder,
     )
 
     # Get dynamic counts from generator
@@ -342,6 +347,21 @@ async def _generate_scenario_based_tests(
 
     base_workflow_content = base_files.get("base_workflow.py", "")
     test_data_content = base_files.get("test_data.py", "")
+
+    # Record static file generation
+    if debug_recorder and debug_recorder.enabled:
+        for filename, content in base_files.items():
+            debug_recorder.record_static_file(
+                file_name=filename,
+                context={
+                    "endpoint_count": len(endpoints),
+                    "api_info": api_info,
+                    "include_auth": auth,
+                    "target_host": host,
+                    "db_type": db_type,
+                },
+                rendered_content=content,
+            )
 
     # Get auth endpoints
     auth_endpoints = [ep for ep in endpoints if any(
@@ -739,6 +759,12 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     default=120,
     help="Timeout in seconds for AI API calls (default: 120, increase for large APIs)",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Enable debug mode to record all intermediate states for auditing",
+)
 @click.pass_context
 def generate(
     ctx: click.Context,
@@ -754,6 +780,7 @@ def generate(
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
     timeout: int,
+    debug: bool,
 ) -> None:
     """Generate Locust test files from API documentation URL or file"""
 
@@ -778,6 +805,7 @@ def generate(
                 custom_requirement,
                 together_api_key,
                 timeout,
+                debug,
             )
         )
     except Exception as e:
@@ -805,6 +833,7 @@ async def _async_generate(
     custom_requirement: Optional[str],
     together_api_key: Optional[str],
     timeout: int = 120,
+    debug: bool = False,
 ) -> None:
     """Async function to handle the generation process"""
     start_time = datetime.now(timezone.utc)
@@ -812,6 +841,27 @@ async def _async_generate(
     try:
         _, api_key = _initialize_config(together_api_key)
         output_dir = _setup_output_directory(output)
+
+        # Initialize debug recorder
+        debug_recorder = DebugRecorder(output_dir, enabled=debug)
+
+        if debug:
+            console.print("[blue]🔍 Debug mode enabled[/blue] - recording intermediate states")
+            # Record CLI args
+            debug_recorder.record_cli_args({
+                "swagger_url": swagger_url,
+                "output": output,
+                "users": users,
+                "spawn_rate": spawn_rate,
+                "run_time": run_time,
+                "host": host,
+                "auth": auth,
+                "db_type": db_type,
+                "dry_run": dry_run,
+                "custom_requirement": custom_requirement,
+                "timeout": timeout,
+            })
+
         # Display configuration
         if ctx.obj["verbose"]:
             _display_configuration(
@@ -826,9 +876,22 @@ async def _async_generate(
                 dry_run,
             )
 
-        _, endpoints, api_info = await _process_api_schema(
+        raw_schema, endpoints, api_info = await _process_api_schema(
             swagger_url, ctx.obj["verbose"]
         )
+
+        # Record parsed OpenAPI data
+        if debug:
+            debug_recorder.record_openapi_raw(raw_schema)
+            debug_recorder.record_openapi_parsed(endpoints, api_info)
+            debug_recorder.record_resolved_config({
+                "api_info": api_info,
+                "host": host,
+                "auth": auth,
+                "db_type": db_type,
+                "timeout": timeout,
+                "custom_requirement": custom_requirement,
+            })
 
         created_files = await _generate_and_create_tests(
             api_key,
@@ -840,7 +903,13 @@ async def _async_generate(
             auth,
             db_type,
             timeout,
+            debug_recorder,
         )
+
+        # Finalize debug recording
+        if debug:
+            await debug_recorder.finalize()
+            console.print(f"[blue]🔍 Debug info saved to:[/blue] {debug_recorder.debug_root}")
 
         # Show results
         _show_results(
