@@ -1050,6 +1050,33 @@ class TestNullableParameterExtraction:
         assert params[0].minimum == 1
         assert params[0].maximum == 100
 
+    def test_anyof_ref_param_resolved(self):
+        """Parser resolves $ref inside anyOf before unwrapping."""
+        parser = self._get_parser()
+        parser.spec_data = {
+            "components": {
+                "schemas": {
+                    "Status": {"type": "string", "enum": ["active", "inactive"]}
+                }
+            }
+        }
+        parser.components = parser.spec_data["components"]
+        operation = {
+            "parameters": [{
+                "name": "status",
+                "in": "query",
+                "schema": {
+                    "anyOf": [
+                        {"$ref": "#/components/schemas/Status"},
+                        {"type": "null"}
+                    ]
+                }
+            }]
+        }
+        params = parser._extract_parameters(operation)
+        assert params[0].type == "string"
+        assert params[0].enum == ["active", "inactive"]
+
 
 # ============================================================
 # Issue 17: Discriminator const matching normalization

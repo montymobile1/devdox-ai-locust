@@ -267,7 +267,14 @@ class OpenAPIParser:
             effective_schema = param_schema
             any_of = param_schema.get("anyOf") or param_schema.get("oneOf")
             if any_of and isinstance(any_of, list):
-                real_variants = [v for v in any_of if isinstance(v, dict) and v.get("type") != "null"]
+                # Resolve $refs within anyOf variants before filtering
+                resolved_variants = []
+                for v in any_of:
+                    if isinstance(v, dict) and "$ref" in v:
+                        resolved_variants.append(self._resolve_reference(v) or v)
+                    elif isinstance(v, dict):
+                        resolved_variants.append(v)
+                real_variants = [v for v in resolved_variants if v.get("type") != "null"]
                 if len(real_variants) == 1:
                     effective_schema = real_variants[0]
 
