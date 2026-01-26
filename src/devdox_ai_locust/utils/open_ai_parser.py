@@ -362,7 +362,7 @@ class OpenAPIParser:
                 break
 
         if not content_type:
-            content_type = content_types[0]
+            content_type = content_types[0] if content_types else "application/json"
 
         media_type = content[content_type]
         schema = media_type.get("schema", {})
@@ -408,8 +408,9 @@ class OpenAPIParser:
                     content_type = application_json_type
                     media_type = content[application_json_type]
                 else:
-                    content_type = list(content.keys())[0]
-                    media_type = content[content_type]
+                    content_keys = list(content.keys())
+                    content_type = content_keys[0] if content_keys else "application/json"
+                    media_type = content.get(content_type, {})
 
                 schema = media_type.get("schema")
                 if schema:

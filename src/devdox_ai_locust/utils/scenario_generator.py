@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, TemplateError
 from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
 from devdox_ai_locust.utils.code_validator import CodeValidator
 
@@ -75,9 +75,18 @@ class RateLimitInfo:
     @classmethod
     def from_headers(cls, headers: Dict[str, str]) -> "RateLimitInfo":
         """Parse rate limit info from response headers"""
-        rps = int(headers.get("x-ratelimit-limit", "1"))
-        remaining = int(headers.get("x-ratelimit-remaining", "0"))
-        reset = float(headers.get("x-ratelimit-reset", "1"))
+        try:
+            rps = int(headers.get("x-ratelimit-limit", "1"))
+        except (ValueError, TypeError):
+            rps = 1
+        try:
+            remaining = int(headers.get("x-ratelimit-remaining", "0"))
+        except (ValueError, TypeError):
+            remaining = 0
+        try:
+            reset = float(headers.get("x-ratelimit-reset", "1"))
+        except (ValueError, TypeError):
+            reset = 1.0
 
         return cls(
             requests_per_second=rps,
@@ -1070,8 +1079,14 @@ class ScenarioWorkflowGenerator:
         # Validate required context variables exist (prevents LLM hallucination from empty context)
         self._validate_template_context(template_context, scenario_type)
 
-        # Render prompt
-        prompt = template.render(**template_context)
+        # Render prompt with error handling
+        try:
+            prompt = template.render(**template_context)
+        except TemplateError as e:
+            logger.error(f"Template rendering failed for {scenario_type.value}: {e}")
+            raise ScenarioGenerationError(
+                f"Failed to render {scenario_type.value} template: {e}"
+            ) from e
 
         # Get endpoint directory name for debug recording
         endpoint_dir_name = self.get_endpoint_dir_name(endpoint)
@@ -1663,7 +1678,7 @@ class ScenarioWorkflowGenerator:
             if items_enum:
                 return f"[random.choice({items_enum}) for _ in range({array_len})]"
             # Handle oneOf/anyOf in array items (discriminated union like Dog|Cat|Bird)
-            if items_one_of and isinstance(items_one_of, list):
+            if items_one_of and isinstance(items_one_of, list) and len(items_one_of) > 0:
                 # Use the first variant to generate sample objects
                 first_variant = items_one_of[0]
                 if isinstance(first_variant, dict):

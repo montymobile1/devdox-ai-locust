@@ -166,8 +166,12 @@ class FallbackHttpResponseRegistry:
         for sel in selectors:
             sel = str(sel)
             if sel.endswith("xx") and len(sel) == 3:
-                prefix = int(sel[0])
-                expanded.update({str(code) for code in range(prefix * 100, (prefix + 1) * 100)})
+                try:
+                    prefix = int(sel[0])
+                    expanded.update({str(code) for code in range(prefix * 100, (prefix + 1) * 100)})
+                except (ValueError, IndexError):
+                    expanded.add(sel)
+                    continue
             else:
                 expanded.add(sel)
 
