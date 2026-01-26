@@ -64,6 +64,138 @@ class BaseTaskMethods:
         if config.api_key:
             self.auth_token = config.api_key
 
+    def login_and_get_token(self, login_path: str = "/auth/login",
+                            credentials: Optional[Dict] = None) -> bool:
+        """
+        Perform dynamic login and store the authentication token.
+
+        This method should be called in on_start() when the API requires
+        dynamic authentication (not just a static API key).
+
+        Args:
+            login_path: The login endpoint path (e.g., "/auth/login", "/api/token")
+            credentials: Login credentials dict. If None, uses config defaults.
+                        Example: {"email": "test@example.com", "password": "secret"}
+
+        Returns:
+            bool: True if login succeeded and token was stored, False otherwise
+        """
+        if credentials is None:
+            # Use default test credentials from config
+            credentials = {
+                "email": getattr(config, 'test_email', 'test@example.com'),
+                "password": getattr(config, 'test_password', 'test_password'),
+            }
+
+        try:
+            with self.client.post(login_path, json=credentials, catch_response=True) as response:
+                if response.status_code == 200:
+                    response_data = response.json()
+                    # Extract token from response (handle various response formats)
+                    self.auth_token = (
+                        response_data.get("access_token") or
+                        response_data.get("token") or
+                        response_data.get("data", {}).get("token") or
+                        response_data.get("data", {}).get("access_token")
+                    )
+
+                    if self.auth_token:
+                        # Update headers with new token
+                        self.default_headers["Authorization"] = f"Bearer {self.auth_token}"
+                        if hasattr(self, 'client') and hasattr(self.client, 'headers'):
+                            self.client.headers.update(self.default_headers)
+                        response.success()
+                        logger.info(f"Login successful - token acquired")
+                        return True
+                    else:
+                        response.failure("Login response missing token field")
+                        logger.warning("Login response did not contain expected token field")
+                        return False
+                else:
+                    response.failure(f"Login failed with status {response.status_code}")
+                    logger.warning(f"Login failed: {response.status_code}")
+                    return False
+        except Exception as e:
+            logger.error(f"Login exception: {e}")
+            return False
+
+    def logout(self, logout_path: str = "/auth/logout") -> bool:
+        """
+        Perform logout and clear authentication token.
+
+        Call this in on_stop() to properly clean up sessions.
+
+        Args:
+            logout_path: The logout endpoint path
+
+        Returns:
+            bool: True if logout succeeded, False otherwise
+        """
+        if not self.auth_token:
+            return True  # Nothing to logout
+
+        try:
+            with self.client.post(logout_path, catch_response=True) as response:
+                if response.status_code in [200, 204]:
+                    response.success()
+                    logger.info("Logout successful")
+                else:
+                    # Logout failures are usually not critical
+                    response.success()  # Don't fail the test for logout issues
+                    logger.debug(f"Logout returned {response.status_code}")
+
+                # Clear token regardless of response
+                self.auth_token = None
+                if "Authorization" in self.default_headers:
+                    del self.default_headers["Authorization"]
+                return True
+        except Exception as e:
+            logger.debug(f"Logout exception (non-critical): {e}")
+            self.auth_token = None
+            return False
+
+    def handle_401_retry(self, method: str, path: str, **kwargs) -> Optional[Dict]:
+        """
+        Make a request with automatic re-authentication on 401 Unauthorized.
+
+        If the request returns 401, this method will:
+        1. Attempt to re-login using login_and_get_token()
+        2. Retry the original request with the new token
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            path: API endpoint path
+            **kwargs: Additional arguments passed to make_request
+
+        Returns:
+            Response data dict or None (same as make_request)
+        """
+        # First attempt
+        result = self.make_request(method, path, **kwargs)
+        if result is not None:
+            return result
+
+        # Check if we should retry (only on auth failure)
+        # Since make_request returns None on failure, we need to make a raw request to check
+        try:
+            with self.client.request(method=method, url=path, catch_response=True, **kwargs) as response:
+                if response.status_code == 401:
+                    logger.info(f"Got 401 on {method} {path}, attempting re-authentication...")
+                    # Re-authenticate
+                    if self.login_and_get_token():
+                        # Retry original request
+                        return self.make_request(method, path, **kwargs)
+                    else:
+                        logger.warning("Re-authentication failed, cannot retry request")
+                        response.failure("401 Unauthorized - re-auth failed")
+                        return None
+                else:
+                    # Not a 401, original failure stands
+                    return None
+        except Exception as e:
+            logger.error(f"Error in 401 retry handler: {e}")
+            return None
+
     def _setup_headers(self):
         """Setup default headers for all requests"""
         if not hasattr(self, 'auth_token'):

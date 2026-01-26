@@ -19,6 +19,24 @@ ENDPOINT TO TEST:
 {% if auth_endpoints %}
 AUTHENTICATION ENDPOINTS:
 {{ auth_endpoints }}
+
+=== AUTHENTICATION HANDLING ===
+If this endpoint requires authentication:
+1. Use `self.login_and_get_token(login_path, credentials)` in on_start()
+2. Use `self.logout(logout_path)` in on_stop() for cleanup
+3. For requests that may get 401, use `self.handle_401_retry()` instead of `make_request()`
+
+Example:
+```python
+def on_start(self):
+    super().on_start()
+    # Login if auth endpoints exist
+    self.login_and_get_token("/auth/login", {"email": "test@example.com", "password": "secret"})
+
+def on_stop(self):
+    self.logout("/auth/logout")
+    super().on_stop()
+```
 {% endif %}
 
 BASE WORKFLOW (inherit from this):
