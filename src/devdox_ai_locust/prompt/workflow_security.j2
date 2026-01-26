@@ -218,6 +218,7 @@ def test_sql_injection(self):
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
 - **NEVER leave placeholder comments** - generate ALL required code
+- **NEVER leave setup data dicts empty** - Every dict used as request body MUST contain actual field values
 - **NEVER invent endpoint paths** - use ONLY the path from ENDPOINT TO TEST section
 
 === CRITICAL: NO EMPTY PATH SEGMENTS ===

@@ -219,6 +219,9 @@ def test_invalid_input(self):
 - **NEVER use `with self.client.X(catch_response=True)` pattern** - use make_request() instead
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
+- **NEVER leave placeholder comments** like "# Generate user data here if needed" or "# TODO"
+- **NEVER leave setup data dicts empty** - Every dict used as request body (user_data, post_data, etc.)
+  MUST contain actual generated field values, NOT empty `{}` or `{# placeholder comment}`
 
 === CRITICAL: TEST GENERATION RULES ===
 

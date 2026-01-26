@@ -81,7 +81,21 @@ class CodeValidator:
         r"#\s*Complete this",
         r"#\s*Add remaining",
         r"#\s*Add more fields",
+        r"#\s*Generate .* here if needed",
+        r"#\s*Generate .* data here",
+        r"#\s*Add .* data here",
+        r"#\s*Fill in .* data",
+        r"#\s*Populate .* fields",
+        r"#\s*Add .* fields here",
+        r"#\s*Insert .* data",
+        r"#\s*\.\.\.",  # Catch "# ..." ellipsis placeholder
     ]
+
+    # Pattern to detect empty setup data dicts (dict with only whitespace/comment)
+    EMPTY_SETUP_DICT_RE = re.compile(
+        r'(\w+_data)\s*=\s*\{\s*(?:#[^\n]*)?\s*\}',
+        re.MULTILINE
+    )
 
     # Security payload patterns that should NOT appear in URL path segments
     SECURITY_PAYLOAD_IN_PATH_RE = re.compile(
@@ -139,6 +153,7 @@ class CodeValidator:
         # Run all checks
         violations.extend(self._check_template_boilerplate(code))
         violations.extend(self._check_placeholder_comments(code))
+        violations.extend(self._check_empty_setup_dicts(code))
         violations.extend(self._check_empty_path_segments(code))
         violations.extend(self._check_literal_path_params(code))
 
@@ -196,6 +211,59 @@ class CodeValidator:
                         severity="error",
                     ))
                     break
+
+        return violations
+
+    def _check_empty_setup_dicts(self, code: str) -> List[ValidationViolation]:
+        """Check for empty setup data dicts that should have generated fields.
+
+        Catches patterns like:
+            user_data = {}
+            user_data = {
+                # Generate user data here if needed
+            }
+        """
+        violations = []
+        lines = code.split("\n")
+
+        # Track variable names that are likely setup data
+        setup_var_patterns = ["_data", "_payload", "_body", "_request"]
+
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            # Check for empty dict assignment pattern
+            for pattern in setup_var_patterns:
+                if pattern in line and "=" in line:
+                    # Check if it's an empty dict (with optional comment inside)
+                    match = re.search(r'(\w+' + re.escape(pattern) + r')\s*=\s*\{\s*(?:#[^\n]*)?\s*\}', line)
+                    if match:
+                        var_name = match.group(1)
+                        violations.append(ValidationViolation(
+                            rule="empty_setup_dict",
+                            message=f"Empty setup data dict '{var_name}'. "
+                                    f"You MUST generate actual field values for setup API calls. "
+                                    f"Do NOT leave empty dicts with placeholder comments.",
+                            line_number=i,
+                            severity="error",
+                        ))
+                        break
+
+            # Also check for multi-line empty dicts (opening brace only on this line)
+            if re.match(r'\s*(\w+_data|\w+_payload|\w+_body)\s*=\s*\{\s*$', line):
+                # Check next line for closing brace with only comment
+                if i < len(lines):
+                    next_line = lines[i].strip() if i < len(lines) else ""
+                    # If next line is just "}" or "# comment" followed by "}"
+                    if next_line == "}" or (next_line.startswith("#") and i + 1 < len(lines) and lines[i + 1].strip() == "}"):
+                        var_match = re.match(r'\s*(\w+_data|\w+_payload|\w+_body)', line)
+                        if var_match:
+                            violations.append(ValidationViolation(
+                                rule="empty_setup_dict",
+                                message=f"Empty setup data dict '{var_match.group(1)}'. "
+                                        f"You MUST generate actual field values for setup API calls.",
+                                line_number=i,
+                                severity="error",
+                            ))
 
         return violations
 

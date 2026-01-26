@@ -167,6 +167,38 @@ if create_result:
 create_result = self.make_request("POST", "<SETUP_PATH>", expected_status={{ endpoint_expected_status }}, json=data)  # NO!
 ```
 
+=== CRITICAL: SETUP DATA MUST BE COMPLETE - NEVER LEAVE EMPTY ===
+
+**NEVER leave setup data dicts empty with placeholder comments!** This is a CRITICAL error that will cause 422 validation failures.
+
+```python
+# WRONG - Empty dict with placeholder comment causes 422 error!
+user_data = {
+    # Generate user data here if needed  ← THIS IS WRONG!
+}
+
+# WRONG - Empty dict causes 422 error!
+post_data = {}  ← THIS IS WRONG!
+
+# CORRECT - Generate ALL required fields for setup resources
+user_data = {
+    "name": test_data_generator.generate_string(length=10),
+    "email": test_data_generator.generate_email(),
+}
+
+# CORRECT - Include all required fields based on the setup endpoint's schema
+post_data = {
+    "title": test_data_generator.generate_string(length=20),
+    "content": test_data_generator.generate_string(length=100),
+}
+```
+
+**For nested resources (e.g., /users/{user_id}/posts/{post_id}/comments):**
+1. Look at the SETUP ENDPOINTS section for the schema of each parent resource
+2. Generate COMPLETE request bodies with ALL required fields
+3. NEVER use placeholder comments like "# Generate user data here if needed"
+4. If the schema is not provided, generate sensible fields like name, title, content, etc.
+
 === CRITICAL: OUTPUT REQUIREMENTS ===
 
 **ASCII ONLY**: Your output MUST contain ONLY ASCII characters (codes 0-127).
@@ -447,9 +479,12 @@ def test_complex_operation(self):
 - BYTES LITERALS MUST BE ASCII ONLY: b'test' not b'tëst'
 - OUTPUT ASCII ONLY: No Unicode, no Chinese characters, no emoji
 - Use RAW STRINGS for regex patterns: r"^pattern$" not "^pattern$"
-- **NEVER leave placeholder comments** like "# Add other required fields" or "# TODO: complete"
+- **NEVER leave placeholder comments** like "# Add other required fields", "# TODO: complete",
+  "# Generate user data here if needed", or any similar placeholder text.
   You MUST generate ALL required fields for every code path. If a discriminated union has
   multiple variants, generate complete valid data for ALL variants.
+- **NEVER leave setup data dicts empty** - Every dict used as request body (user_data, post_data, etc.)
+  MUST contain actual generated field values, NOT empty `{}` or `{# placeholder comment}`.
 - **NEVER use bare `pass` statements** that leave variables uninitialized. If you have conditional
   branches (if/elif/else) that build a `data` dict, EVERY branch must assign to `data`:
   ```python
