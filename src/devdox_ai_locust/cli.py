@@ -637,7 +637,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         valid_endpoints = [ep for ep in tag_endpoints if id(ep) in successful_endpoints]
 
         if not valid_endpoints:
-            console.print(f"  [yellow]⚠[/yellow] {tag_dir_name}/orchestrator_workflow.py skipped (no valid endpoints)")
+            progress.orchestrator_skipped(tag_dir_name, "no valid endpoints")
             continue
 
         try:
@@ -661,14 +661,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 "size": len(orchestrator_code),
                 "tag": tag_name,
             })
-            console.print(f"  [green]✓[/green] {tag_dir_name}/orchestrator_workflow.py")
+            progress.orchestrator_done(tag_dir_name)
 
         except Exception as e:
             orchestrator_failures.append({
                 "tag": tag_name,
                 "error": str(e),
             })
-            console.print(f"  [yellow]⚠[/yellow] {tag_dir_name}/orchestrator_workflow.py failed: {str(e)[:100]}")
+            progress.orchestrator_failed(tag_dir_name, e)
 
     created_files.extend(orchestrator_files)
 

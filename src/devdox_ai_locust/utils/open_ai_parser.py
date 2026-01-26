@@ -263,6 +263,13 @@ class OpenAPIParser:
             # Extract parameter type from schema
             param_schema = param.get("schema", {})
 
+            # Resolve $ref in schema if present (e.g., {"$ref": "#/components/schemas/SortOrder"})
+            if param_schema.get("$ref"):
+                resolved_schema = self._resolve_reference(param_schema)
+                if resolved_schema:
+                    # Merge any additional properties from param_schema (like default, description)
+                    param_schema = {**resolved_schema, **{k: v for k, v in param_schema.items() if k != "$ref"}}
+
             # Unwrap OpenAPI 3.1 anyOf nullable pattern
             effective_schema = param_schema
             any_of = param_schema.get("anyOf") or param_schema.get("oneOf")

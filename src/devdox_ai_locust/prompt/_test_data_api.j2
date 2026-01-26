@@ -46,6 +46,18 @@ test_data_generator.random_base64(length=16) -> str # Returns base64-encoded str
 | (2-char country) | random_country_code()          |
 | (3-char currency) | random_currency_code()        |
 
+**FIELD NAME INFERENCE - Use the correct generator based on field name:**
+| Field name contains | Generator to use |
+|---------------------|------------------|
+| email               | generate_email()                 |
+| created_at, updated_at, timestamp | random_datetime()  |
+| birth_date, start_date, end_date | random_date()       |
+| url, uri, website, link | random_uri()                 |
+| ipv4, ip_address    | random_ipv4()                    |
+| country (2-3 char)  | random_country_code()            |
+| currency (3-4 char) | random_currency_code()           |
+| rgb, color, red, green, blue | generate_integer(min_val=0, max_val=255) |
+
 **COMMON MISTAKES TO AVOID:**
 ```python
 # WRONG - random_date() already returns a string!
@@ -67,6 +79,18 @@ params = {"date": timestamp}  # OK: timestamp is already "2024-03-15"
 
 # CORRECT - use country_code generator
 "country": test_data_generator.random_country_code()  # Produces "US" (valid ISO code)
+
+# WRONG - using unbounded integer for RGB values
+"rgb_values": [test_data_generator.generate_integer() for _ in range(3)]  # Could produce [500, 800, 120]
+
+# CORRECT - RGB values must be 0-255
+"rgb_values": [test_data_generator.generate_integer(min_val=0, max_val=255) for _ in range(3)]  # Produces [120, 200, 50]
+
+# WRONG - using pattern-based generation for email fields
+"email": test_data_generator.generate_string(pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")  # May produce invalid emails
+
+# CORRECT - use the dedicated email generator
+"email": test_data_generator.generate_email()  # Produces "user123@example.com"
 ```
 
 **PARAMETER GUIDANCE:**

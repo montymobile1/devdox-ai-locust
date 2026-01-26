@@ -562,6 +562,97 @@ class ScenarioWorkflowGenerator:
             warnings=warnings,
         )
 
+    def _build_orchestrator_analysis(
+        self,
+        tag_name: str,
+        class_name: str,
+        tag_endpoints: List[Any],
+        auth_endpoints: Optional[List[Any]] = None,
+    ) -> "OrchestratorAnalysis":
+        """Build verbose analysis data for an orchestrator.
+
+        This is called in verbose mode to provide detailed insight into
+        what the generator sees and decides for each orchestrator.
+        """
+        # Import here to avoid circular import at module level
+        from devdox_ai_locust.utils.generation_progress import (
+            OrchestratorAnalysis,
+            OrchestratorEndpointInfo,
+        )
+
+        # Build endpoint info list
+        endpoints_info = []
+        for ep in tag_endpoints:
+            operation_id = getattr(ep, "operation_id", "") or self._generate_operation_id(ep)
+            ep_info = OrchestratorEndpointInfo(
+                method=ep.method.upper(),
+                path=ep.path,
+                operation_id=operation_id,
+                # Assume all scenarios are present for valid endpoints
+                has_positive=True,
+                has_negative=True,
+                has_security=True,
+            )
+            endpoints_info.append(ep_info)
+
+        # Detect CRUD operations
+        has_create = any(ep.method.upper() == "POST" for ep in tag_endpoints)
+        has_read = any(ep.method.upper() == "GET" for ep in tag_endpoints)
+        has_update = any(ep.method.upper() in ("PUT", "PATCH") for ep in tag_endpoints)
+        has_delete = any(ep.method.upper() == "DELETE" for ep in tag_endpoints)
+
+        # CRUD lifecycle is possible if we have at least create + read + delete
+        crud_lifecycle_possible = has_create and has_read and has_delete
+
+        # Detect state-dependent test possibilities
+        state_dependent_tests = []
+        if has_create and has_delete:
+            state_dependent_tests.append("double_delete")
+        if has_create and has_read:
+            state_dependent_tests.append("read_after_delete")
+        if has_create and has_update:
+            state_dependent_tests.append("update_after_delete")
+        if has_create:
+            state_dependent_tests.append("409_conflict")
+
+        # Concurrent tests possible if we have create or update
+        concurrent_tests_possible = has_create or has_update
+
+        # Resource limit tests possible with any write operation
+        resource_limit_tests = has_create or has_update
+
+        # Auth detection
+        auth_endpoints_count = len(auth_endpoints) if auth_endpoints else 0
+        auth_tests_possible = auth_endpoints_count > 0
+
+        # Build warnings
+        warnings = []
+        if not has_create:
+            warnings.append("No POST endpoint - create operations not possible")
+        if not crud_lifecycle_possible:
+            warnings.append("Full CRUD lifecycle not possible - missing some operations")
+        if len(tag_endpoints) < 2:
+            warnings.append("Only one endpoint - limited orchestration possibilities")
+
+        return OrchestratorAnalysis(
+            tag_name=tag_name,
+            class_name=class_name,
+            total_endpoints=len(tag_endpoints),
+            valid_endpoints=len(tag_endpoints),
+            endpoints=endpoints_info,
+            has_create=has_create,
+            has_read=has_read,
+            has_update=has_update,
+            has_delete=has_delete,
+            crud_lifecycle_possible=crud_lifecycle_possible,
+            auth_endpoints_found=auth_endpoints_count,
+            auth_tests_possible=auth_tests_possible,
+            state_dependent_tests=state_dependent_tests,
+            concurrent_tests_possible=concurrent_tests_possible,
+            resource_limit_tests=resource_limit_tests,
+            warnings=warnings,
+        )
+
     async def generate_tag_orchestrator(
         self,
         tag_name: str,
@@ -607,6 +698,16 @@ class ScenarioWorkflowGenerator:
 
         # Build class name from tag name
         class_name = self._tag_to_class_name(tag_name)
+
+        # Verbose mode: build and set orchestrator analysis
+        if self.progress and self.progress.verbose:
+            analysis = self._build_orchestrator_analysis(
+                tag_name=tag_name,
+                class_name=class_name,
+                tag_endpoints=tag_endpoints,
+                auth_endpoints=auth_endpoints,
+            )
+            self.progress.set_orchestrator_analysis(tag_name, analysis)
 
         # Render prompt
         prompt = template.render(
@@ -1496,6 +1597,10 @@ class ScenarioWorkflowGenerator:
             return f"test_data_generator.generate_string(length={length})"
 
         if field_type == "integer":
+            # RGB/color detection: field names containing "rgb", "color" imply 0-255 range
+            if field_name_lower and any(kw in field_name_lower for kw in ["rgb", "color", "colour", "red", "green", "blue", "alpha"]):
+                return "test_data_generator.generate_integer(min_val=0, max_val=255)"
+
             exclusive_min = field_schema.get("exclusiveMinimum")
             exclusive_max = field_schema.get("exclusiveMaximum")
             min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 1)
@@ -1577,6 +1682,9 @@ class ScenarioWorkflowGenerator:
             if items_type == "string":
                 return f"[test_data_generator.generate_string() for _ in range({array_len})]"
             if items_type == "integer":
+                # RGB/color detection: field names containing "rgb", "color" imply 0-255 range
+                if field_name_lower and any(kw in field_name_lower for kw in ["rgb", "color", "colour"]):
+                    return f"[test_data_generator.generate_integer(min_val=0, max_val=255) for _ in range({array_len})]"
                 return f"[test_data_generator.generate_integer() for _ in range({array_len})]"
             if items_type == "number":
                 return f"[test_data_generator.generate_float() for _ in range({array_len})]"

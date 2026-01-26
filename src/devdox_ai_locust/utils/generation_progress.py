@@ -117,6 +117,54 @@ class EndpointAnalysis:
     scenarios: Dict[str, ScenarioResult] = field(default_factory=dict)
 
 
+@dataclass
+class OrchestratorEndpointInfo:
+    """Information about an endpoint in the orchestrator."""
+    method: str
+    path: str
+    operation_id: str = ""
+    has_positive: bool = False
+    has_negative: bool = False
+    has_security: bool = False
+
+
+@dataclass
+class OrchestratorAnalysis:
+    """Complete analysis for an orchestrator."""
+    tag_name: str
+    class_name: str = ""
+
+    # Endpoint composition
+    total_endpoints: int = 0
+    valid_endpoints: int = 0  # Successfully generated
+    endpoints: List[OrchestratorEndpointInfo] = field(default_factory=list)
+
+    # CRUD Detection
+    has_create: bool = False
+    has_read: bool = False
+    has_update: bool = False
+    has_delete: bool = False
+    crud_lifecycle_possible: bool = False
+
+    # Auth Detection
+    auth_endpoints_found: int = 0
+    auth_tests_possible: bool = False
+
+    # Orchestration Capabilities
+    state_dependent_tests: List[str] = field(default_factory=list)  # 409, double-delete, etc.
+    concurrent_tests_possible: bool = False
+    resource_limit_tests: bool = False
+
+    # Generation Stats
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    time_seconds: float = 0.0
+    retries: int = 0
+
+    # Warnings
+    warnings: List[str] = field(default_factory=list)
+
+
 class GenerationProgress:
     """
     Simple, informative progress display.
@@ -151,6 +199,14 @@ class GenerationProgress:
 
         # Verbose mode: track endpoint analyses by endpoint_info key (thread-safe for parallel processing)
         self._endpoint_analyses: Dict[str, EndpointAnalysis] = {}
+
+        # Verbose mode: track orchestrator analyses by tag_name
+        self._orchestrator_analyses: Dict[str, OrchestratorAnalysis] = {}
+
+        # Orchestrator counters
+        self.orchestrator_completed = 0
+        self.orchestrator_failed = 0
+        self.orchestrator_skipped = 0
 
     def start(self) -> None:
         """Print start message."""
@@ -481,6 +537,137 @@ class GenerationProgress:
         if reason:
             self.console.print(f"  [dim]○ {endpoint_info} (skipped: {reason})[/dim]")
         self._check_milestone()
+
+    # =========================================================================
+    # Orchestrator Progress Methods
+    # =========================================================================
+
+    def set_orchestrator_analysis(self, tag_name: str, analysis: OrchestratorAnalysis) -> None:
+        """Set the analysis data for an orchestrator (verbose mode)."""
+        self._orchestrator_analyses[tag_name] = analysis
+
+    def orchestrator_done(self, tag_name: str) -> None:
+        """Called when an orchestrator finishes processing."""
+        self.orchestrator_completed += 1
+
+        analysis = self._orchestrator_analyses.get(tag_name)
+        if self.verbose and analysis:
+            self._print_verbose_orchestrator(tag_name, analysis)
+        else:
+            self.console.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py")
+
+        # Clean up
+        if tag_name in self._orchestrator_analyses:
+            del self._orchestrator_analyses[tag_name]
+
+    def orchestrator_failed(self, tag_name: str, error: Exception) -> None:
+        """Called when an orchestrator fails."""
+        self.orchestrator_failed += 1
+
+        error_str = str(error)
+        self.console.print(f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py failed")
+        self.console.print(f"    [red]Error:[/red] {error_str}")
+
+        # Print full traceback
+        tb_str = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
+        self.console.print(f"    [dim]Traceback:[/dim]")
+        for line in tb_str.split('\n'):
+            if line.strip():
+                self.console.print(f"    [dim]{line}[/dim]")
+
+        # Clean up
+        if tag_name in self._orchestrator_analyses:
+            del self._orchestrator_analyses[tag_name]
+
+    def orchestrator_skipped(self, tag_name: str, reason: str = "") -> None:
+        """Called when an orchestrator is skipped."""
+        self.orchestrator_skipped += 1
+        self.console.print(f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py skipped ({reason})")
+
+    def _print_verbose_orchestrator(self, tag_name: str, analysis: OrchestratorAnalysis) -> None:
+        """Print detailed verbose output for an orchestrator."""
+        c = self.console
+
+        # Header
+        c.print(f"\n[bold]→ Orchestrator: {tag_name}[/bold]")
+
+        # Basic Info
+        c.print(f"  [dim]│[/dim]")
+        c.print(f"  [dim]│[/dim] [cyan]── Orchestrator Info ──[/cyan]")
+        c.print(f"  [dim]│[/dim] class_name: {analysis.class_name}")
+        c.print(f"  [dim]│[/dim] endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)")
+
+        # Endpoint Composition
+        if analysis.endpoints:
+            c.print(f"  [dim]│[/dim]")
+            c.print(f"  [dim]│[/dim] [cyan]── Endpoint Composition ──[/cyan]")
+            for ep in analysis.endpoints[:5]:  # Show first 5
+                scenarios = []
+                if ep.has_positive:
+                    scenarios.append("pos")
+                if ep.has_negative:
+                    scenarios.append("neg")
+                if ep.has_security:
+                    scenarios.append("sec")
+                scenarios_str = f"[{', '.join(scenarios)}]" if scenarios else "[none]"
+                c.print(f"  [dim]│[/dim]   {ep.method} {ep.path} {scenarios_str}")
+            if len(analysis.endpoints) > 5:
+                c.print(f"  [dim]│[/dim]   ... and {len(analysis.endpoints) - 5} more")
+
+        # CRUD Detection
+        c.print(f"  [dim]│[/dim]")
+        c.print(f"  [dim]│[/dim] [cyan]── CRUD Detection ──[/cyan]")
+        crud_ops = []
+        if analysis.has_create:
+            crud_ops.append("Create")
+        if analysis.has_read:
+            crud_ops.append("Read")
+        if analysis.has_update:
+            crud_ops.append("Update")
+        if analysis.has_delete:
+            crud_ops.append("Delete")
+        crud_str = ", ".join(crud_ops) if crud_ops else "none"
+        c.print(f"  [dim]│[/dim] operations: {crud_str}")
+        c.print(f"  [dim]│[/dim] crud_lifecycle_possible: {analysis.crud_lifecycle_possible}")
+
+        # Auth Detection
+        if analysis.auth_endpoints_found > 0 or analysis.auth_tests_possible:
+            c.print(f"  [dim]│[/dim]")
+            c.print(f"  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
+            c.print(f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}")
+            c.print(f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}")
+
+        # Orchestration Capabilities
+        c.print(f"  [dim]│[/dim]")
+        c.print(f"  [dim]│[/dim] [cyan]── Orchestration Capabilities ──[/cyan]")
+        if analysis.state_dependent_tests:
+            c.print(f"  [dim]│[/dim] state_dependent_tests: {', '.join(analysis.state_dependent_tests)}")
+        else:
+            c.print(f"  [dim]│[/dim] state_dependent_tests: none identified")
+        c.print(f"  [dim]│[/dim] concurrent_tests_possible: {analysis.concurrent_tests_possible}")
+        c.print(f"  [dim]│[/dim] resource_limit_tests: {analysis.resource_limit_tests}")
+
+        # Generation Stats
+        if analysis.time_seconds > 0 or analysis.prompt_tokens > 0:
+            c.print(f"  [dim]│[/dim]")
+            c.print(f"  [dim]│[/dim] [cyan]── Generation Stats ──[/cyan]")
+            if analysis.time_seconds > 0:
+                c.print(f"  [dim]│[/dim] time: {analysis.time_seconds:.1f}s")
+            if analysis.prompt_tokens > 0 or analysis.completion_tokens > 0:
+                c.print(f"  [dim]│[/dim] tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion")
+            if analysis.retries > 0:
+                c.print(f"  [dim]│[/dim] [yellow]retries: {analysis.retries}[/yellow]")
+
+        # Warnings
+        if analysis.warnings:
+            c.print(f"  [dim]│[/dim]")
+            c.print(f"  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
+            for warning in analysis.warnings[:3]:
+                c.print(f"  [dim]│[/dim]   • {warning}")
+
+        c.print(f"  [dim]│[/dim]")
+        c.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py generated")
+        c.print()  # Blank line after orchestrator
 
     def __enter__(self):
         self.start()
