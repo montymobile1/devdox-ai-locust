@@ -2092,9 +2092,9 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Spec defines responses - those are the ONLY source of truth
         if scenario_type == ScenarioType.POSITIVE:
-            # Positive tests: ONLY 2xx success codes from spec
-            # If spec has no 2xx, return empty (caller should skip positive generation)
-            return sorted([code for code in status_codes if 200 <= code < 300])
+            # Positive tests: non-error responses (1xx, 2xx, 3xx) from spec
+            # If spec has no non-error codes, return empty (caller should skip positive generation)
+            return sorted([code for code in status_codes if code < 400])
 
         elif scenario_type == ScenarioType.NEGATIVE:
             # Negative tests: ONLY 4xx client error codes from spec
@@ -2139,7 +2139,8 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Filter by scenario type
         if scenario_type == ScenarioType.POSITIVE:
-            return sorted([code for code in all_codes if 200 <= code < 300])
+            # Positive: non-error responses (1xx, 2xx, 3xx)
+            return sorted([code for code in all_codes if code < 400])
         elif scenario_type == ScenarioType.NEGATIVE:
             return sorted([code for code in all_codes if 400 <= code < 500])
         elif scenario_type == ScenarioType.SECURITY:
