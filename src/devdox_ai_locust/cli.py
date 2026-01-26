@@ -288,6 +288,7 @@ async def _generate_and_create_tests(
     timeout: int = 120,
     max_llm_workers: int = 1,
     debug_recorder: Optional[DebugRecorder] = None,
+    verbose: bool = False,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
     together_client = AsyncTogether(api_key=api_key)
@@ -308,6 +309,7 @@ async def _generate_and_create_tests(
         custom_requirement,
         max_llm_workers,
         debug_recorder,
+        verbose,
     )
 
 
@@ -323,6 +325,7 @@ async def _generate_scenario_based_tests(
     custom_requirement: Optional[str] = None,
     max_llm_workers: int = 1,
     debug_recorder: Optional[DebugRecorder] = None,
+    verbose: bool = False,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
@@ -493,7 +496,12 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     # Live progress display
     from devdox_ai_locust.utils.generation_progress import GenerationProgress
     num_workers = scenario_gen.current_concurrency
-    progress = GenerationProgress(total=num_endpoints, num_workers=num_workers, console=console)
+    progress = GenerationProgress(
+        total=num_endpoints,
+        num_workers=num_workers,
+        console=console,
+        verbose=verbose,
+    )
     scenario_gen.progress = progress
 
     # Process endpoint and save files (resilient - catches and tracks errors)
@@ -977,6 +985,7 @@ async def _async_generate(
             timeout,
             max_llm_workers,
             debug_recorder,
+            verbose=ctx.obj["verbose"],
         )
 
         # Finalize debug recording

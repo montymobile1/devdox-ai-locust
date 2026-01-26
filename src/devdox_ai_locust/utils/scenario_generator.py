@@ -1229,6 +1229,12 @@ class ScenarioWorkflowGenerator:
         if field_enum:
             return f"random.choice({field_enum})"
 
+        # IPv4 detection: Check field name BEFORE pattern to avoid regex-based generation
+        # that produces invalid octets (>255). IPv4 regex patterns can't validate octet ranges.
+        if field_name_lower and field_type == "string":
+            if "ipv4" in field_name_lower or field_name_lower == "ip_address":
+                return "test_data_generator.random_ipv4()"
+
         # Pattern: regex-based generation (use raw string since prompts tell LLM to use r"...")
         if field_pattern:
             escaped = self._escape_for_raw_string(field_pattern)
@@ -1356,6 +1362,8 @@ class ScenarioWorkflowGenerator:
             items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
             items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
             items_ref = field_items.get("$ref") if isinstance(field_items, dict) else None
+            # Check for oneOf/anyOf discriminated union in array items
+            items_one_of = field_items.get("oneOf") or field_items.get("anyOf") if isinstance(field_items, dict) else None
             # Respect minItems/maxItems constraints - use minItems as array length to ensure validity
             min_items = field_schema.get("minItems", 1)
             max_items = field_schema.get("maxItems")
@@ -1365,6 +1373,17 @@ class ScenarioWorkflowGenerator:
                 array_len = max_items
             if items_enum:
                 return f"[random.choice({items_enum}) for _ in range({array_len})]"
+            # Handle oneOf/anyOf in array items (discriminated union like Dog|Cat|Bird)
+            if items_one_of and isinstance(items_one_of, list):
+                # Use the first variant to generate sample objects
+                first_variant = items_one_of[0]
+                if isinstance(first_variant, dict):
+                    # Extract properties from the first variant (handles allOf etc.)
+                    variant_props, _ = self._extract_all_properties(first_variant)
+                    if variant_props:
+                        obj_instr = self._precompute_object_instruction(first_variant, _object_ancestors)
+                        return f"[{obj_instr} for _ in range({array_len})]"
+                return "[{}]"
             if items_type == "object" or items_ref:
                 items_props = field_items.get("properties", {}) if isinstance(field_items, dict) else {}
                 if items_props:
@@ -1721,8 +1740,41 @@ class ScenarioWorkflowGenerator:
                 if prop_type == "array" and unwrapped.get("items"):
                     items = unwrapped["items"]
                     items_unwrapped, _ = self._unwrap_nullable_schema(items)
-                    items_type = items_unwrapped.get("type", "any")
-                    lines.append(f"{prefix}        array items type: {items_type}")
+                    # Check for oneOf/anyOf in array items (discriminated union)
+                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+                    if items_one_of and isinstance(items_one_of, list):
+                        # Array items are a union type
+                        variant_names = []
+                        first_variant_with_props = None
+                        for variant in items_one_of:
+                            if isinstance(variant, dict):
+                                # Try to get a meaningful name for the variant
+                                if "$ref" in variant:
+                                    ref_name = variant["$ref"].split("/")[-1]
+                                    variant_names.append(ref_name)
+                                elif "properties" in variant:
+                                    # Look for discriminator field to identify variant
+                                    for p_name, p_schema in variant.get("properties", {}).items():
+                                        if p_schema.get("const"):
+                                            variant_names.append(p_schema["const"])
+                                            break
+                                # Keep track of first variant with properties for showing schema
+                                if first_variant_with_props is None:
+                                    variant_props, _ = self._extract_all_properties(variant)
+                                    if variant_props:
+                                        first_variant_with_props = variant
+                        if variant_names:
+                            lines.append(f"{prefix}        array items type: oneOf ({' | '.join(variant_names)})")
+                        else:
+                            lines.append(f"{prefix}        array items type: oneOf (union of {len(items_one_of)} variants)")
+                        # Show first variant's schema so LLM knows what properties to include
+                        if first_variant_with_props:
+                            lines.append(f"{prefix}        first variant schema (use this structure):")
+                            nested_lines = self._format_schema(first_variant_with_props, indent + 3)
+                            lines.extend(nested_lines)
+                    else:
+                        items_type = items_unwrapped.get("type", "any")
+                        lines.append(f"{prefix}        array items type: {items_type}")
                     # Show minItems/maxItems constraints
                     min_items = unwrapped.get("minItems")
                     max_items = unwrapped.get("maxItems")
@@ -1841,8 +1893,13 @@ class ScenarioWorkflowGenerator:
                 if prop_type == "array" and unwrapped.get("items"):
                     items = unwrapped["items"]
                     items_unwrapped, _ = self._unwrap_nullable_schema(items)
-                    items_type = items_unwrapped.get("type", "any")
-                    lines.append(f"{prefix}    (array of {items_type})")
+                    # Check for oneOf/anyOf in array items
+                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+                    if items_one_of and isinstance(items_one_of, list):
+                        lines.append(f"{prefix}    (array of oneOf variants)")
+                    else:
+                        items_type = items_unwrapped.get("type", "any")
+                        lines.append(f"{prefix}    (array of {items_type})")
                     if items_unwrapped.get("properties"):
                         for item_name, item_schema in items_unwrapped["properties"].items():
                             i_unwrapped, _ = self._unwrap_nullable_schema(item_schema)
@@ -1851,8 +1908,13 @@ class ScenarioWorkflowGenerator:
         elif schema_type == "array":
             items = schema.get("items", {})
             items_unwrapped, _ = self._unwrap_nullable_schema(items)
-            items_type = items_unwrapped.get("type", "any")
-            lines.append(f"{prefix}(array of {items_type})")
+            # Check for oneOf/anyOf in array items
+            items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+            if items_one_of and isinstance(items_one_of, list):
+                lines.append(f"{prefix}(array of oneOf variants)")
+            else:
+                items_type = items_unwrapped.get("type", "any")
+                lines.append(f"{prefix}(array of {items_type})")
             if items_unwrapped.get("properties"):
                 for item_name, item_schema in items_unwrapped["properties"].items():
                     i_unwrapped, _ = self._unwrap_nullable_schema(item_schema)

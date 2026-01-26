@@ -51,15 +51,26 @@ def get_task_weight(default_weight: int) -> int:
     return default_weight
 
 
-def log_request_failure(request_body: Any = None, response_body: str = None):
+def log_request_failure(
+    error_message: str = None,
+    request_body: Any = None,
+    response_body: str = None,
+):
     """
     Log a request failure with full traceback showing workflow path.
 
+    All information is logged in a single logger.error() call to avoid
+    multiple timestamp prefixes in the output.
+
     Output format mimics Python's native traceback.
     """
-    lines = [""]
+    lines = []
 
-    # Add request/response context first
+    # Main error message first (if provided)
+    if error_message:
+        lines.append(error_message)
+
+    # Add request/response context
     if request_body is not None:
         body_str = json.dumps(request_body, default=str) if isinstance(request_body, (dict, list)) else str(request_body)
         if len(body_str) > 500:
@@ -187,12 +198,15 @@ class ResponseValidator:
             else:
                 intent = "Unexpected status code returned"
 
-            logger.error(
-                f"Request failed: {method_upper} {endpoint} - "
-                f"Expected {valid_status_codes}, got {actual}. "
-                f"Intent: {intent}"
+            log_request_failure(
+                error_message=(
+                    f"Request failed: {method_upper} {endpoint} - "
+                    f"Expected {valid_status_codes}, got {actual}. "
+                    f"Intent: {intent}"
+                ),
+                request_body=request_body,
+                response_body=resp_body,
             )
-            log_request_failure(request_body=request_body, response_body=resp_body)
             is_valid = False
 
         # Validate response time
