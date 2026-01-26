@@ -890,7 +890,10 @@ class ScenarioWorkflowGenerator:
             # Fix regex strings (convert to raw strings to avoid SyntaxWarnings)
             after_regex_fix = self._fix_regex_strings(after_bytes_fix)
 
-            content = after_regex_fix
+            # Fix missing imports (LLM sometimes forgets to import get_task_weight, etc.)
+            after_import_fix = self._fix_missing_imports(after_regex_fix)
+
+            content = after_import_fix
 
             # Record processed code (after all fixes)
             if self.debug_recorder and self.debug_recorder.enabled:
@@ -2993,6 +2996,47 @@ Do NOT invent or call POST endpoints that are not documented here.
                 lines[start_row] = first_part + new + last_part
                 # Remove the lines that were part of the multi-line string
                 del lines[start_row + 1:end_row + 1]
+
+        return '\n'.join(lines)
+
+    def _fix_missing_imports(self, code: str) -> str:
+        """
+        Add missing imports for commonly used functions that LLM forgets to import.
+
+        The LLM sometimes uses functions like get_task_weight() but forgets
+        to include the import statement. This post-processor adds them.
+        """
+        import re
+
+        # Map of function/symbol usage patterns to their required import statements
+        import_fixes = {
+            r'\bget_task_weight\s*\(': 'from utils import get_task_weight',
+        }
+
+        lines = code.split('\n')
+
+        for pattern, import_stmt in import_fixes.items():
+            # Check if the symbol is used in the code
+            if re.search(pattern, code):
+                # Check if the import already exists
+                if import_stmt not in code:
+                    # Find the right place to insert (after existing imports)
+                    insert_idx = 0
+                    for i, line in enumerate(lines):
+                        stripped = line.strip()
+                        # Track the last import line
+                        if stripped.startswith('import ') or stripped.startswith('from '):
+                            insert_idx = i + 1
+                        # Stop at class definition
+                        elif stripped.startswith('class '):
+                            break
+
+                    # Insert the import
+                    if insert_idx > 0:
+                        lines.insert(insert_idx, import_stmt)
+                    else:
+                        # No imports found, insert at beginning
+                        lines.insert(0, import_stmt)
 
         return '\n'.join(lines)
 
