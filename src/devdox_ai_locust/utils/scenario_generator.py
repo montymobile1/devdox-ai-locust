@@ -762,6 +762,9 @@ class ScenarioWorkflowGenerator:
             "db_type": db_type,
         }
 
+        # Validate required context variables exist (prevents LLM hallucination from empty context)
+        self._validate_template_context(template_context, scenario_type)
+
         # Render prompt
         prompt = template.render(**template_context)
 
@@ -893,7 +896,10 @@ class ScenarioWorkflowGenerator:
             # Fix missing imports (LLM sometimes forgets to import get_task_weight, etc.)
             after_import_fix = self._fix_missing_imports(after_regex_fix)
 
-            content = after_import_fix
+            # Fix redundant .isoformat() calls on date methods that already return strings
+            after_isoformat_fix = self._fix_isoformat_calls(after_import_fix)
+
+            content = after_isoformat_fix
 
             # Record processed code (after all fixes)
             if self.debug_recorder and self.debug_recorder.enabled:
@@ -3040,6 +3046,37 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         return '\n'.join(lines)
 
+    def _fix_isoformat_calls(self, code: str) -> str:
+        """
+        Remove redundant .isoformat() calls on test_data_generator date methods.
+
+        LLM sometimes generates patterns like:
+            test_data_generator.random_date().isoformat()
+
+        But random_date(), random_datetime(), random_time() already return strings,
+        so .isoformat() causes AttributeError. This removes the redundant call.
+        """
+        import re
+
+        # Methods that return strings (not datetime objects)
+        date_methods = [
+            'random_date',
+            'random_datetime',
+            'random_time',
+            'random_date_between',
+            'random_future_date',
+            'random_past_date',
+        ]
+
+        # Pattern: test_data_generator.random_date(...).isoformat()
+        # Capture the method call and remove .isoformat()
+        for method in date_methods:
+            # Match method call with any arguments, followed by .isoformat()
+            pattern = rf'(test_data_generator\.{method}\([^)]*\))\.isoformat\(\)'
+            code = re.sub(pattern, r'\1', code)
+
+        return code
+
     def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
         """
         Render the fix prompt template with the failed code and error.
@@ -3203,6 +3240,25 @@ Fix ALL the violations and output the complete corrected Python code:"""
 
         logger.debug(f"Extracted allowed imports from templates: {allowed}")
         return allowed
+
+    def _validate_template_context(self, context: Dict[str, Any], scenario_type: ScenarioType) -> None:
+        """Validate that required template context variables are present.
+
+        Logs warnings for missing/empty critical variables that could cause
+        LLM hallucination. Does not raise exceptions - just logs issues.
+        """
+        # Required variables for all scenarios (must not be None or empty)
+        required_vars = ["endpoint", "base_workflow", "test_data_content", "class_name", "method", "path"]
+
+        for var in required_vars:
+            value = context.get(var)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                logger.warning(f"Template context missing required variable '{var}' for {scenario_type.value} scenario")
+
+        # Check endpoint_expected_status - should be a list, not None
+        expected_status = context.get("endpoint_expected_status")
+        if not expected_status or not isinstance(expected_status, list):
+            logger.warning(f"Template context has invalid endpoint_expected_status: {expected_status}")
 
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
         """Validate Python syntax and check for suspicious imports"""

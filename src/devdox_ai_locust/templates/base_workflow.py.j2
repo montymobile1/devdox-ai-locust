@@ -269,7 +269,13 @@ class BaseTaskMethods:
                            If provided, these codes are considered valid responses.
                            Example: [201, 422] for a POST that can return 201 (created) or 422 (validation error)
                            If not provided, falls back to method-based defaults.
-            **kwargs: Additional arguments passed to the HTTP client (json, data, params, headers, etc.)
+            **kwargs: Additional arguments passed to the HTTP client:
+                - json: Request body as dict (auto-serialized)
+                - data: Form data as dict
+                - params: Query parameters as dict
+                - headers: Additional headers as dict
+                - allow_redirects: Set to False to capture redirect status codes (301, 302, etc.)
+                                   By default, redirects are followed automatically.
 
         Returns:
             Optional[Dict]: JSON response data as a dictionary, or None if:
@@ -288,6 +294,9 @@ class BaseTaskMethods:
             if result:
                 # Request succeeded and returned valid JSON
                 item_id = result.get("id")
+
+            # Testing redirect endpoints
+            result = self.make_request("GET", "/redirect", expected_status=[301, 302], allow_redirects=False)
         """
         self._initialize_attributes()
         self.request_count += 1
