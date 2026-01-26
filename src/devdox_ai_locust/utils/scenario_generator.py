@@ -841,11 +841,17 @@ class ScenarioWorkflowGenerator:
                         if getattr(ep, "path", "")
                     ]
 
+                # Extract request body schema for schema compliance checks
+                request_body_schema = None
+                if hasattr(endpoint, "request_body") and endpoint.request_body:
+                    request_body_schema = getattr(endpoint.request_body, "schema", None)
+
                 semantic_result = self._code_validator.validate(
                     code=content,
                     scenario_type=scenario_type.value,
                     endpoint_path=endpoint.path,
                     all_endpoint_paths=all_endpoint_paths,
+                    request_body_schema=request_body_schema,
                 )
 
                 if semantic_result.is_valid:

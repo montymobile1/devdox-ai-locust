@@ -10,13 +10,14 @@ hallucination patterns including:
 - Empty path segments
 - Hallucinated endpoints
 - Success codes in negative workflows
-- Mixed array types
+- Schema compliance (mixed array types, wrong formats, ignored enums)
 """
 
+import ast
 import re
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +99,27 @@ class CodeValidator:
         r'expected_status=\[([^\]]*)\]',
     )
 
+    # Maps OpenAPI string formats to their correct generator functions
+    FORMAT_GENERATOR_MAP: Dict[str, Set[str]] = {
+        "date": {"random_date"},
+        "date-time": {"random_date", "isoformat", "now"},
+        "email": {"generate_email"},
+        "uuid": {"random_uuid"},
+        "uri": set(),  # Literal string is acceptable
+        "url": set(),  # Literal string is acceptable
+        "ipv4": set(),  # Literal string is acceptable
+        "ipv6": set(),  # Literal string is acceptable
+        "hostname": set(),  # Literal string is acceptable
+        "time": set(),  # Literal string is acceptable
+    }
+
     def validate(
         self,
         code: str,
         scenario_type: str,
         endpoint_path: str,
         all_endpoint_paths: Optional[List[str]] = None,
+        request_body_schema: Optional[Dict[str, Any]] = None,
     ) -> ValidationResult:
         """
         Validate generated code for semantic correctness.
@@ -113,6 +129,7 @@ class CodeValidator:
             scenario_type: "positive", "negative", or "security"
             endpoint_path: The endpoint path being tested (e.g., "/api/v1/items")
             all_endpoint_paths: List of all valid endpoint paths from the OpenAPI spec
+            request_body_schema: JSON Schema dict for the request body (if endpoint has one)
 
         Returns:
             ValidationResult with violations list
@@ -132,6 +149,10 @@ class CodeValidator:
 
         if all_endpoint_paths:
             violations.extend(self._check_hallucinated_endpoints(code, endpoint_path, all_endpoint_paths))
+
+        # Schema compliance check (only for positive workflows with a schema)
+        if request_body_schema and scenario_type == "positive":
+            violations.extend(self._check_schema_compliance(code, request_body_schema))
 
         # Only errors (not warnings) make validation fail
         has_errors = any(v.severity == "error" for v in violations)
@@ -303,3 +324,285 @@ class CodeValidator:
                 return True
 
         return False
+
+    # --- Schema Compliance Checks (Classification B) ---
+
+    def _check_schema_compliance(
+        self, code: str, schema: Dict[str, Any],
+    ) -> List[ValidationViolation]:
+        """
+        Check generated code against the request body JSON Schema.
+
+        Detects:
+        - Mixed types in typed arrays (e.g., ["str", 123] for string array)
+        - Wrong generators for format fields (generate_string for date fields)
+        - Ignored enum constraints (generator call instead of random.choice)
+        """
+        violations: List[ValidationViolation] = []
+
+        # Parse schema properties
+        properties = schema.get("properties", {})
+        if not properties:
+            return violations
+
+        # Parse the code AST
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return violations  # Syntax errors handled elsewhere
+
+        # Find all dict literals that could be request bodies
+        request_dicts = self._extract_request_body_dicts(tree)
+
+        for dict_node in request_dicts:
+            violations.extend(
+                self._validate_dict_against_schema(dict_node, properties, schema.get("required", []))
+            )
+
+        return violations
+
+    def _extract_request_body_dicts(self, tree: ast.AST) -> List[ast.Dict]:
+        """
+        Extract Dict AST nodes that are likely request body data.
+
+        Finds dicts in:
+        - Variable assignments (data = {...}, json_data = {...}, payload = {...})
+        - json= keyword argument in function calls
+        """
+        dicts: List[ast.Dict] = []
+        body_var_names = {"data", "json_data", "payload", "body", "request_data", "request_body"}
+
+        for node in ast.walk(tree):
+            # Case 1: Assignment like `data = {...}`
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in body_var_names:
+                        if isinstance(node.value, ast.Dict):
+                            dicts.append(node.value)
+
+            # Case 2: json={...} keyword in make_request call
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "json" and isinstance(kw.value, ast.Dict):
+                        dicts.append(kw.value)
+
+        return dicts
+
+    def _validate_dict_against_schema(
+        self,
+        dict_node: ast.Dict,
+        properties: Dict[str, Any],
+        required_fields: List[str],
+    ) -> List[ValidationViolation]:
+        """Validate a Dict AST node against schema properties."""
+        violations: List[ValidationViolation] = []
+
+        for key_node, value_node in zip(dict_node.keys, dict_node.values):
+            if key_node is None or value_node is None:
+                continue
+
+            # Get the field name from the key
+            field_name = self._get_constant_value(key_node)
+            if not isinstance(field_name, str):
+                continue
+
+            # Look up field in schema
+            field_schema = properties.get(field_name)
+            if not field_schema:
+                continue
+
+            field_type = field_schema.get("type", "")
+            field_format = field_schema.get("format")
+            field_enum = field_schema.get("enum")
+            line_num = getattr(value_node, "lineno", None)
+
+            # Check 1: Enum constraint ignored
+            if field_enum:
+                violation = self._check_enum_usage(field_name, value_node, field_enum, line_num)
+                if violation:
+                    violations.append(violation)
+
+            # Check 2: String format with wrong generator
+            elif field_type == "string" and field_format:
+                violation = self._check_format_usage(field_name, value_node, field_format, line_num)
+                if violation:
+                    violations.append(violation)
+
+            # Check 3: Array with mixed types
+            if field_type == "array":
+                items_schema = field_schema.get("items", {})
+                violation = self._check_array_types(field_name, value_node, items_schema, line_num)
+                if violation:
+                    violations.append(violation)
+
+        return violations
+
+    def _check_enum_usage(
+        self, field_name: str, value_node: ast.AST, enum_values: List[Any], line_num: Optional[int],
+    ) -> Optional[ValidationViolation]:
+        """Check if an enum field uses random.choice() with correct values."""
+        # Accept: random.choice([...]), Constant that's in enum, variable that was set from choice
+        if isinstance(value_node, ast.Constant):
+            if value_node.value in enum_values:
+                return None  # Hardcoded valid enum value is fine
+
+        if isinstance(value_node, ast.Call):
+            func_name = self._get_call_name(value_node)
+            if func_name in ("random.choice", "choice"):
+                return None  # Using random.choice is correct
+
+            # Using a generator (generate_string, generate_integer, etc.) on an enum field
+            if "generate_" in func_name or func_name in ("random_uuid", "random_date", "generate_email"):
+                return ValidationViolation(
+                    rule="enum_ignored",
+                    message=f"Field '{field_name}' has enum constraint {enum_values} but uses "
+                            f"{func_name}() instead of random.choice({enum_values}).",
+                    line_number=line_num,
+                    severity="error",
+                )
+
+        return None
+
+    def _check_format_usage(
+        self, field_name: str, value_node: ast.AST, field_format: str, line_num: Optional[int],
+    ) -> Optional[ValidationViolation]:
+        """Check if a formatted string field uses the correct generator."""
+        expected_generators = self.FORMAT_GENERATOR_MAP.get(field_format)
+        if expected_generators is None:
+            return None  # Unknown format, skip
+
+        # If format has no specific generator requirement (uri, ipv4, etc.),
+        # just ensure it's NOT using generate_string()
+        if not expected_generators:
+            # These formats accept literal strings, just reject generate_string
+            if isinstance(value_node, ast.Call):
+                func_name = self._get_call_name(value_node)
+                if func_name in ("generate_string", "test_data_generator.generate_string"):
+                    return ValidationViolation(
+                        rule="wrong_format_generator",
+                        message=f"Field '{field_name}' has format '{field_format}' but uses "
+                                f"generate_string(). Use an appropriate literal value or generator "
+                                f"for '{field_format}' format.",
+                        line_number=line_num,
+                        severity="error",
+                    )
+            return None
+
+        # Format has specific required generators
+        if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+            # Literal string - check if it looks valid for the format
+            if self._literal_matches_format(value_node.value, field_format):
+                return None  # Valid literal
+
+        if isinstance(value_node, ast.Call):
+            func_name = self._get_call_name(value_node)
+            # Check if any expected generator is in the function name
+            for gen in expected_generators:
+                if gen in func_name:
+                    return None  # Correct generator used
+
+            # Wrong generator used
+            if "generate_string" in func_name:
+                expected_list = " or ".join(expected_generators)
+                return ValidationViolation(
+                    rule="wrong_format_generator",
+                    message=f"Field '{field_name}' has format '{field_format}' but uses "
+                            f"generate_string(). Use {expected_list}() instead.",
+                    line_number=line_num,
+                    severity="error",
+                )
+
+        return None
+
+    def _check_array_types(
+        self, field_name: str, value_node: ast.AST, items_schema: Dict[str, Any], line_num: Optional[int],
+    ) -> Optional[ValidationViolation]:
+        """Check if array elements are all the same type as defined in items schema."""
+        items_type = items_schema.get("type", "")
+        if not items_type:
+            return None  # No items type defined, skip
+
+        # Only check literal List nodes
+        if not isinstance(value_node, ast.List):
+            return None
+
+        if not value_node.elts:
+            return None  # Empty list is fine
+
+        # Map schema types to Python constant types
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": (int, float),
+            "boolean": bool,
+        }
+
+        expected_python_type = type_map.get(items_type)
+        if not expected_python_type:
+            return None  # Complex type (object, array), skip
+
+        # Check each element
+        wrong_elements = []
+        for i, elt in enumerate(value_node.elts):
+            if isinstance(elt, ast.Constant):
+                # Bool is a subclass of int in Python, handle explicitly
+                if items_type == "integer" and isinstance(elt.value, bool):
+                    wrong_elements.append((i, type(elt.value).__name__))
+                elif items_type == "boolean" and isinstance(elt.value, int) and not isinstance(elt.value, bool):
+                    wrong_elements.append((i, type(elt.value).__name__))
+                elif not isinstance(elt.value, expected_python_type):
+                    wrong_elements.append((i, type(elt.value).__name__))
+
+        if wrong_elements:
+            wrong_types = set(t for _, t in wrong_elements)
+            return ValidationViolation(
+                rule="mixed_array_types",
+                message=f"Field '{field_name}' is a {items_type} array but contains mixed types: "
+                        f"{wrong_types}. ALL elements must be {items_type}.",
+                line_number=line_num,
+                severity="error",
+            )
+
+        return None
+
+    def _get_constant_value(self, node: ast.AST) -> Any:
+        """Extract a constant value from an AST node."""
+        if isinstance(node, ast.Constant):
+            return node.value
+        return None
+
+    def _get_call_name(self, call_node: ast.Call) -> str:
+        """Extract the full function name from a Call node (e.g., 'test_data_generator.generate_string')."""
+        func = call_node.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            parts = []
+            current = func
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+            return ".".join(reversed(parts))
+        return ""
+
+    def _literal_matches_format(self, value: str, field_format: str) -> bool:
+        """Check if a literal string value looks valid for a given format."""
+        if field_format == "date":
+            return bool(re.match(r'^\d{4}-\d{2}-\d{2}$', value))
+        if field_format == "date-time":
+            return bool(re.match(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}', value))
+        if field_format == "email":
+            return "@" in value and "." in value
+        if field_format == "uuid":
+            return bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', value, re.I))
+        if field_format in ("uri", "url"):
+            return value.startswith("http://") or value.startswith("https://")
+        if field_format == "ipv4":
+            return bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', value))
+        if field_format == "hostname":
+            return "." in value and " " not in value
+        if field_format == "time":
+            return bool(re.match(r'^\d{2}:\d{2}', value))
+        return True  # Unknown format, accept any literal

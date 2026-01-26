@@ -37,6 +37,28 @@ Fix ALL the semantic violations listed above. The rules are:
    If you need a parent resource ID, generate it with test_data_generator instead of
    calling an invented endpoint.
 
+7. **enum_ignored**: Use `random.choice([values])` for fields with enum constraints.
+   NEVER use generate_string(), generate_integer(), or any generator for enum fields.
+   The enum values from the schema are the ONLY valid values for that field.
+
+8. **wrong_format_generator**: Use the correct generator for string format fields:
+   - format "date" → `test_data_generator.random_date()`
+   - format "date-time" → `datetime.now().isoformat()`
+   - format "email" → `test_data_generator.generate_email()`
+   - format "uuid" → `test_data_generator.random_uuid()`
+   - format "uri"/"url" → literal like `"https://example.com/test"`
+   - format "ipv4" → literal like `"192.168.1.1"`
+   - format "hostname" → literal like `"example.com"`
+   - format "time" → literal like `"12:30:00"`
+   NEVER use generate_string() for any of these formats.
+
+9. **mixed_array_types**: ALL elements in an array must match the schema's items type.
+   - items.type="string" → ALL elements must be strings: `["a", "b", "c"]`
+   - items.type="integer" → ALL elements must be ints: `[1, 2, 3]`
+   - items.type="number" → ALL elements must be numeric: `[1.5, 2.0, 3.7]`
+   - items.type="boolean" → ALL elements must be bools: `[True, False, True]`
+   NEVER mix types like `["str", 123, True]` in a typed array.
+
 ## Requirements
 
 - Fix ALL violations listed above
