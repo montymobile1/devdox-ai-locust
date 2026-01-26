@@ -376,7 +376,17 @@ class ScenarioWorkflowGenerator:
         class_name = self._operation_to_class_name(endpoint)
 
         # Extract expected status codes from OpenAPI spec responses
-        expected_status_codes = self._extract_expected_status_codes(endpoint)
+        all_status_codes = self._extract_expected_status_codes(endpoint)
+
+        # Filter status codes by scenario type to ensure correct test behavior:
+        # - POSITIVE tests should ONLY expect success codes (2xx)
+        #   If we pass 4xx codes, the test would treat errors as "success"
+        # - NEGATIVE tests should ONLY expect error codes (4xx)
+        #   These tests verify the API correctly REJECTS invalid input
+        # - SECURITY tests get all codes - template logic handles 500 specially
+        expected_status_codes = self._filter_status_codes_for_scenario(
+            all_status_codes, scenario_type
+        )
 
         # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
         setup_endpoints_section = ""
@@ -1008,6 +1018,61 @@ Do NOT invent or call POST endpoints that are not documented here.
             lines.append("")
 
         return "\n".join(lines)
+
+    def _filter_status_codes_for_scenario(
+        self, status_codes: List[int], scenario_type: ScenarioType
+    ) -> List[int]:
+        """
+        Filter status codes based on scenario type to ensure correct test behavior.
+
+        This is CRITICAL for proper test logic:
+        - POSITIVE tests verify that VALID input returns SUCCESS (2xx)
+          If we pass 4xx codes, the positive test would incorrectly treat errors as "success"
+          and failures would not be logged.
+        - NEGATIVE tests verify that INVALID input is CORRECTLY REJECTED (4xx)
+          These tests send bad data and expect the API to reject it with 4xx.
+          A 4xx response means the test PASSED (API correctly rejected bad input).
+        - SECURITY tests need all codes because they check if injection causes 500 (crash)
+          vs 4xx (properly sanitized/rejected).
+
+        Args:
+            status_codes: All status codes from OpenAPI spec
+            scenario_type: The type of scenario being generated
+
+        Returns:
+            Filtered list of status codes appropriate for the scenario type.
+            Returns sensible defaults if filtering results in empty list.
+        """
+        if not status_codes:
+            # No codes defined in spec - return empty, template will use defaults
+            return []
+
+        if scenario_type == ScenarioType.POSITIVE:
+            # Positive tests: ONLY 2xx success codes
+            # This ensures positive tests fail when API returns errors
+            filtered = [code for code in status_codes if 200 <= code < 300]
+            if not filtered:
+                # No 2xx codes in spec (unusual) - use common defaults
+                return [200]
+            return filtered
+
+        elif scenario_type == ScenarioType.NEGATIVE:
+            # Negative tests: ONLY 4xx client error codes
+            # These tests expect the API to REJECT invalid input with 4xx
+            # A 4xx response = test PASSED (API correctly rejected bad input)
+            filtered = [code for code in status_codes if 400 <= code < 500]
+            if not filtered:
+                # No 4xx codes in spec - use common validation error codes
+                return [400, 422]
+            return filtered
+
+        elif scenario_type == ScenarioType.SECURITY:
+            # Security tests: Pass ALL codes
+            # Template logic handles: 4xx = success (rejected), 500 = failure (crashed)
+            return status_codes
+
+        # Fallback - return all codes
+        return status_codes
 
     def _extract_expected_status_codes(self, endpoint: Any) -> List[int]:
         """

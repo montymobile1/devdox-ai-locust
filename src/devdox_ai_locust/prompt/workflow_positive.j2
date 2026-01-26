@@ -52,12 +52,13 @@ if result:
     items = result.get("items", [])
 
 # Request with OpenAPI spec-derived expected status codes
-result = self.make_request("POST", "/items", expected_status=[201, 422], json=data)
+# IMPORTANT: For POSITIVE tests, only use SUCCESS codes (2xx)
+result = self.make_request("POST", "/items", expected_status=[201], json=data)
 if result:
     # Request succeeded - result is JSON data as dict
     item_id = result.get("id")
 else:
-    # Request failed validation or returned error - result is None
+    # Request failed - result is None, failure is logged automatically
     pass
 ```
 
@@ -78,11 +79,17 @@ with self.client.post("/items", json=data, catch_response=True) as response:
 ```
 
 {% if endpoint_expected_status %}
-=== EXPECTED STATUS CODES (from OpenAPI spec) ===
-This endpoint defines these valid response status codes:
+=== EXPECTED STATUS CODES (SUCCESS CODES ONLY) ===
+For POSITIVE tests, you should expect SUCCESS (2xx) responses only.
+These are the success codes from the OpenAPI spec for this endpoint:
 {{ endpoint_expected_status }}
 
-Use these codes with the expected_status parameter:
+**CRITICAL: Why only success codes?**
+- POSITIVE tests verify that VALID input returns SUCCESS
+- If you include error codes (4xx), errors would be treated as "success" and NOT logged
+- Error code testing belongs in NEGATIVE tests, not here
+
+Use these SUCCESS codes with the expected_status parameter:
 ```python
 result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 ```
@@ -205,12 +212,17 @@ class {{ class_name }}PositiveWorkflow(BaseWorkflow):
 
     @task(10)
     def test_success_with_valid_data(self):
-        # Build request data
+        # Build request data with VALID values
         data = {"field": "value"}
 
-        # Use make_request() with expected_status from OpenAPI spec
+        # Use make_request() with SUCCESS codes only (2xx)
+        # NEVER include 4xx codes here - those belong in negative tests
         # make_request() returns dict (JSON data) or None - NOT a response object
-        result = self.make_request("{{ method }}", "{{ path }}", expected_status=[200, 201], json=data)
+        {% if endpoint_expected_status %}
+        result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
+        {% else %}
+        result = self.make_request("{{ method }}", "{{ path }}", json=data)
+        {% endif %}
 
         # Check if request succeeded (result is dict or None)
         if result:
