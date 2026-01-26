@@ -26,15 +26,16 @@ If this endpoint requires authentication:
 2. Use `self.logout(logout_path)` in on_stop() for cleanup
 3. For requests that may get 401, use `self.handle_401_retry()` instead of `make_request()`
 
-Example:
+Example (use ACTUAL paths from AUTHENTICATION ENDPOINTS above, not these placeholders):
 ```python
 def on_start(self):
     super().on_start()
-    # Login if auth endpoints exist
-    self.login_and_get_token("/auth/login", {"email": "test@example.com", "password": "secret"})
+    # Use the ACTUAL login path from auth_endpoints, NOT this example path
+    self.login_and_get_token("<LOGIN_PATH_FROM_AUTH_ENDPOINTS>", {"email": "...", "password": "..."})
 
 def on_stop(self):
-    self.logout("/auth/logout")
+    # Use the ACTUAL logout path from auth_endpoints, NOT this example path
+    self.logout("<LOGOUT_PATH_FROM_AUTH_ENDPOINTS>")
     super().on_stop()
 ```
 {% endif %}
@@ -108,16 +109,10 @@ The make_request() method:
 - Handles all Locust catch_response logic internally
 - Accepts an optional expected_status parameter for OpenAPI spec-driven validation
 
-**CORRECT PATTERN:**
+**CORRECT PATTERN (use expected_status={{ endpoint_expected_status }} for MAIN endpoint):**
 ```python
-# Simple request (uses default status code validation)
-result = self.make_request("GET", "/items")
-if result:
-    # result is a dict containing JSON data
-    items = result.get("items", [])
-
-# Use the expected_status codes provided
-result = self.make_request("POST", "/items", expected_status=[201], json=data)
+# For the MAIN test endpoint, use the pre-computed expected_status
+result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 if result:
     # Request succeeded - result is JSON data as dict
     item_id = result.get("id")
@@ -129,16 +124,16 @@ else:
 **WRONG PATTERNS (will cause errors):**
 ```python
 # WRONG: Accessing .status_code on make_request() return value
-result = self.make_request("POST", "/items", json=data)
+result = self.make_request("{{ method }}", "{{ path }}", json=data)
 if result.status_code == 201:  # AttributeError! result is dict or None, not response
     ...
 
 # WRONG: Using self.client directly without 'with' block
-response = self.client.post("/items", json=data, catch_response=True)
+response = self.client.post("...", json=data, catch_response=True)
 response.failure("error")  # LocustError! Missing 'with' block
 
 # WRONG: Using self.client directly (even with 'with' block) - use make_request instead
-with self.client.post("/items", json=data, catch_response=True) as response:
+with self.client.post("...", json=data, catch_response=True) as response:
     ...  # Don't do this - use make_request() instead
 ```
 
@@ -162,14 +157,14 @@ If you need to call a DIFFERENT endpoint first to create test data (e.g., POST t
 
 ```python
 # CORRECT: Use the expected_status from the setup endpoint (see SETUP ENDPOINTS section)
-create_result = self.make_request("POST", "/items", expected_status=[201], json=data)  # Use setup endpoint's codes
+create_result = self.make_request("POST", "<SETUP_ENDPOINT_PATH>", expected_status=<SETUP_EXPECTED_STATUS>, json=data)
 if create_result:
     item_id = create_result.get("id")
-    # Now test the main endpoint with ITS expected_status
+    # Now test the MAIN endpoint with ITS expected_status
     self.make_request("{{ method }}", f"{{ path }}", expected_status={{ endpoint_expected_status }})
 
 # WRONG: Using main endpoint's status for setup call
-create_result = self.make_request("POST", "/items", expected_status={{ endpoint_expected_status }}, json=data)  # NO!
+create_result = self.make_request("POST", "<SETUP_PATH>", expected_status={{ endpoint_expected_status }}, json=data)  # NO!
 ```
 
 === CRITICAL: OUTPUT REQUIREMENTS ===
@@ -274,8 +269,9 @@ RULES (violations will cause test failures):
 @task(get_task_weight(1))
 def test_delete_item(self):
     # STEP 1: Create a resource specifically for this delete operation
+    # Use expected_status from SETUP ENDPOINTS section, NOT from main endpoint
     create_data = {"name": test_data_generator.generate_string()}
-    create_result = self.make_request("POST", "/items", expected_status=[201], json=create_data)
+    create_result = self.make_request("POST", "<SETUP_CREATE_PATH>", expected_status=<SETUP_EXPECTED_STATUS>, json=create_data)
     if not create_result:
         return  # Can't test delete without a resource
 
@@ -283,8 +279,8 @@ def test_delete_item(self):
     if not item_id:
         return
 
-    # STEP 2: Delete the resource we just created
-    self.make_request("DELETE", f"/items/{item_id}", expected_status=[204])
+    # STEP 2: Delete the resource we just created - use main endpoint's expected_status
+    self.make_request("{{ method }}", f"{{ path }}", expected_status={{ endpoint_expected_status }})
 ```
 
 **WHY:** In load testing, multiple users run concurrently. If you:
@@ -296,13 +292,13 @@ def test_delete_item(self):
 ```python
 def on_start(self):
     # DON'T create resources here that DELETE tasks will consume
-    result = self.make_request("POST", "/items", ...)
+    result = self.make_request("POST", "...", ...)
     self.item_id = result.get("id")  # BAD - will be deleted once, then 404 forever
 
-@task(1)
+@task(get_task_weight(1))
 def test_delete_item(self):
     # DON'T rely on shared state
-    self.make_request("DELETE", f"/items/{self.item_id}", ...)  # WRONG!
+    self.make_request("DELETE", f".../{self.item_id}", ...)  # WRONG!
 ```
 
 **STEP 4 - SET TASK WEIGHTS:**
@@ -353,10 +349,10 @@ Generated tests should handle errors gracefully:
 **1. Null/None Checks:**
 Always check make_request() return value before using it:
 ```python
-result = self.make_request("GET", "/items")
+result = self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }})
 if result:
-    # Safe to use result
-    items = result.get("items", [])
+    # Safe to use result - it's a dict containing JSON data
+    data = result.get("data", [])
 else:
     # Request failed - make_request already logged it
     return  # Skip rest of test gracefully
@@ -426,17 +422,17 @@ Failure and error handling tests belong in the NEGATIVE workflow, not here.
 
 ```python
 # WRONG - this is a failure test, belongs in negative workflow
-@task(1)
+@task(get_task_weight(1))
 def test_failure_with_missing_param(self):
     data = b"binary_data"  # Missing required parameter
-    self.make_request("POST", "/endpoint", expected_status=[201], data=data)  # NO!
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, data=data)  # NO! Missing params!
 
 # CORRECT - positive tests use ALL required parameters with valid values
-@task(10)
+@task(get_task_weight(10))
 def test_success_with_valid_data(self):
     param_value = test_data_generator.generate_string(length=10)
     data = b"binary_data"
-    self.make_request("POST", "/endpoint", expected_status=[201], params={"required_param": param_value}, data=data)
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, params={"required_param": param_value}, data=data)
 ```
 
 === CRITICAL MISTAKES TO AVOID ===

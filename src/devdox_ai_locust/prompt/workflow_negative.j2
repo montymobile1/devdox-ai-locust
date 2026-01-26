@@ -84,19 +84,18 @@ Use MongoDB data for:
 For NEGATIVE tests, use `self.make_request()` with `expected_status` set to the ERROR codes you expect.
 This provides automatic logging with full traceback when the API unexpectedly ACCEPTS invalid input.
 
-**CORRECT PATTERN for negative tests:**
+**CORRECT PATTERN for negative tests (DO NOT copy these paths/codes literally!):**
 ```python
-@task(3)
+@task(get_task_weight(3))
 def test_missing_required_field(self):
     data = {"optional_field": "value"}  # Missing required field
-    # For negative tests: we EXPECT the API to reject with 400/422
-    # If API returns 200/201 instead, it's logged as a failure with full traceback
-    self.make_request("POST", "/endpoint", expected_status=[400, 422], json=data)
+    # Use expected_status={{ endpoint_expected_status }} for the ACTUAL test endpoint
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 
-@task(2)
-def test_nonexistent_id_404(self):
-    # For 404 tests: we EXPECT the API to return 404 for non-existent resources
-    self.make_request("GET", "/items/999999999", expected_status=[404])
+@task(get_task_weight(2))
+def test_nonexistent_id(self):
+    # Use expected_status={{ endpoint_expected_status }} - contains the 4xx codes from OpenAPI spec
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }})
 ```
 
 **How this works:**
@@ -106,11 +105,11 @@ def test_nonexistent_id_404(self):
 
 **IMPORTANT: Always set expected_status to the ERROR codes you expect, NOT success codes!**
 ```python
-# CORRECT - expect rejection codes
-self.make_request("POST", "/endpoint", expected_status=[400, 422], json=invalid_data)
+# CORRECT - use the pre-computed error codes from {{ endpoint_expected_status }}
+self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=invalid_data)
 
-# WRONG - this expects success, not rejection
-self.make_request("POST", "/endpoint", expected_status=[200, 201], json=invalid_data)
+# WRONG - NEVER use 2xx codes in negative tests
+self.make_request("{{ method }}", "{{ path }}", expected_status=[200, 201], json=invalid_data)  # BAD!
 ```
 
 === MANDATORY STATUS CODES (use VERBATIM - do NOT modify) ===
@@ -123,7 +122,7 @@ If you write ANY 2xx code in the test call's expected_status, your code will be 
 **SETUP CALLS (creating test data):** If you need to call a DIFFERENT endpoint to create
 test data first (e.g., POST to a parent resource), use the expected_status from the SETUP ENDPOINTS
 section below. Each setup endpoint has its own correct status codes from the OpenAPI spec.
-Example: `self.make_request("POST", "/other/endpoint", expected_status=[201], json=data)`
+Example: `self.make_request("POST", "<SETUP_PATH>", expected_status=<SETUP_EXPECTED_STATUS>, json=data)`
 Do NOT use {{ endpoint_expected_status }} for setup calls - that's only for the MAIN test endpoint.
 
 {% if expected_status_info %}

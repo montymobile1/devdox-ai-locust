@@ -678,15 +678,35 @@ class ScenarioWorkflowGenerator:
         expected_status_codes = [code for code, _ in codes_with_desc]
         expected_status_info = self._format_status_codes_for_prompt(codes_with_desc)
 
+        # Skip generation if spec defines responses but no appropriate codes for this scenario type
+        all_status_codes = self._extract_expected_status_codes(endpoint)
+
         # Skip positive generation if spec defines responses but no 2xx codes
         # (e.g., response-test endpoints that intentionally return 4xx/5xx)
-        all_status_codes = self._extract_expected_status_codes(endpoint)
         if scenario_type == ScenarioType.POSITIVE and all_status_codes and not expected_status_codes:
             skip_reason = f"spec defines no 2xx codes (defined: {all_status_codes})"
             logger.info(f"Skipping positive workflow for [{endpoint_info}] - {skip_reason}")
             if self.progress:
                 self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
             return None
+
+        # Skip negative generation if spec defines responses but no 4xx codes
+        if scenario_type == ScenarioType.NEGATIVE and all_status_codes and not expected_status_codes:
+            skip_reason = f"spec defines no 4xx codes (defined: {all_status_codes})"
+            logger.info(f"Skipping negative workflow for [{endpoint_info}] - {skip_reason}")
+            if self.progress:
+                self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+            return None
+
+        # Ensure expected_status_codes is never empty - use sensible defaults as last resort
+        if not expected_status_codes:
+            logger.warning(f"No expected status codes for {endpoint_info} {scenario_name} - using fallback")
+            if scenario_type == ScenarioType.POSITIVE:
+                expected_status_codes = [200]
+            elif scenario_type == ScenarioType.NEGATIVE:
+                expected_status_codes = [400, 422]
+            elif scenario_type == ScenarioType.SECURITY:
+                expected_status_codes = [200, 400, 422]
 
         # Pre-compute security injection points - skip if no valid targets
         injection_points = ""

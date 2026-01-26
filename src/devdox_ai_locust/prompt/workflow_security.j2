@@ -60,14 +60,15 @@ def on_start(self):
     self.test_user = self.mongo.get_random_document("users")
 
 # Use real IDs when testing injection attacks:
-@task
+@task(get_task_weight(2))
 def test_sql_injection_with_real_resource(self):
     if self.test_user:
         user_id = self.test_user.get("_id")
         # Test injection on a REAL resource - 500 = vulnerability (auto-logged)
         payload = random.choice(SQL_PAYLOADS)
-        data = {"name": payload}
-        self.make_request("PUT", f"/users/{user_id}", expected_status=[200, 400, 422], json=data)
+        data = {"<FIELD_NAME>": payload}
+        # Use {{ endpoint_expected_status }} for the ACTUAL test endpoint
+        self.make_request("{{ method }}", f"<PATH_WITH_ID>", expected_status={{ endpoint_expected_status }}, json=data)
 ```
 
 Available mongo_data_provider methods:
@@ -89,25 +90,25 @@ A 500 response indicates a potential vulnerability and will be logged automatica
 @task(2)
 def test_sql_injection(self):
     payload = random.choice(SQL_PAYLOADS)
-    data = {"name": payload, "other_field": "valid_value"}
-    # Include BOTH success (2xx) and rejection (4xx) codes - NOT 500
+    data = {"<FIELD_NAME>": payload, "other_field": "valid_value"}
+    # Use expected_status={{ endpoint_expected_status }} - these are pre-computed from OpenAPI spec
     # If API returns 500, it's logged as VULNERABILITY with full traceback
-    self.make_request("POST", "/endpoint", expected_status=[200, 201, 400, 422], json=data)
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 ```
 
 **How this works:**
-- `expected_status=[200, 201, 400, 422]` means these are all acceptable responses
-- 200/201: API accepted input (presumably sanitized) → Test PASSED
-- 400/422: API rejected malicious input → Test PASSED
+- `expected_status={{ endpoint_expected_status }}` contains both 2xx and 4xx codes (no 5xx)
+- 2xx: API accepted input (presumably sanitized) → Test PASSED
+- 4xx: API rejected malicious input → Test PASSED
 - 500: Server crashed from injection → Test FAILED (potential vulnerability, logged with traceback)
 
-**IMPORTANT: Always EXCLUDE 500 from expected_status!**
+**IMPORTANT: Always use expected_status={{ endpoint_expected_status }} - it EXCLUDES 500!**
 ```python
-# CORRECT - 500 will be logged as vulnerability
-self.make_request("POST", "/endpoint", expected_status=[200, 400, 422], json=payload_data)
+# CORRECT - use pre-computed codes, 500 will be logged as vulnerability
+self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=payload_data)
 
-# WRONG - this would treat 500 as acceptable!
-self.make_request("POST", "/endpoint", expected_status=[200, 400, 422, 500], json=payload_data)
+# WRONG - NEVER manually add 500 to expected_status!
+self.make_request("{{ method }}", "{{ path }}", expected_status=[..., 500], json=payload_data)
 ```
 
 === EXPECTED STATUS CODES ===
@@ -138,8 +139,8 @@ If you output ANY non-ASCII character, the code will FAIL to parse.
 @task(get_task_weight(2))
 def test_sql_injection(self):
     payload = random.choice(SQL_PAYLOADS)
-    data = {"name": payload}
-    self.make_request("POST", "/items", expected_status=[200, 400, 422], json=data)
+    data = {"<FIELD_NAME>": payload}  # Use actual field name from injection points
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 
 # WRONG - extra parameters cause TypeError at runtime!
 @task(get_task_weight(2))
@@ -193,12 +194,12 @@ Security tests validate that the server doesn't crash (500) when receiving malic
 With `make_request()`, 500 responses are automatically logged as failures:
 
 ```python
-@task(2)
+@task(get_task_weight(2))
 def test_sql_injection(self):
     payload = random.choice(SQL_PAYLOADS)
-    data = {"name": payload, "other_field": "valid"}
-    # 500 is NOT in expected_status, so it gets logged as VULNERABILITY
-    self.make_request("POST", "/endpoint", expected_status=[200, 201, 400, 422], json=data)
+    data = {"<FIELD_NAME>": payload, "other_field": "valid"}
+    # Use expected_status={{ endpoint_expected_status }} - 500 is excluded
+    self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 ```
 
 **Understanding security test results:**
@@ -262,11 +263,11 @@ return 404 (route not found), which is NOT a security test result.
 
 ```python
 # WRONG - XSS in path param causes 404 (route not found), not a security test
-self.make_request("GET", f"/orders/{payload}/items", expected_status=[200, 422])
+self.make_request("GET", f"/resource/{payload}/sub", ...)  # BAD - path param injection!
 
-# CORRECT - inject into query parameter or body field
-self.make_request("GET", f"/orders/valid-id/items", expected_status=[200, 400, 422],
-                  params={"filter": payload})
+# CORRECT - inject into query parameter or body field instead
+self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }},
+                  params={"<QUERY_PARAM>": payload})  # Or json={"<FIELD>": payload}
 ```
 
 === CRITICAL MISTAKES TO AVOID ===
