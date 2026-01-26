@@ -220,10 +220,43 @@ class TestDataGenerator:
                 return fake.url()
             elif 'uuid' in pattern.lower():
                 return str(uuid.uuid4())
+            else:
+                # Try to generate a string matching a simple regex pattern
+                return self._generate_from_pattern(pattern)
 
         return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-    def generate_integer(self, min_val: int = 1, max_val: int = 1000, default: int = None, exclusive: bool = False) -> int:
+    def _generate_from_pattern(self, pattern: str) -> str:
+        """Generate a string that matches a simple regex pattern."""
+        import re as _re
+        # Strip anchors
+        p = pattern.lstrip('^').rstrip('$')
+
+        # Handle common patterns
+        # Pure digits with length: \d{N} or [0-9]{N}
+        digit_match = _re.match(r'^\\d\{(\d+)\}$', p) or _re.match(r'^\[0-9\]\{(\d+)\}$', p)
+        if digit_match:
+            n = int(digit_match.group(1))
+            return ''.join(random.choices(string.digits, k=n))
+
+        # Prefix + digits: PREFIX-\d+ or PREFIX\d{N}
+        prefix_match = _re.match(r'^([A-Za-z_-]+)[\\-]?\\d([+*]|\{(\d+)\})$', p)
+        if prefix_match:
+            prefix = prefix_match.group(1).replace('\\', '')
+            count = int(prefix_match.group(3)) if prefix_match.group(3) else random.randint(4, 8)
+            separator = '-' if '-' in p or '\\-' in p else ''
+            return prefix + separator + ''.join(random.choices(string.digits, k=count))
+
+        # Alphanumeric with length: [a-zA-Z0-9]{N}
+        alnum_match = _re.match(r'^\[a-zA-Z0-9\]\{(\d+)\}$', p)
+        if alnum_match:
+            n = int(alnum_match.group(1))
+            return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
+
+        # Fallback: generate alphanumeric string
+        return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+
+    def generate_integer(self, min_val: int = 1, max_val: int = 1000, default: int = None, exclusive: bool = False, multiple_of: int = None) -> int:
         if default is not None:
             return int(default) if not isinstance(default, int) else default
         # Convert to int in case LLM passes scientific notation floats (e.g., 9.2e18)
@@ -232,6 +265,12 @@ class TestDataGenerator:
         if exclusive:
             min_val += 1
             max_val -= 1
+        if multiple_of and multiple_of > 0:
+            low = (min_val + multiple_of - 1) // multiple_of
+            high = max_val // multiple_of
+            if high < low:
+                return min_val
+            return random.randint(low, high) * multiple_of
         return random.randint(min_val, max_val)
 
     def generate_float(self, min_val: float = 0.0, max_val: float = 1000.0, default: float = None, exclusive: bool = False) -> float:

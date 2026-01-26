@@ -2197,6 +2197,36 @@ Do NOT invent or call POST endpoints that are not documented here.
             return ""
 
         properties = schema.get("properties", {})
+
+        # Handle discriminated unions (oneOf/anyOf at top level)
+        one_of = schema.get("oneOf") or schema.get("anyOf")
+        discriminator = schema.get("discriminator", {})
+        if one_of and isinstance(one_of, list) and not properties:
+            # Schema is a discriminated union with no direct properties
+            disc_prop = discriminator.get("propertyName", "")
+            lines.append("FIELD GENERATION INSTRUCTIONS (DISCRIMINATED UNION):")
+            if disc_prop:
+                lines.append(f"Discriminator field: \"{disc_prop}\"")
+            lines.append("Pick ONE variant and include ALL its required fields:")
+            lines.append("")
+            for i, variant in enumerate(one_of[:4]):  # Limit to 4 variants
+                if not isinstance(variant, dict):
+                    continue
+                v_props = variant.get("properties", {})
+                v_required = variant.get("required", [])
+                v_title = variant.get("title", f"Variant {i+1}")
+                if v_props:
+                    lines.append(f"  Variant \"{v_title}\" (required: {v_required}):")
+                    for vp_name, vp_schema in v_props.items():
+                        vp_type = vp_schema.get("type", "string") if isinstance(vp_schema, dict) else "string"
+                        vp_enum = vp_schema.get("enum") if isinstance(vp_schema, dict) else None
+                        if vp_enum:
+                            lines.append(f"    \"{vp_name}\": random.choice({vp_enum})")
+                        else:
+                            lines.append(f"    \"{vp_name}\": <{vp_type}>")
+                    lines.append("")
+            return "\n".join(lines)
+
         if not properties:
             return ""
 
@@ -2221,7 +2251,9 @@ Do NOT invent or call POST endpoints that are not documented here.
             if field_enum:
                 instruction = f"random.choice({field_enum})"
             elif field_pattern:
-                instruction = f"value matching pattern: {field_pattern}"
+                # Escape the pattern for use in Python string
+                escaped_pattern = field_pattern.replace('"', '\\"')
+                instruction = f'test_data_generator.generate_string(pattern="{escaped_pattern}")'
             elif field_format == "date":
                 instruction = "test_data_generator.random_date()"
             elif field_format == "date-time":
@@ -2250,11 +2282,14 @@ Do NOT invent or call POST endpoints that are not documented here.
                 exclusive_max = field_schema.get("exclusiveMaximum")
                 min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 1)
                 max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000)
+                multiple_of = field_schema.get("multipleOf")
                 exclusive = exclusive_min is not None or exclusive_max is not None
+                parts = [f"min_val={min_val}", f"max_val={max_val}"]
                 if exclusive:
-                    instruction = f"test_data_generator.generate_integer(min_val={min_val}, max_val={max_val}, exclusive=True)"
-                else:
-                    instruction = f"test_data_generator.generate_integer(min_val={min_val}, max_val={max_val})"
+                    parts.append("exclusive=True")
+                if multiple_of:
+                    parts.append(f"multiple_of={multiple_of}")
+                instruction = f"test_data_generator.generate_integer({', '.join(parts)})"
             elif field_type == "number":
                 exclusive_min = field_schema.get("exclusiveMinimum")
                 exclusive_max = field_schema.get("exclusiveMaximum")
@@ -2267,11 +2302,27 @@ Do NOT invent or call POST endpoints that are not documented here.
                     instruction = f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val})"
             elif field_type == "boolean":
                 instruction = "test_data_generator.generate_boolean()"
+            elif field_type == "object":
+                # Nested object - generate dict with sub-properties
+                sub_props = field_schema.get("properties", {})
+                if sub_props:
+                    instruction = self._precompute_object_instruction(field_schema)
+                else:
+                    instruction = "{}"
             elif field_type == "array":
                 items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
                 items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
+                items_ref = field_items.get("$ref") if isinstance(field_items, dict) else None
                 if items_enum:
                     instruction = f"[random.choice({items_enum}) for _ in range(3)]"
+                elif items_type == "object" or items_ref:
+                    # Array of objects
+                    items_props = field_items.get("properties", {}) if isinstance(field_items, dict) else {}
+                    if items_props:
+                        obj_instr = self._precompute_object_instruction(field_items)
+                        instruction = f"[{obj_instr} for _ in range(2)]"
+                    else:
+                        instruction = "[{}]"
                 elif items_type == "string":
                     instruction = "[test_data_generator.generate_string() for _ in range(3)]"
                 elif items_type == "integer":
@@ -2280,6 +2331,8 @@ Do NOT invent or call POST endpoints that are not documented here.
                     instruction = "[test_data_generator.generate_float() for _ in range(3)]"
                 elif items_type == "boolean":
                     instruction = "[test_data_generator.generate_boolean() for _ in range(3)]"
+                elif items_type == "array":
+                    instruction = "[[test_data_generator.generate_string() for _ in range(2)] for _ in range(3)]"
                 else:
                     instruction = "[test_data_generator.generate_string() for _ in range(3)]"
             else:
@@ -2288,6 +2341,54 @@ Do NOT invent or call POST endpoints that are not documented here.
             lines.append(f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}")
 
         return "\n".join(lines)
+
+    def _precompute_object_instruction(self, schema: dict) -> str:
+        """Generate a dict literal instruction for a nested object schema."""
+        properties = schema.get("properties", {})
+        if not properties:
+            return "{}"
+
+        parts = []
+        for prop_name, prop_schema in properties.items():
+            if not isinstance(prop_schema, dict):
+                continue
+            prop_type = prop_schema.get("type", "string")
+            prop_enum = prop_schema.get("enum")
+            prop_pattern = prop_schema.get("pattern")
+            prop_format = prop_schema.get("format", "")
+
+            if prop_enum:
+                val = f"random.choice({prop_enum})"
+            elif prop_pattern:
+                escaped = prop_pattern.replace('"', '\\"')
+                val = f'test_data_generator.generate_string(pattern="{escaped}")'
+            elif prop_format == "email":
+                val = "test_data_generator.generate_email()"
+            elif prop_format == "uuid":
+                val = "test_data_generator.random_uuid()"
+            elif prop_format == "date":
+                val = "test_data_generator.random_date()"
+            elif prop_format == "date-time":
+                val = "datetime.now().isoformat()"
+            elif prop_type == "integer":
+                min_v = prop_schema.get("minimum", 1)
+                max_v = prop_schema.get("maximum", 1000)
+                val = f"test_data_generator.generate_integer(min_val={min_v}, max_val={max_v})"
+            elif prop_type == "number":
+                min_v = prop_schema.get("minimum", 0.0)
+                max_v = prop_schema.get("maximum", 1000.0)
+                val = f"test_data_generator.generate_float(min_val={min_v}, max_val={max_v})"
+            elif prop_type == "boolean":
+                val = "test_data_generator.generate_boolean()"
+            elif prop_type == "array":
+                val = "[test_data_generator.generate_string() for _ in range(2)]"
+            elif prop_type == "object":
+                val = "{}"
+            else:
+                val = "test_data_generator.generate_string(length=10)"
+            parts.append(f'"{prop_name}": {val}')
+
+        return "{" + ", ".join(parts) + "}"
 
     def _format_endpoints_list(self, endpoints: List[Any]) -> str:
         """Format list of endpoints (for auth endpoints)"""
