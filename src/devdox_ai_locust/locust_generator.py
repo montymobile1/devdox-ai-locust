@@ -483,18 +483,18 @@ def {method_name}(self):
         code_lines = []
         for param in path_params:
             if param.type.startswith("integer"):
-                code_lines.append(f"{param.name} = data_generator.generate_integer()")
+                code_lines.append(f"{param.name} = test_data_generator.generate_integer()")
             elif param.type == "string":
                 if "id" in param.name.lower():
-                    code_lines.append(f"{param.name} = data_generator.generate_id()")
+                    code_lines.append(f"{param.name} = test_data_generator.generate_id()")
                 else:
                     code_lines.append(
-                        f"{param.name} = data_generator.generate_string()"
+                        f"{param.name} = test_data_generator.generate_string()"
                     )
 
             else:
                 code_lines.append(
-                    f'{param.name} = data_generator.generate_value("{param.type}")'
+                    f'{param.name} = test_data_generator.generate_value("{param.type}")'
                 )
 
         return "\n".join(code_lines)
@@ -530,20 +530,20 @@ def {method_name}(self):
     def _generate_integer_param(self, param: Parameter) -> str:
         """Generate integer parameter line"""
         default = param.default if param.default is not None else "None"
-        return f'"{param.name}": data_generator.generate_integer(default={default}),'
+        return f'"{param.name}": test_data_generator.generate_integer(default={default}),'
 
     def _generate_string_param(self, param: Parameter) -> str:
         """Generate string parameter line"""
         default = f'"{param.default}"' if param.default else "None"
-        return f'"{param.name}": data_generator.generate_string(default={default}),'
+        return f'"{param.name}": test_data_generator.generate_string(default={default}),'
 
     def _generate_boolean_param(self, param: Parameter) -> str:
         """Generate boolean parameter line"""
-        return f'"{param.name}": data_generator.generate_boolean(),'
+        return f'"{param.name}": test_data_generator.generate_boolean(),'
 
     def _generate_generic_param(self, param: Parameter) -> str:
         """Generate generic parameter line for unknown types"""
-        return f'"{param.name}": data_generator.generate_value("{param.type}"),'
+        return f'"{param.name}": test_data_generator.generate_value("{param.type}"),'
 
     def _format_params_dict(self, param_lines: list[str]) -> str:
         """Format parameter lines into a dictionary structure"""
@@ -559,11 +559,11 @@ def {method_name}(self):
             return "json_data = None"
 
         if endpoint.request_body.content_type == "application/json":
-            return f"""json_data = data_generator.generate_json_data(
+            return f"""json_data = test_data_generator.generate_json_data(
                 schema={json.dumps(endpoint.request_body.schema, indent=16)}
             )"""
         elif endpoint.request_body.content_type == "application/x-www-form-urlencoded":
-            return "data = data_generator.generate_form_data()"
+            return "data = test_data_generator.generate_form_data()"
         else:
             return "json_data = {}"
 

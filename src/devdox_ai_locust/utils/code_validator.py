@@ -140,6 +140,7 @@ class CodeValidator:
         violations.extend(self._check_template_boilerplate(code))
         violations.extend(self._check_placeholder_comments(code))
         violations.extend(self._check_empty_path_segments(code))
+        violations.extend(self._check_literal_path_params(code))
 
         if scenario_type == "security":
             violations.extend(self._check_security_path_injection(code))
@@ -245,6 +246,36 @@ class CodeValidator:
                             line_number=i,
                             severity="error",
                         ))
+
+        return violations
+
+    # Regex to detect non-f-string with literal {param} placeholders
+    _LITERAL_PATH_PARAM_RE = re.compile(
+        r'make_request\(\s*"[^"]*"\s*,\s*"([^"]*\{[^}]+\}[^"]*)"'
+    )
+
+    def _check_literal_path_params(self, code: str) -> List[ValidationViolation]:
+        """Check for literal {param} in non-f-string paths.
+
+        Catches cases where the LLM forgot to use an f-string, leaving
+        literal text like '/items/{item_id}' instead of f'/items/{item_id}'.
+        """
+        violations = []
+        lines = code.split("\n")
+
+        for i, line in enumerate(lines, 1):
+            if "make_request" in line:
+                # Check for non-f-string with curly braces (literal path param)
+                match = self._LITERAL_PATH_PARAM_RE.search(line)
+                if match:
+                    url = match.group(1)
+                    violations.append(ValidationViolation(
+                        rule="literal_path_param",
+                        message=f"Path contains literal '{{param}}' without f-string: \"{url}\". "
+                                f"Use f-string like f\"{url}\" to substitute variables.",
+                        line_number=i,
+                        severity="error",
+                    ))
 
         return violations
 
