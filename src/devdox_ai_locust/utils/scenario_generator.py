@@ -170,6 +170,10 @@ class ScenarioWorkflowGenerator:
             lstrip_blocks=True,
         )
 
+        # Extract allowed imports dynamically from prompt templates
+        # This replaces the hardcoded ALLOWED_IMPORTS to avoid maintenance burden
+        self._allowed_imports = self._extract_allowed_imports_from_templates()
+
     def _update_concurrency(self, rpm: int) -> None:
         """
         Update concurrency based on rate limit.
@@ -3069,17 +3073,92 @@ Code:
 
 Fix ALL the violations and output the complete corrected Python code:"""
 
-    # Allowed imports for generated workflow code
-    # This helps detect when LLM hallucinates imports that don't exist
-    ALLOWED_IMPORTS = {
+    # Base allowed imports (standard library + locust)
+    # Project imports are extracted dynamically from prompt templates
+    _BASE_ALLOWED_IMPORTS = {
         # Standard library
         "random", "logging", "datetime", "time", "json", "re", "uuid", "string",
         # Locust
         "locust",
-        # Project imports
-        "workflows.base_workflow", "workflows", "base_workflow",
-        "test_data", "mongo_data_provider",
     }
+
+    def _extract_allowed_imports_from_templates(self) -> set:
+        """
+        Extract allowed imports dynamically from prompt templates.
+
+        Parses the '=== ALLOWED IMPORTS ===' section from workflow templates
+        to build the allowed imports set. This ensures the validation stays
+        in sync with what the prompts actually allow.
+
+        Returns:
+            Set of allowed module names
+        """
+        import ast
+        import re
+
+        allowed = set(self._BASE_ALLOWED_IMPORTS)
+
+        # Templates that define allowed imports
+        template_files = [
+            "workflow_positive.j2",
+            "workflow_negative.j2",
+            "workflow_security.j2",
+        ]
+
+        for template_file in template_files:
+            try:
+                template_path = self.prompt_dir / template_file
+                if not template_path.exists():
+                    continue
+
+                content = template_path.read_text(encoding="utf-8")
+
+                # Find the ALLOWED IMPORTS section
+                # Pattern: === ALLOWED IMPORTS ... === followed by ```python ... ```
+                match = re.search(
+                    r'===\s*ALLOWED IMPORTS[^=]*===.*?```python\s*(.*?)```',
+                    content,
+                    re.DOTALL | re.IGNORECASE
+                )
+
+                if not match:
+                    continue
+
+                imports_code = match.group(1)
+
+                # Parse the imports code block
+                try:
+                    tree = ast.parse(imports_code)
+                except SyntaxError:
+                    # Template might have Jinja syntax, try cleaning it
+                    # Remove Jinja tags like {% if db_type == "mongo" %}
+                    cleaned = re.sub(r'\{%.*?%\}', '', imports_code)
+                    cleaned = re.sub(r'\{\{.*?\}\}', '', cleaned)
+                    try:
+                        tree = ast.parse(cleaned)
+                    except SyntaxError:
+                        continue
+
+                # Extract module names from imports
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            # Add both the full path and the root module
+                            allowed.add(alias.name)
+                            allowed.add(alias.name.split('.')[0])
+
+                    elif isinstance(node, ast.ImportFrom):
+                        if node.module:
+                            # Add both the full path and the root module
+                            allowed.add(node.module)
+                            allowed.add(node.module.split('.')[0])
+
+            except Exception as e:
+                logger.debug(f"Could not parse imports from {template_file}: {e}")
+                continue
+
+        logger.debug(f"Extracted allowed imports from templates: {allowed}")
+        return allowed
 
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
         """Validate Python syntax and check for suspicious imports"""
@@ -3103,6 +3182,9 @@ Fix ALL the violations and output the complete corrected Python code:"""
 
         Returns list of warning messages for suspicious imports.
         Does not fail validation - just logs warnings.
+
+        Uses dynamically extracted allowed imports from prompt templates,
+        ensuring validation stays in sync with what prompts actually allow.
         """
         import ast
 
@@ -3118,13 +3200,13 @@ Fix ALL the violations and output the complete corrected Python code:"""
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     module_name = alias.name.split('.')[0]
-                    if module_name not in self.ALLOWED_IMPORTS:
+                    if module_name not in self._allowed_imports:
                         warnings.append(f"import {alias.name} - module '{module_name}' not in allowed list")
 
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     module_name = node.module.split('.')[0]
-                    if module_name not in self.ALLOWED_IMPORTS:
+                    if module_name not in self._allowed_imports:
                         warnings.append(f"from {node.module} import ... - module '{module_name}' not in allowed list")
 
         return warnings

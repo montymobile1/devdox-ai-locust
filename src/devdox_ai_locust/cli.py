@@ -550,6 +550,28 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             return local_files
 
         except Exception as e:
+            # Save failed code to failures directory for debugging
+            saved_failure_path = None
+            if hasattr(e, 'code') and e.code:
+                failures_dir = workflows_dir / ".failures"
+                failures_dir.mkdir(parents=True, exist_ok=True)
+                failure_filename = f"{operation_id}_{getattr(e, 'scenario_type', 'unknown')}.py"
+                failure_path = failures_dir / failure_filename
+                try:
+                    async with aiofiles.open(failure_path, 'w', encoding='utf-8') as f:
+                        # Add error info as comment at top
+                        error_header = f'''# FAILED CODE - {endpoint_info}
+# Error: {getattr(e, 'error', str(e))}
+# Scenario: {getattr(e, 'scenario_type', 'unknown')}
+# ─────────────────────────────────────────────────────────
+
+'''
+                        await f.write(error_header + e.code)
+                    saved_failure_path = str(failure_path)
+                    logger.debug(f"Saved failed code to {failure_path}")
+                except Exception as save_error:
+                    logger.debug(f"Could not save failed code: {save_error}")
+
             # Use pre-generated pre-LLM templates as fallback
             fallback_files = []
             for scenario_type in ["positive", "negative", "security"]:
@@ -579,9 +601,13 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     "operation_id": operation_id,
                     "error": str(e),
                     "error_type": type(e).__name__,
+                    "saved_code": saved_failure_path,
                 })
                 created_files.extend(fallback_files)
 
+            # Pass detailed error info to progress
+            error_code = getattr(e, 'code', None)
+            error_msg = getattr(e, 'error', str(e))
             progress.endpoint_failed(short_info, e)
             return fallback_files
 
