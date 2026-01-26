@@ -281,6 +281,7 @@ async def _generate_and_create_tests(
         auth,
         db_type,
         host,
+        custom_requirement,
     )
 
 
@@ -293,6 +294,7 @@ async def _generate_scenario_based_tests(
     auth: bool,
     db_type: str,
     host: Optional[str] = None,
+    custom_requirement: Optional[str] = None,
 ) -> List[Dict[Any, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
@@ -476,6 +478,8 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 test_data_content=test_data_content,
                 auth_endpoints=auth_endpoints if auth else None,
                 tag_name=tag_name,
+                all_endpoints=endpoints,
+                custom_requirement=custom_requirement,
             )
 
             # Save files using async I/O

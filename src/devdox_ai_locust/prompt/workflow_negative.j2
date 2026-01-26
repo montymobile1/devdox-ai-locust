@@ -1,5 +1,12 @@
 TASK: Generate NEGATIVE, EDGE CASE, and ERROR HANDLING test scenarios for a single API endpoint.
 
+{% if custom_requirement %}
+=== USER CUSTOM REQUIREMENTS ===
+{{ custom_requirement }}
+
+Apply these requirements when generating tests. They take priority over default behavior.
+{% endif %}
+
 === CONTEXT ===
 
 ENDPOINT TO TEST:

@@ -293,6 +293,7 @@ class ScenarioWorkflowGenerator:
         auth_endpoints: Optional[List[Any]] = None,
         tag_name: str = "default",
         all_endpoints: Optional[List[Any]] = None,
+        custom_requirement: Optional[str] = None,
     ) -> Dict[ScenarioType, str]:
         """
         Generate all scenario workflow files for a single endpoint using LLM.
@@ -304,6 +305,7 @@ class ScenarioWorkflowGenerator:
             auth_endpoints: Authentication endpoints (optional)
             tag_name: Tag/group name for this endpoint (used for debug logging)
             all_endpoints: All endpoints from OpenAPI spec (for finding related CREATE endpoints)
+            custom_requirement: User-provided custom requirements for test generation
 
         Returns:
             Dict mapping ScenarioType to generated code content
@@ -324,6 +326,7 @@ class ScenarioWorkflowGenerator:
                 auth_endpoints,
                 tag_name,
                 all_endpoints,
+                custom_requirement,
             )
             for scenario_type in scenario_types
         ]
@@ -342,6 +345,7 @@ class ScenarioWorkflowGenerator:
         auth_endpoints: Optional[List[Any]] = None,
         tag_name: str = "default",
         all_endpoints: Optional[List[Any]] = None,
+        custom_requirement: Optional[str] = None,
     ) -> str:
         """
         Generate a scenario using LLM for a single endpoint.
@@ -354,6 +358,7 @@ class ScenarioWorkflowGenerator:
             auth_endpoints: Auth endpoints
             tag_name: Tag/group name for debug logging
             all_endpoints: All endpoints from OpenAPI spec (for finding related CREATE endpoints)
+            custom_requirement: User-provided custom requirements for test generation
 
         Returns:
             Generated Python code
@@ -406,6 +411,7 @@ class ScenarioWorkflowGenerator:
             path=endpoint.path,
             endpoint_expected_status=expected_status_codes,
             setup_endpoints=setup_endpoints_section,
+            custom_requirement=custom_requirement or "",
         )
 
         # Call LLM with validation retry (error-aware on retry)
