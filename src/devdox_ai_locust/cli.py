@@ -2,6 +2,7 @@ import click
 import sys
 import asyncio
 import aiofiles
+import logging
 import traceback
 from pathlib import Path
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from devdox_ai_locust.utils.debug_recorder import DebugRecorder
 from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 class TeeOutput:
@@ -119,23 +121,35 @@ def _display_configuration(
     auth: bool,
     custom_requirement: Optional[str],
     dry_run: bool,
+    db_type: str = "",
+    timeout: int = 120,
+    debug: bool = False,
 ) -> None:
-    table = Table(title="Generation Configuration")
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value", style="green")
+    from rich.panel import Panel
 
-    table.add_row("Input Source", str(swagger_url))
-    table.add_row("Output Directory", str(output_dir))
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Setting", style="dim")
+    table.add_column("Value", style="bold")
 
-    table.add_row("Users", str(users))
-    table.add_row("Spawn Rate", str(spawn_rate))
+    table.add_row("Source", str(swagger_url))
+    table.add_row("Output", str(output_dir))
+    table.add_row("Host", host or "auto-detect from spec")
+    table.add_row("Auth", "[green]enabled[/green]" if auth else "[dim]disabled[/dim]")
+    if db_type:
+        table.add_row("Database", db_type)
+    table.add_row("Locust Users", str(users))
+    table.add_row("Spawn Rate", f"{spawn_rate}/s")
     table.add_row("Run Time", run_time)
-    table.add_row("Host", host or "Auto-detect")
-    table.add_row("Authentication", "Enabled" if auth else "Disabled")
-    table.add_row("Custom Requirement", custom_requirement or "None")
-    table.add_row("Dry Run", "Yes" if dry_run else "No")
+    table.add_row("LLM Timeout", f"{timeout}s")
+    if custom_requirement:
+        req_display = custom_requirement[:80] + "..." if len(custom_requirement) > 80 else custom_requirement
+        table.add_row("Custom Req", req_display)
+    if dry_run:
+        table.add_row("Mode", "[yellow]DRY RUN[/yellow]")
+    if debug:
+        table.add_row("Debug", "[blue]recording intermediate states[/blue]")
 
-    console.print(table)
+    console.print(Panel(table, title="[bold]Configuration[/bold]", border_style="dim"))
 
 
 def _show_results(
@@ -337,13 +351,16 @@ async def _generate_scenario_based_tests(
     num_scenarios = scenario_gen.num_scenarios
     scenario_filenames = ", ".join(scenario_gen.SCENARIO_FILES.values())
 
-    # Show time estimate (using generator's estimate_time with num_endpoints)
+    # Get generation metrics
     time_estimate = scenario_gen.estimate_time(num_endpoints)
-    estimated_rpm = time_estimate.rpm
 
-    console.print(f"\n📊 [bold]Generation Plan[/bold]")
-    console.print(f"   {num_endpoints} endpoints × {num_scenarios} scenarios = {time_estimate.total_calls} LLM calls")
-    console.print(f"   Estimated: {time_estimate} (across {num_tags} tags)\n")
+    console.print(f"\n[bold]→ Generation Plan[/bold]")
+    console.print(f"  Model: [cyan]{ai_config.model}[/cyan]")
+    console.print(f"  Concurrency: {scenario_gen.current_concurrency} workers")
+    console.print(f"  Endpoints: {num_endpoints} across {num_tags} tags")
+    console.print(f"  Scenarios: {num_scenarios} per endpoint ({scenario_filenames})")
+    console.print(f"  Total LLM calls: {time_estimate.total_calls}")
+    console.print()
 
     # Generate base files first using template generator
     template_gen = LocustTestGenerator()
@@ -463,6 +480,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     from devdox_ai_locust.utils.generation_progress import GenerationProgress
     num_workers = scenario_gen.current_concurrency
     progress = GenerationProgress(total=num_endpoints, num_workers=num_workers, console=console)
+    scenario_gen.progress = progress
 
     # Process endpoint and save files (resilient - catches and tracks errors)
     async def process_and_save_endpoint(endpoint: Any) -> List[Dict[str, Any]]:
@@ -473,7 +491,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         endpoint_info = f"{endpoint.method} {endpoint.path}"
         short_info = f"{endpoint.method} {endpoint.path[:45]}..." if len(endpoint.path) > 45 else endpoint_info
 
-        progress.worker_start(short_info)
+        progress.endpoint_start(short_info)
 
         try:
             # Create endpoint directory
@@ -494,10 +512,8 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 
             # Save files using async I/O
             local_files = []
-            skipped_count = 0
             for scenario_type, content in scenarios.items():
                 if content:
-                    progress.worker_scenario(short_info, scenario_type.value)
                     filename = scenario_gen.SCENARIO_FILES[scenario_type]
                     file_path = endpoint_dir / filename
                     async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
@@ -509,8 +525,6 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                         "operation_id": operation_id,
                         "scenario": scenario_type.value,
                     })
-                else:
-                    skipped_count += 1
 
             # Update progress (success)
             async with file_write_lock:
@@ -518,7 +532,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 successful_endpoints.add(id(endpoint))
                 created_files.extend(local_files)
 
-            progress.worker_done(short_info, success=True, skipped_scenarios=skipped_count)
+            progress.endpoint_done(short_info, scenarios_generated=len(local_files))
             return local_files
 
         except Exception as e:
@@ -554,20 +568,13 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 })
                 created_files.extend(fallback_files)
 
-            progress.worker_done(short_info, success=False)
+            progress.endpoint_failed(short_info, e)
             return fallback_files
 
     # Process all endpoints in parallel with live progress
     with progress:
         tasks = [process_and_save_endpoint(ep) for ep in endpoints]
         await asyncio.gather(*tasks)
-
-    console.print(
-        f"\n[green]done[/green] Workflows generated: "
-        f"[green]{completed_count} done[/green], "
-        f"[red]{failed_count} failed[/red], "
-        f"[dim]{progress.skipped} skipped[/dim]"
-    )
 
     # Generate orchestrator for each tag
     console.print(f"\n→ Generating orchestrators ({num_tags} tags)...")
@@ -869,18 +876,20 @@ async def _async_generate(
             })
 
         # Display configuration
-        if ctx.obj["verbose"]:
-            _display_configuration(
-                swagger_url,
-                output_dir,
-                users,
-                spawn_rate,
-                run_time,
-                host,
-                auth,
-                custom_requirement,
-                dry_run,
-            )
+        _display_configuration(
+            swagger_url,
+            output_dir,
+            users,
+            spawn_rate,
+            run_time,
+            host,
+            auth,
+            custom_requirement,
+            dry_run,
+            db_type=db_type,
+            timeout=timeout,
+            debug=debug,
+        )
 
         raw_schema, endpoints, api_info = await _process_api_schema(
             swagger_url, ctx.obj["verbose"], schema_timeout

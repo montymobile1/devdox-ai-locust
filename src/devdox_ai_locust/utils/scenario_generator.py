@@ -21,6 +21,7 @@ from devdox_ai_locust.utils.code_validator import CodeValidator
 
 if TYPE_CHECKING:
     from devdox_ai_locust.utils.debug_recorder import DebugRecorder
+    from devdox_ai_locust.utils.generation_progress import GenerationProgress
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,7 @@ class ScenarioWorkflowGenerator:
         ai_config: Any,
         max_concurrency: int = MAX_CONCURRENCY,
         debug_recorder: Optional["DebugRecorder"] = None,
+        progress: Optional["GenerationProgress"] = None,
     ):
         """
         Initialize the scenario generator.
@@ -148,6 +150,7 @@ class ScenarioWorkflowGenerator:
             ai_config: AI configuration (model, timeout, etc.)
             max_concurrency: Maximum concurrent API calls
             debug_recorder: Optional debug recorder for capturing intermediate states
+            progress: Optional progress display for verbose output
         """
         self.prompt_dir = prompt_dir
         self.ai_client = ai_client
@@ -157,6 +160,7 @@ class ScenarioWorkflowGenerator:
         self._current_concurrency = self.DEFAULT_CONCURRENCY
         self._api_semaphore = asyncio.Semaphore(self._current_concurrency)
         self.debug_recorder = debug_recorder
+        self.progress: Optional["GenerationProgress"] = progress
         self._fallback_registry = FallbackHttpResponseRegistry()
         self._code_validator = CodeValidator()
 
@@ -626,7 +630,10 @@ class ScenarioWorkflowGenerator:
         """
         operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
         scenario_name = scenario_type.value
+        endpoint_info = f"{endpoint.method} {endpoint.path}"
 
+        if self.progress:
+            self.progress.scenario_start(endpoint_info, scenario_name)
 
         template_name = self.PROMPT_TEMPLATES.get(scenario_type)
         if not template_name:
@@ -657,10 +664,10 @@ class ScenarioWorkflowGenerator:
         # (e.g., response-test endpoints that intentionally return 4xx/5xx)
         all_status_codes = self._extract_expected_status_codes(endpoint)
         if scenario_type == ScenarioType.POSITIVE and all_status_codes and not expected_status_codes:
-            logger.info(
-                f"Skipping positive workflow for [{endpoint.method} {endpoint.path}] - "
-                f"spec defines no 2xx codes (defined: {all_status_codes})"
-            )
+            skip_reason = f"spec defines no 2xx codes (defined: {all_status_codes})"
+            logger.info(f"Skipping positive workflow for [{endpoint_info}] - {skip_reason}")
+            if self.progress:
+                self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
             return None
 
         # Pre-compute security injection points - skip if no valid targets
@@ -668,10 +675,10 @@ class ScenarioWorkflowGenerator:
         if scenario_type == ScenarioType.SECURITY:
             injection_points_result = self._precompute_injection_points(endpoint)
             if injection_points_result is None:
-                logger.info(
-                    f"Skipping security workflow for [{endpoint.method} {endpoint.path}] - "
-                    f"no valid injection points (no body string fields or query params)"
-                )
+                skip_reason = "no valid injection points (no body string fields or query params)"
+                logger.info(f"Skipping security workflow for [{endpoint_info}] - {skip_reason}")
+                if self.progress:
+                    self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
                 return None
             injection_points = injection_points_result
 
@@ -680,10 +687,10 @@ class ScenarioWorkflowGenerator:
         if scenario_type == ScenarioType.NEGATIVE:
             negative_scenarios = self._precompute_negative_scenarios(endpoint)
             if not negative_scenarios:
-                logger.info(
-                    f"Skipping negative workflow for [{endpoint.method} {endpoint.path}] - "
-                    f"no testable scenarios (no path params, body fields, or query params)"
-                )
+                skip_reason = "no testable scenarios (no path params, body fields, or query params)"
+                logger.info(f"Skipping negative workflow for [{endpoint_info}] - {skip_reason}")
+                if self.progress:
+                    self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
                 return None
 
         # Pre-compute positive field details - skip if nothing to test
@@ -907,6 +914,8 @@ class ScenarioWorkflowGenerator:
                             f"Retry SUCCEEDED for {scenario_type.value} "
                             f"[{endpoint.method} {endpoint.path}] on attempt {attempt + 1}/{max_validation_retries}"
                         )
+                    if self.progress:
+                        self.progress.scenario_done(endpoint_info, scenario_name)
                     return content
                 else:
                     # Semantic validation failed - use semantic fix prompt on retry
@@ -947,11 +956,16 @@ class ScenarioWorkflowGenerator:
                         validation_result={"valid": False, "error": error},
                     )
                 error_type = "Semantic" if last_is_semantic else "Syntax"
+                error_msg = f"{error_type}: {error[:200]}"
                 logger.warning(
                     f"{error_type} validation failed for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
                     f"{error[:200]}. Retrying..."
                 )
+                if self.progress:
+                    self.progress.scenario_retry(
+                        endpoint_info, scenario_name, attempt + 1, max_validation_retries, error_msg
+                    )
                 await asyncio.sleep(1)
             else:
                 logger.error(
