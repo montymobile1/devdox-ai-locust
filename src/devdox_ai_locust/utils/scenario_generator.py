@@ -128,8 +128,7 @@ class ScenarioWorkflowGenerator:
         ScenarioType.SECURITY: "workflow_security.j2",
     }
 
-    # Default and max concurrency limits
-    DEFAULT_CONCURRENCY = 10
+    # Max concurrency limit
     MAX_CONCURRENCY = 50
 
     def __init__(
@@ -157,7 +156,7 @@ class ScenarioWorkflowGenerator:
         self.ai_config = ai_config
         self._rate_limit_info: Optional[RateLimitInfo] = None
         self._max_concurrency = max_concurrency
-        self._current_concurrency = self.DEFAULT_CONCURRENCY
+        self._current_concurrency = max_concurrency
         self._api_semaphore = asyncio.Semaphore(self._current_concurrency)
         self.debug_recorder = debug_recorder
         self.progress: Optional["GenerationProgress"] = progress
@@ -181,7 +180,7 @@ class ScenarioWorkflowGenerator:
         # Target: stay at ~80% of rate limit to avoid hitting it
         # Divide by 60 to get per-second, multiply by avg response time (~3s)
         optimal = min(int(rpm * 0.8 / 20), self._max_concurrency)  # ~3 req/s sustained
-        new_concurrency = max(self.DEFAULT_CONCURRENCY, optimal)
+        new_concurrency = max(2, optimal)  # Never go below 2
 
         if new_concurrency != self._current_concurrency:
             logger.info(f"Adjusting concurrency: {self._current_concurrency} → {new_concurrency} (based on {rpm} RPM)")

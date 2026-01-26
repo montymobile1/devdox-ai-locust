@@ -344,6 +344,7 @@ async def _generate_scenario_based_tests(
         prompt_dir=prompt_dir,
         ai_client=ai_client,
         ai_config=ai_config,
+        max_concurrency=min(concurrency, 50),
         debug_recorder=debug_recorder,
     )
 
@@ -781,6 +782,13 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="Timeout in seconds for fetching/parsing OpenAPI schema (default: 30)",
 )
 @click.option(
+    "--concurrency",
+    "-c",
+    type=int,
+    default=10,
+    help="Number of concurrent LLM requests (default: 10, max: 50). Lower to reduce API 503 errors.",
+)
+@click.option(
     "--debug",
     is_flag=True,
     default=False,
@@ -802,6 +810,7 @@ def generate(
     together_api_key: Optional[str],
     timeout: int,
     schema_timeout: int,
+    concurrency: int,
     debug: bool,
 ) -> None:
     """Generate Locust test files from API documentation URL or file"""
