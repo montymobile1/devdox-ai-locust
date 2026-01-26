@@ -1356,35 +1356,42 @@ class ScenarioWorkflowGenerator:
             items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
             items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
             items_ref = field_items.get("$ref") if isinstance(field_items, dict) else None
+            # Respect minItems/maxItems constraints - use minItems as array length to ensure validity
+            min_items = field_schema.get("minItems", 1)
+            max_items = field_schema.get("maxItems")
+            # Use minItems if set > 1, otherwise default to 3 (or maxItems if smaller)
+            array_len = max(min_items, 2) if min_items > 1 else 3
+            if max_items and array_len > max_items:
+                array_len = max_items
             if items_enum:
-                return f"[random.choice({items_enum}) for _ in range(3)]"
+                return f"[random.choice({items_enum}) for _ in range({array_len})]"
             if items_type == "object" or items_ref:
                 items_props = field_items.get("properties", {}) if isinstance(field_items, dict) else {}
                 if items_props:
                     obj_instr = self._precompute_object_instruction(field_items, _object_ancestors)
-                    return f"[{obj_instr} for _ in range(2)]"
+                    return f"[{obj_instr} for _ in range({array_len})]"
                 return "[{}]"
             if items_type == "string":
-                return "[test_data_generator.generate_string() for _ in range(3)]"
+                return f"[test_data_generator.generate_string() for _ in range({array_len})]"
             if items_type == "integer":
-                return "[test_data_generator.generate_integer() for _ in range(3)]"
+                return f"[test_data_generator.generate_integer() for _ in range({array_len})]"
             if items_type == "number":
-                return "[test_data_generator.generate_float() for _ in range(3)]"
+                return f"[test_data_generator.generate_float() for _ in range({array_len})]"
             if items_type == "boolean":
-                return "[test_data_generator.generate_boolean() for _ in range(3)]"
+                return f"[test_data_generator.generate_boolean() for _ in range({array_len})]"
             if items_type == "array":
                 # Nested array - check inner items type
                 inner_items = field_items.get("items", {}) if isinstance(field_items, dict) else {}
                 inner_type = inner_items.get("type", "string") if isinstance(inner_items, dict) else "string"
                 if inner_type == "integer":
-                    return "[[test_data_generator.generate_integer() for _ in range(2)] for _ in range(3)]"
+                    return f"[[test_data_generator.generate_integer() for _ in range(2)] for _ in range({array_len})]"
                 elif inner_type == "number":
-                    return "[[test_data_generator.generate_float() for _ in range(2)] for _ in range(3)]"
+                    return f"[[test_data_generator.generate_float() for _ in range(2)] for _ in range({array_len})]"
                 elif inner_type == "boolean":
-                    return "[[test_data_generator.generate_boolean() for _ in range(2)] for _ in range(3)]"
+                    return f"[[test_data_generator.generate_boolean() for _ in range(2)] for _ in range({array_len})]"
                 else:
-                    return "[[test_data_generator.generate_string() for _ in range(2)] for _ in range(3)]"
-            return "[test_data_generator.generate_string() for _ in range(3)]"
+                    return f"[[test_data_generator.generate_string() for _ in range(2)] for _ in range({array_len})]"
+            return f"[test_data_generator.generate_string() for _ in range({array_len})]"
 
         # Fallback for unknown types
         return "test_data_generator.generate_string(length=10)"
@@ -1655,6 +1662,10 @@ class ScenarioWorkflowGenerator:
 
                 lines.append(f"{prefix}    - {prop_name}: {type_str}{req_marker}")
 
+                # Add pre-computed generator instruction so LLM knows exactly how to generate valid data
+                generator = self._get_type_instruction(unwrapped, field_name=prop_name)
+                lines.append(f"{prefix}        USE: {generator}")
+
                 # Add description (check both original and unwrapped)
                 desc_text = prop_schema.get("description") or unwrapped.get("description")
                 if desc_text:
@@ -1712,6 +1723,16 @@ class ScenarioWorkflowGenerator:
                     items_unwrapped, _ = self._unwrap_nullable_schema(items)
                     items_type = items_unwrapped.get("type", "any")
                     lines.append(f"{prefix}        array items type: {items_type}")
+                    # Show minItems/maxItems constraints
+                    min_items = unwrapped.get("minItems")
+                    max_items = unwrapped.get("maxItems")
+                    if min_items is not None or max_items is not None:
+                        array_constraints = []
+                        if min_items is not None:
+                            array_constraints.append(f"minItems={min_items}")
+                        if max_items is not None:
+                            array_constraints.append(f"maxItems={max_items}")
+                        lines.append(f"{prefix}        array constraints: {', '.join(array_constraints)}")
                     if items_unwrapped.get("properties"):
                         lines.append(f"{prefix}        array item properties:")
                         nested_lines = self._format_schema(items_unwrapped, indent + 3)
