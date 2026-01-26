@@ -1243,3 +1243,664 @@ class TestAdditionalPropertiesHandling:
         result = gen._precompute_object_instruction(schema)
         assert "key_" in result
         assert "generate_string" in result
+
+
+# ============================================================
+# 4th Sweep: Shared Helper Tests
+# ============================================================
+
+class TestExtractAllProperties:
+    """Tests for _extract_all_properties shared helper."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def test_direct_properties(self):
+        """Direct properties are extracted correctly."""
+        gen = self._get_generator()
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+            "required": ["name"],
+        }
+        props, required = gen._extract_all_properties(schema)
+        assert "name" in props
+        assert "age" in props
+        assert "name" in required
+
+    def test_allof_merging(self):
+        """allOf items are merged into combined properties."""
+        gen = self._get_generator()
+        schema = {
+            "allOf": [
+                {"properties": {"id": {"type": "integer"}}, "required": ["id"]},
+                {"properties": {"name": {"type": "string"}}, "required": ["name"]},
+            ]
+        }
+        props, required = gen._extract_all_properties(schema)
+        assert "id" in props
+        assert "name" in props
+        assert "id" in required
+        assert "name" in required
+
+    def test_allof_with_direct_properties(self):
+        """allOf items are merged with direct properties (direct takes priority)."""
+        gen = self._get_generator()
+        schema = {
+            "properties": {"status": {"type": "string", "enum": ["active"]}},
+            "allOf": [
+                {"properties": {"id": {"type": "integer"}}},
+            ]
+        }
+        props, required = gen._extract_all_properties(schema)
+        assert "id" in props
+        assert "status" in props
+        # Direct property should override allOf for same key
+        assert props["status"]["enum"] == ["active"]
+
+    def test_oneof_discriminated_union(self):
+        """oneOf variants are merged when no direct properties exist."""
+        gen = self._get_generator()
+        schema = {
+            "oneOf": [
+                {"properties": {"card_number": {"type": "string"}}, "required": ["card_number"]},
+                {"properties": {"account_number": {"type": "string"}}, "required": ["account_number"]},
+            ],
+            "discriminator": {"propertyName": "payment_type"},
+        }
+        props, required = gen._extract_all_properties(schema)
+        assert "card_number" in props
+        assert "account_number" in props
+
+    def test_oneof_not_merged_when_direct_properties_exist(self):
+        """oneOf variants are NOT merged when direct properties already exist."""
+        gen = self._get_generator()
+        schema = {
+            "properties": {"type": {"type": "string"}},
+            "oneOf": [
+                {"properties": {"extra_field": {"type": "string"}}},
+            ],
+        }
+        props, required = gen._extract_all_properties(schema)
+        assert "type" in props
+        assert "extra_field" not in props  # Not merged because direct props exist
+
+    def test_nested_allof_in_variant(self):
+        """Variant with internal allOf has its properties merged."""
+        gen = self._get_generator()
+        schema = {
+            "oneOf": [
+                {
+                    "allOf": [
+                        {"properties": {"base_field": {"type": "string"}}},
+                        {"properties": {"variant_field": {"type": "integer"}}},
+                    ],
+                    "required": ["base_field"],
+                }
+            ]
+        }
+        props, required = gen._extract_all_properties(schema)
+        assert "base_field" in props
+        assert "variant_field" in props
+
+    def test_empty_schema(self):
+        """Empty schema returns empty properties."""
+        gen = self._get_generator()
+        props, required = gen._extract_all_properties({})
+        assert props == {}
+        assert required == []
+
+    def test_non_dict_schema(self):
+        """Non-dict input returns empty properties."""
+        gen = self._get_generator()
+        props, required = gen._extract_all_properties("not a dict")
+        assert props == {}
+        assert required == []
+
+
+class TestEscapeForPythonString:
+    """Tests for _escape_for_python_string shared helper."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def test_backslash_escaping(self):
+        """Backslashes are doubled."""
+        gen = self._get_generator()
+        assert gen._escape_for_python_string("^\\d{3}$") == "^\\\\d{3}$"
+
+    def test_quote_escaping(self):
+        """Double quotes are escaped."""
+        gen = self._get_generator()
+        assert gen._escape_for_python_string('say "hello"') == 'say \\"hello\\"'
+
+    def test_newline_escaping(self):
+        """Newlines are escaped."""
+        gen = self._get_generator()
+        assert gen._escape_for_python_string("line1\nline2") == "line1\\nline2"
+
+    def test_tab_escaping(self):
+        """Tabs are escaped."""
+        gen = self._get_generator()
+        assert gen._escape_for_python_string("a\tb") == "a\\tb"
+
+    def test_combined_escaping(self):
+        """Multiple special chars are all escaped correctly."""
+        gen = self._get_generator()
+        result = gen._escape_for_python_string('^\\d+"test"\\n')
+        assert "\\\\" in result
+        assert '\\"' in result
+
+    def test_non_string_input(self):
+        """Non-string input is converted to string."""
+        gen = self._get_generator()
+        assert gen._escape_for_python_string(123) == "123"
+
+
+class TestGetTypeInstruction:
+    """Tests for _get_type_instruction shared helper."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def test_enum_priority(self):
+        """Enum takes priority over type."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "enum": ["a", "b"]})
+        assert "random.choice" in result
+        assert "['a', 'b']" in result
+
+    def test_pattern(self):
+        """Pattern generates generate_string with pattern arg."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "pattern": "^\\d+$"})
+        assert "generate_string(pattern=" in result
+        assert "\\\\" in result  # Backslash properly escaped
+
+    def test_format_date(self):
+        gen = self._get_generator()
+        assert "random_date" in gen._get_type_instruction({"type": "string", "format": "date"})
+
+    def test_format_datetime(self):
+        gen = self._get_generator()
+        assert "isoformat" in gen._get_type_instruction({"type": "string", "format": "date-time"})
+
+    def test_format_email(self):
+        gen = self._get_generator()
+        assert "generate_email" in gen._get_type_instruction({"type": "string", "format": "email"})
+
+    def test_format_uuid(self):
+        gen = self._get_generator()
+        assert "random_uuid" in gen._get_type_instruction({"type": "string", "format": "uuid"})
+
+    def test_format_uri_randomized(self):
+        """URI format generates randomized URLs, not hardcoded."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "format": "uri"})
+        assert "generate_string" in result  # randomized part
+
+    def test_format_ipv4_randomized(self):
+        """IPv4 format generates randomized IPs."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "format": "ipv4"})
+        assert "random.randint" in result
+
+    def test_format_hostname_randomized(self):
+        """Hostname format generates randomized hostnames."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "format": "hostname"})
+        assert "generate_string" in result
+
+    def test_format_time_randomized(self):
+        """Time format generates randomized times."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "format": "time"})
+        assert "random.randint" in result
+
+    def test_string_type(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string"})
+        assert "generate_string(length=" in result
+
+    def test_string_max_length_capped(self):
+        """MaxLength > 50 is capped to 10."""
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "string", "maxLength": 200})
+        assert "length=10" in result
+
+    def test_integer_with_bounds(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "integer", "minimum": 5, "maximum": 50})
+        assert "min_val=5" in result
+        assert "max_val=50" in result
+
+    def test_integer_exclusive(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 100})
+        assert "exclusive=True" in result
+
+    def test_integer_multiple_of(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "integer", "multipleOf": 5})
+        assert "multiple_of=5" in result
+
+    def test_number_type(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "number", "minimum": 0.5})
+        assert "generate_float" in result
+        assert "min_val=0.5" in result
+
+    def test_boolean_type(self):
+        gen = self._get_generator()
+        assert "generate_boolean" in gen._get_type_instruction({"type": "boolean"})
+
+    def test_object_with_properties(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "object", "properties": {"x": {"type": "integer"}}})
+        assert "generate_integer" in result  # nested field instruction
+
+    def test_object_additional_properties(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "object", "additionalProperties": {"type": "integer"}})
+        assert "key_" in result
+        assert "generate_integer" in result
+
+    def test_array_string_items(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "array", "items": {"type": "string"}})
+        assert "generate_string" in result
+        assert "for _ in range" in result
+
+    def test_array_enum_items(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "array", "items": {"type": "string", "enum": ["a", "b"]}})
+        assert "random.choice" in result
+
+    def test_unknown_type_fallback(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction({"type": "custom_weird_type"})
+        assert "generate_string" in result
+
+    def test_non_dict_input(self):
+        gen = self._get_generator()
+        result = gen._get_type_instruction("not a dict")
+        assert "generate_string" in result
+
+
+class TestBoundaryArithmeticGuard:
+    """Tests for C4 fix: boundary testing handles non-numeric min/max."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def _make_endpoint(self, min_val=None, max_val=None):
+        endpoint = Mock()
+        endpoint.parameters = []
+        endpoint.method = "POST"
+        endpoint.path = "/test"
+        body = Mock()
+        body.schema = {
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "minimum": min_val,
+                    "maximum": max_val,
+                }
+            },
+            "required": ["count"],
+        }
+        endpoint.request_body = body
+        return endpoint
+
+    def test_string_minimum_no_crash(self):
+        """String minimum value doesn't cause TypeError."""
+        gen = self._get_generator()
+        endpoint = self._make_endpoint(min_val="5", max_val=100)
+        result = gen._precompute_negative_scenarios(endpoint)
+        # Should not crash, and should only generate boundary for max (valid int)
+        assert "max=100" in result
+        assert "min=5" not in result  # String "5" is skipped
+
+    def test_none_values_no_crash(self):
+        """None min/max values are handled gracefully."""
+        gen = self._get_generator()
+        endpoint = self._make_endpoint(min_val=None, max_val=None)
+        result = gen._precompute_negative_scenarios(endpoint)
+        assert "BOUNDARY" not in result  # No boundaries without constraints
+
+
+class TestParameterTypeGuard:
+    """Tests for C5 fix: invalid ParameterType values don't crash."""
+
+    def test_invalid_location_skipped(self):
+        """Parameter with invalid 'in' value is skipped with warning."""
+        from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser
+        parser = OpenAPIParser()
+        parser.spec_data = {"openapi": "3.0.0", "info": {"title": "Test"}, "paths": {}}
+        parser.components = {}
+
+        operation = {
+            "parameters": [
+                {"name": "valid_param", "in": "query", "schema": {"type": "string"}},
+                {"name": "invalid_param", "in": "body", "schema": {"type": "string"}},  # 2.x style
+                {"name": "another_valid", "in": "header", "schema": {"type": "string"}},
+            ]
+        }
+        params = parser._extract_parameters(operation)
+        # Should get 2 params (query and header), skip the invalid one
+        assert len(params) == 2
+        assert params[0].name == "valid_param"
+        assert params[1].name == "another_valid"
+
+
+class TestStatusCodeFallbackDefaults:
+    """Tests for H3 fix: fallback defaults when registry returns nothing."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+        gen = ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+        # Mock fallback registry that returns empty responses
+        mock_registry = Mock()
+        mock_block = Mock()
+        mock_block.as_dict.return_value = {}  # No responses for any method
+        mock_registry.get_responses.return_value = mock_block
+        gen._fallback_registry = mock_registry
+        return gen, ScenarioType
+
+    def _make_endpoint(self, responses=None):
+        endpoint = Mock()
+        endpoint.method = "POST"
+        endpoint.path = "/test"
+        endpoint.responses = responses or []
+        return endpoint
+
+    def test_negative_empty_fallback_returns_defaults(self):
+        """Negative scenario gets default 400/422 when registry is empty."""
+        gen, ScenarioType = self._get_generator()
+        endpoint = self._make_endpoint()
+        result = gen._precompute_scenario_status_codes(endpoint, ScenarioType.NEGATIVE, has_auth=False)
+        codes = [c for c, _ in result]
+        assert 400 in codes
+        assert 422 in codes
+
+    def test_security_empty_fallback_returns_defaults(self):
+        """Security scenario gets default 400/403/422 when registry is empty."""
+        gen, ScenarioType = self._get_generator()
+        endpoint = self._make_endpoint()
+        result = gen._precompute_scenario_status_codes(endpoint, ScenarioType.SECURITY, has_auth=False)
+        codes = [c for c, _ in result]
+        assert 400 in codes
+        assert 403 in codes
+        assert 422 in codes
+
+    def test_positive_empty_fallback_returns_200(self):
+        """Positive scenario gets default 200 when registry is empty."""
+        gen, ScenarioType = self._get_generator()
+        endpoint = self._make_endpoint()
+        result = gen._precompute_scenario_status_codes(endpoint, ScenarioType.POSITIVE, has_auth=False)
+        codes = [c for c, _ in result]
+        assert 200 in codes
+
+
+class TestExclude2xxInFormatEndpoint:
+    """Tests for M1 fix: exclude_2xx parameter in _format_single_endpoint."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def _make_endpoint(self):
+        from devdox_ai_locust.utils.open_ai_parser import Response
+        endpoint = Mock()
+        endpoint.method = "POST"
+        endpoint.path = "/items"
+        endpoint.operation_id = "createItem"
+        endpoint.summary = "Create item"
+        endpoint.description = ""
+        endpoint.parameters = []
+        endpoint.request_body = None
+        endpoint.responses = [
+            Response(status_code="201", description="Created"),
+            Response(status_code="400", description="Bad Request"),
+            Response(status_code="422", description="Validation Error"),
+        ]
+        return endpoint
+
+    def test_exclude_2xx_false_includes_all(self):
+        """Default (exclude_2xx=False) includes all response codes."""
+        gen = self._get_generator()
+        endpoint = self._make_endpoint()
+        result = gen._format_single_endpoint(endpoint, exclude_2xx=False)
+        assert "201" in result
+        assert "400" in result
+        assert "422" in result
+
+    def test_exclude_2xx_true_removes_success(self):
+        """exclude_2xx=True removes 2xx responses from output."""
+        gen = self._get_generator()
+        endpoint = self._make_endpoint()
+        result = gen._format_single_endpoint(endpoint, exclude_2xx=True)
+        assert "201" not in result
+        assert "400" in result
+        assert "422" in result
+
+
+class TestParamTypeExactMatch:
+    """Tests for M2 fix: param type uses exact match instead of substring."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def _make_endpoint_with_path_param(self, param_type):
+        endpoint = Mock()
+        endpoint.method = "GET"
+        endpoint.path = "/items/{id}"
+        param = Mock()
+        param.name = "id"
+        param.type = param_type
+        param.location = Mock(value="path")
+        endpoint.parameters = [param]
+        endpoint.request_body = None
+        return endpoint
+
+    def test_integer_type_matches(self):
+        """'integer' type is treated as numeric."""
+        gen = self._get_generator()
+        endpoint = self._make_endpoint_with_path_param("integer")
+        result = gen._precompute_negative_scenarios(endpoint)
+        assert "999999999" in result  # Integer path param test
+
+    def test_string_type_not_matched_as_int(self):
+        """'string' type is NOT treated as numeric (no substring match on 'int')."""
+        gen = self._get_generator()
+        endpoint = self._make_endpoint_with_path_param("string")
+        result = gen._precompute_negative_scenarios(endpoint)
+        assert "nonexistent-id-12345" in result  # String path param test
+        assert "999999999" not in result
+
+
+class TestCodeValidatorUrlArgRegex:
+    """Tests for M4 fix: URL arg regex matches the URL argument, not the method."""
+
+    def test_detects_double_slash_in_fstring_url(self):
+        """Catches // in f-string URL argument."""
+        validator = CodeValidator()
+        code = 'self.make_request("PATCH", f"/api/v1/{item_id}//verify", expected_status=[422])'
+        violations = validator._check_empty_path_segments(code)
+        assert len(violations) == 1
+        assert "empty_path_segment" in violations[0].rule
+
+    def test_no_false_positive_on_method_string(self):
+        """Does NOT false-positive on the method string 'GET'."""
+        validator = CodeValidator()
+        code = 'self.make_request("GET", "/api/v1/items/123")'
+        violations = validator._check_empty_path_segments(code)
+        assert len(violations) == 0
+
+    def test_detects_double_slash_in_regular_string(self):
+        """Catches // in regular (non-f-string) URL."""
+        validator = CodeValidator()
+        code = 'self.make_request("POST", "/api//items")'
+        violations = validator._check_empty_path_segments(code)
+        assert len(violations) == 1
+
+    def test_ignores_https_protocol(self):
+        """Does not flag https:// as empty path segment."""
+        validator = CodeValidator()
+        code = 'self.make_request("GET", "https://example.com/api/items")'
+        violations = validator._check_empty_path_segments(code)
+        assert len(violations) == 0
+
+
+class TestNoneParamType:
+    """Tests for M5 fix: None param type handled gracefully."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def test_none_type_defaults_to_string(self):
+        """Parameter with type=None defaults to string behavior."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.method = "GET"
+        endpoint.path = "/items/{id}"
+        param = Mock()
+        param.name = "id"
+        param.type = None  # Explicitly None
+        param.location = Mock(value="path")
+        endpoint.parameters = [param]
+        endpoint.request_body = None
+        result = gen._precompute_negative_scenarios(endpoint)
+        # Should not crash, and should treat as string path param
+        assert "nonexistent-id-12345" in result
+
+
+class TestPrecomputePositiveFieldsRefactored:
+    """Tests that refactored _precompute_positive_fields still works correctly."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def test_allof_schema_generates_all_fields(self):
+        """allOf schema has all fields pre-computed."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        body = Mock()
+        body.schema = {
+            "allOf": [
+                {"properties": {"id": {"type": "integer"}}, "required": ["id"]},
+                {"properties": {"name": {"type": "string"}}, "required": ["name"]},
+            ]
+        }
+        endpoint.request_body = body
+        result = gen._precompute_positive_fields(endpoint)
+        assert '"id"' in result
+        assert '"name"' in result
+        assert "generate_integer" in result
+        assert "generate_string" in result
+
+    def test_discriminated_union_uses_real_instructions(self):
+        """Discriminated union generates real instructions, not <type> placeholders."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        body = Mock()
+        body.schema = {
+            "oneOf": [
+                {
+                    "title": "CreditCard",
+                    "properties": {
+                        "payment_type": {"type": "string", "const": "credit_card"},
+                        "card_number": {"type": "string", "pattern": "^\\d{16}$"},
+                        "amount": {"type": "number", "minimum": 0.01},
+                    },
+                    "required": ["payment_type", "card_number", "amount"],
+                }
+            ],
+            "discriminator": {"propertyName": "payment_type"},
+        }
+        endpoint.request_body = body
+        result = gen._precompute_positive_fields(endpoint)
+        assert "DISCRIMINATED UNION" in result
+        assert "<" not in result  # No placeholder <type> tokens
+        assert "generate_string(pattern=" in result
+        assert "generate_float" in result
+
+    def test_no_request_body(self):
+        """Endpoint without request body returns empty string."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.request_body = None
+        result = gen._precompute_positive_fields(endpoint)
+        assert result == ""
+
+    def test_randomized_format_values(self):
+        """Format values (uri, ipv4, etc.) use randomized generators."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        body = Mock()
+        body.schema = {
+            "properties": {
+                "website": {"type": "string", "format": "uri"},
+                "ip": {"type": "string", "format": "ipv4"},
+                "host": {"type": "string", "format": "hostname"},
+            }
+        }
+        endpoint.request_body = body
+        result = gen._precompute_positive_fields(endpoint)
+        # All should have randomized components
+        assert "generate_string" in result or "random.randint" in result
+
+
+class TestNegativeInjectionWithAllOf:
+    """Tests that negative/injection pre-computation now handles allOf schemas."""
+
+    def _get_generator(self):
+        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+
+    def test_negative_finds_allof_fields(self):
+        """_precompute_negative_scenarios finds fields from allOf items."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.method = "POST"
+        endpoint.path = "/test"
+        endpoint.parameters = []
+        body = Mock()
+        body.schema = {
+            "allOf": [
+                {"properties": {"age": {"type": "integer", "minimum": 0}}, "required": ["age"]},
+                {"properties": {"score": {"type": "number", "maximum": 100}}, "required": ["score"]},
+            ]
+        }
+        endpoint.request_body = body
+        result = gen._precompute_negative_scenarios(endpoint)
+        assert "age" in result
+        assert "score" in result
+        assert "MISSING_REQUIRED" in result
+
+    def test_injection_finds_allof_string_fields(self):
+        """_precompute_injection_points finds string fields from allOf items."""
+        gen = self._get_generator()
+        endpoint = Mock()
+        endpoint.method = "POST"
+        endpoint.path = "/test"
+        endpoint.parameters = []
+        body = Mock()
+        body.schema = {
+            "allOf": [
+                {"properties": {"name": {"type": "string"}}},
+                {"properties": {"description": {"type": "string"}}},
+            ]
+        }
+        endpoint.request_body = body
+        result = gen._precompute_injection_points(endpoint)
+        assert result is not None
+        assert "name" in result
+        assert "description" in result

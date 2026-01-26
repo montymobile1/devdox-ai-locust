@@ -219,6 +219,11 @@ class CodeValidator:
 
         return violations
 
+    # Regex to extract URL argument from make_request calls (second string arg, supports f-strings)
+    _URL_ARG_RE = re.compile(
+        r'make_request\(\s*"[^"]*"\s*,\s*f?"([^"]*)"'
+    )
+
     def _check_empty_path_segments(self, code: str) -> List[ValidationViolation]:
         """Check for empty path segments (double slashes) in URLs (Classification E)."""
         violations = []
@@ -226,8 +231,8 @@ class CodeValidator:
 
         for i, line in enumerate(lines, 1):
             if "make_request" in line:
-                # Look for // in URL strings (but not in https:// or http://)
-                url_match = re.search(r'"([^"]*)"', line)
+                # Match the URL argument specifically (second string arg after method)
+                url_match = self._URL_ARG_RE.search(line)
                 if url_match:
                     url = url_match.group(1)
                     # Remove protocol prefix before checking

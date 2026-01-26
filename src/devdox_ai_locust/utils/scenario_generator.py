@@ -627,7 +627,7 @@ class ScenarioWorkflowGenerator:
         all_endpoints: Optional[List[Any]] = None,
         custom_requirement: Optional[str] = None,
         db_type: str = "",
-    ) -> str:
+    ) -> Optional[str]:
         """
         Generate a scenario using LLM for a single endpoint.
 
@@ -643,7 +643,7 @@ class ScenarioWorkflowGenerator:
             db_type: Database type ("mongo" for MongoDB integration)
 
         Returns:
-            Generated Python code
+            Generated Python code, or None if generation was skipped
         """
         operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
         scenario_name = scenario_type.value
@@ -660,12 +660,9 @@ class ScenarioWorkflowGenerator:
         template = self.prompt_env.get_template(template_name)
 
         # Format single endpoint with full details
-        endpoint_details = self._format_single_endpoint(endpoint)
-
-        # For negative tests: strip 2xx response codes from endpoint description
-        # so the LLM cannot see/copy success codes into expected_status
-        if scenario_type == ScenarioType.NEGATIVE:
-            endpoint_details = self._strip_success_responses(endpoint_details)
+        # For negative/security tests: exclude 2xx responses so the LLM doesn't copy success codes
+        exclude_2xx = scenario_type in (ScenarioType.NEGATIVE, ScenarioType.SECURITY)
+        endpoint_details = self._format_single_endpoint(endpoint, exclude_2xx=exclude_2xx)
 
         # Build class name from operation_id
         class_name = self._operation_to_class_name(endpoint)
@@ -1045,51 +1042,6 @@ class ScenarioWorkflowGenerator:
         )
 
     @staticmethod
-    def _strip_success_responses(endpoint_details: str) -> str:
-        """
-        Remove 2xx response codes from endpoint description for negative tests.
-
-        The LLM sees '- 201: Created' in the responses section and copies
-        201 into expected_status for negative tests. Stripping 2xx lines
-        prevents this hallucination pattern.
-        """
-        lines = endpoint_details.split("\n")
-        filtered = []
-        in_responses = False
-        skip_response_schema = False
-
-        for line in lines:
-            # Detect responses section
-            if line.strip() == "Responses:":
-                in_responses = True
-                filtered.append(line)
-                continue
-
-            # Detect end of responses section (next top-level section)
-            if in_responses and line and not line.startswith(" ") and line.strip() != "":
-                in_responses = False
-                skip_response_schema = False
-
-            if in_responses:
-                # Check if this is a 2xx response line (e.g., "  - 201: Created")
-                stripped = line.strip()
-                if stripped.startswith("- "):
-                    code_part = stripped[2:].split(":")[0].strip()
-                    if code_part.isdigit() and 200 <= int(code_part) < 300:
-                        skip_response_schema = True
-                        continue  # Skip this 2xx response line
-                    else:
-                        skip_response_schema = False
-
-                # Skip response schema lines that belong to a 2xx response
-                if skip_response_schema:
-                    continue
-
-            filtered.append(line)
-
-        return "\n".join(filtered)
-
-    @staticmethod
     def _unwrap_nullable_schema(schema: dict) -> tuple:
         """Unwrap OpenAPI 3.1 anyOf nullable pattern and 3.0 nullable flag.
 
@@ -1119,8 +1071,226 @@ class ScenarioWorkflowGenerator:
 
         return schema, False
 
-    def _format_single_endpoint(self, endpoint: Any) -> str:
-        """Format a single endpoint with full details for the prompt"""
+    def _extract_all_properties(self, schema: dict) -> Tuple[Dict[str, Any], List[str]]:
+        """Extract all properties from a schema, handling allOf merging and discriminated unions.
+
+        Handles:
+        - Direct properties
+        - allOf: merges properties from all items (items are already $ref-resolved by parser)
+        - oneOf/anyOf discriminated unions: merges properties from all variants
+          (union of all possible fields, so all can be recognized)
+
+        Args:
+            schema: Request body schema dict
+
+        Returns:
+            (properties_dict, required_list) tuple
+        """
+        if not isinstance(schema, dict):
+            return {}, []
+
+        properties = dict(schema.get("properties", {}))
+        required_list = list(schema.get("required", []))
+
+        # Handle allOf: merge properties from all items
+        all_of = schema.get("allOf")
+        if all_of and isinstance(all_of, list):
+            for item in all_of:
+                if not isinstance(item, dict):
+                    continue
+                # Item may itself have allOf (nested composition)
+                item_props = item.get("properties", {})
+                if item_props:
+                    properties.update(item_props)
+                    required_list.extend(item.get("required", []))
+                # If item has its own allOf (e.g. resolved $ref that uses composition)
+                nested_all_of = item.get("allOf")
+                if nested_all_of and isinstance(nested_all_of, list):
+                    for sub in nested_all_of:
+                        if isinstance(sub, dict) and sub.get("properties"):
+                            properties.update(sub["properties"])
+                            required_list.extend(sub.get("required", []))
+
+        # Handle discriminated unions: merge all variant properties
+        one_of = schema.get("oneOf") or schema.get("anyOf")
+        if one_of and isinstance(one_of, list) and not properties:
+            for variant in one_of:
+                if not isinstance(variant, dict):
+                    continue
+                v_props = variant.get("properties", {})
+                if v_props:
+                    properties.update(v_props)
+                    required_list.extend(variant.get("required", []))
+                # Variant might use allOf internally
+                v_all_of = variant.get("allOf")
+                if v_all_of and isinstance(v_all_of, list):
+                    for sub in v_all_of:
+                        if isinstance(sub, dict) and sub.get("properties"):
+                            properties.update(sub["properties"])
+                            required_list.extend(sub.get("required", []))
+
+        return properties, list(set(required_list))
+
+    @staticmethod
+    def _escape_for_python_string(value: str) -> str:
+        """Escape a string for safe embedding in a Python double-quoted string literal.
+
+        Handles backslashes, quotes, and control characters.
+        """
+        if not isinstance(value, str):
+            return str(value)
+        return (
+            value
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
+
+    def _get_type_instruction(self, field_schema: dict, _object_ancestors: Optional[frozenset] = None) -> str:
+        """Map a field schema to a Python code instruction for generating a valid value.
+
+        Handles enums, patterns, formats, string/integer/number/boolean/array/object types,
+        and nested structures. Used by both _precompute_positive_fields and
+        _precompute_object_instruction to avoid duplicated logic.
+
+        Args:
+            field_schema: The (already unwrapped) field schema dict
+            _object_ancestors: Optional frozenset of schema IDs for circular reference detection
+                             (passed through to _precompute_object_instruction for nested objects)
+
+        Returns:
+            Python code string for generating a valid test value
+        """
+        if not isinstance(field_schema, dict):
+            return "test_data_generator.generate_string(length=10)"
+
+        field_type = field_schema.get("type", "string")
+        field_format = field_schema.get("format", "")
+        field_enum = field_schema.get("enum")
+        field_pattern = field_schema.get("pattern")
+        field_items = field_schema.get("items", {})
+
+        # Enum: always takes priority
+        if field_enum:
+            return f"random.choice({field_enum})"
+
+        # Pattern: regex-based generation
+        if field_pattern:
+            escaped = self._escape_for_python_string(field_pattern)
+            return f'test_data_generator.generate_string(pattern="{escaped}")'
+
+        # Format-specific generators
+        if field_format == "date":
+            return "test_data_generator.random_date()"
+        if field_format == "date-time":
+            return "datetime.now().isoformat()"
+        if field_format == "email":
+            return "test_data_generator.generate_email()"
+        if field_format == "uuid":
+            return "test_data_generator.random_uuid()"
+        if field_format in ("uri", "url"):
+            return 'f"https://example.com/test/{test_data_generator.generate_string(length=8)}"'
+        if field_format == "ipv4":
+            return 'f"192.168.{random.randint(1,254)}.{random.randint(1,254)}"'
+        if field_format == "ipv6":
+            return 'f"2001:db8::{random.randint(1,9999):x}"'
+        if field_format == "hostname":
+            return 'f"{test_data_generator.generate_string(length=6)}.example.com"'
+        if field_format == "time":
+            return 'f"{random.randint(0,23):02d}:{random.randint(0,59):02d}:00"'
+
+        # Type-based generators
+        if field_type == "string":
+            length = field_schema.get("maxLength", 10)
+            if isinstance(length, int) and length > 50:
+                length = 10
+            elif not isinstance(length, int):
+                length = 10
+            return f"test_data_generator.generate_string(length={length})"
+
+        if field_type == "integer":
+            exclusive_min = field_schema.get("exclusiveMinimum")
+            exclusive_max = field_schema.get("exclusiveMaximum")
+            min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 1)
+            max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000)
+            exclusive = exclusive_min is not None or exclusive_max is not None
+            multiple_of = field_schema.get("multipleOf")
+            parts = [f"min_val={min_val}", f"max_val={max_val}"]
+            if exclusive:
+                parts.append("exclusive=True")
+            if multiple_of:
+                parts.append(f"multiple_of={multiple_of}")
+            return f"test_data_generator.generate_integer({', '.join(parts)})"
+
+        if field_type == "number":
+            exclusive_min = field_schema.get("exclusiveMinimum")
+            exclusive_max = field_schema.get("exclusiveMaximum")
+            min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 0.0)
+            max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000.0)
+            exclusive = exclusive_min is not None or exclusive_max is not None
+            if exclusive:
+                return f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val}, exclusive=True)"
+            return f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val})"
+
+        if field_type == "boolean":
+            return "test_data_generator.generate_boolean()"
+
+        if field_type == "object":
+            sub_props = field_schema.get("properties", {})
+            if sub_props:
+                return self._precompute_object_instruction(field_schema, _object_ancestors)
+            add_props = field_schema.get("additionalProperties")
+            if add_props and isinstance(add_props, dict):
+                val_type = add_props.get("type", "string")
+                if val_type == "integer":
+                    val_gen = "test_data_generator.generate_integer()"
+                elif val_type == "number":
+                    val_gen = "test_data_generator.generate_float()"
+                elif val_type == "boolean":
+                    val_gen = "test_data_generator.generate_boolean()"
+                else:
+                    val_gen = "test_data_generator.generate_string()"
+                return '{f"key_{i}": ' + val_gen + ' for i in range(3)}'
+            if add_props:
+                return '{"key1": "value1", "key2": "value2"}'
+            return "{}"
+
+        if field_type == "array":
+            items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
+            items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
+            items_ref = field_items.get("$ref") if isinstance(field_items, dict) else None
+            if items_enum:
+                return f"[random.choice({items_enum}) for _ in range(3)]"
+            if items_type == "object" or items_ref:
+                items_props = field_items.get("properties", {}) if isinstance(field_items, dict) else {}
+                if items_props:
+                    obj_instr = self._precompute_object_instruction(field_items, _object_ancestors)
+                    return f"[{obj_instr} for _ in range(2)]"
+                return "[{}]"
+            if items_type == "string":
+                return "[test_data_generator.generate_string() for _ in range(3)]"
+            if items_type == "integer":
+                return "[test_data_generator.generate_integer() for _ in range(3)]"
+            if items_type == "number":
+                return "[test_data_generator.generate_float() for _ in range(3)]"
+            if items_type == "boolean":
+                return "[test_data_generator.generate_boolean() for _ in range(3)]"
+            if items_type == "array":
+                return "[[test_data_generator.generate_string() for _ in range(2)] for _ in range(3)]"
+            return "[test_data_generator.generate_string() for _ in range(3)]"
+
+        # Fallback for unknown types
+        return "test_data_generator.generate_string(length=10)"
+
+    def _format_single_endpoint(self, endpoint: Any, exclude_2xx: bool = False) -> str:
+        """Format a single endpoint with full details for the prompt.
+
+        Args:
+            endpoint: Endpoint object to format
+            exclude_2xx: If True, omit 2xx responses from the output (for negative/security tests)
+        """
         lines = []
 
         # Basic info
@@ -1242,6 +1412,13 @@ class ScenarioWorkflowGenerator:
             lines.append("\nResponses:")
             if isinstance(responses, dict):
                 for status_code, response in responses.items():
+                    # Skip 2xx responses when exclude_2xx is set (for negative/security tests)
+                    if exclude_2xx:
+                        try:
+                            if 200 <= int(status_code) < 300:
+                                continue
+                        except (ValueError, TypeError):
+                            pass
                     desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
                     lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
                     # Add response schema if available
@@ -1253,6 +1430,13 @@ class ScenarioWorkflowGenerator:
             elif isinstance(responses, list):
                 for response in responses:
                     status_code = getattr(response, "status_code", "???")
+                    # Skip 2xx responses when exclude_2xx is set
+                    if exclude_2xx:
+                        try:
+                            if 200 <= int(status_code) < 300:
+                                continue
+                        except (ValueError, TypeError):
+                            pass
                     desc = getattr(response, "description", "")
                     lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
                     # Add response schema if available
@@ -1998,11 +2182,14 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Filter fallback by scenario type
         if scenario_type == ScenarioType.POSITIVE:
-            return sorted([(c, d) for c, d in fallback_codes if 200 <= c < 300], key=lambda x: x[0])
+            result = sorted([(c, d) for c, d in fallback_codes if 200 <= c < 300], key=lambda x: x[0])
+            return result if result else [(200, "OK")]
         elif scenario_type == ScenarioType.NEGATIVE:
-            return sorted([(c, d) for c, d in fallback_codes if 400 <= c < 500], key=lambda x: x[0])
+            result = sorted([(c, d) for c, d in fallback_codes if 400 <= c < 500], key=lambda x: x[0])
+            return result if result else [(400, "Bad Request"), (422, "Unprocessable Entity")]
         elif scenario_type == ScenarioType.SECURITY:
-            return sorted([(c, d) for c, d in fallback_codes if c < 500], key=lambda x: x[0])
+            result = sorted([(c, d) for c, d in fallback_codes if c < 500], key=lambda x: x[0])
+            return result if result else [(400, "Bad Request"), (403, "Forbidden"), (422, "Unprocessable Entity")]
 
         return sorted(fallback_codes, key=lambda x: x[0])
 
@@ -2033,11 +2220,11 @@ Do NOT invent or call POST endpoints that are not documented here.
         body_fields: List[str] = []
         query_params: List[str] = []
 
-        # Scan request body for string fields
+        # Scan request body for string fields (handles allOf, oneOf, $ref)
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             schema = getattr(endpoint.request_body, "schema", {})
             if schema and isinstance(schema, dict):
-                properties = schema.get("properties", {})
+                properties, _ = self._extract_all_properties(schema)
                 for field_name, field_schema in properties.items():
                     if isinstance(field_schema, dict):
                         unwrapped_fs, _ = self._unwrap_nullable_schema(field_schema)
@@ -2055,7 +2242,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                     param_location = param_location.value
 
                 if param_location == "query":
-                    param_type = getattr(param, "type", "string")
+                    param_type = getattr(param, "type", None) or "string"
                     if param_type == "string" or "string" in str(param_type):
                         query_params.append(getattr(param, "name", "unknown"))
 
@@ -2099,7 +2286,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         if hasattr(endpoint, "parameters") and endpoint.parameters:
             for param in endpoint.parameters:
                 param_name = getattr(param, "name", "unknown")
-                param_type = getattr(param, "type", "string")
+                param_type = getattr(param, "type", None) or "string"
                 param_location = getattr(param, "location", None)
                 if param_location is None:
                     param_location = getattr(param, "in_", "query")
@@ -2113,7 +2300,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         if path_params:
             for name, ptype in path_params:
-                if "int" in ptype.lower():
+                if ptype.lower() in ("integer", "number") or ptype.lower().startswith("array[int"):
                     scenarios.append(
                         f"NON_EXISTENT_ID: Test {{{name}}} with value 999999999 (integer path param)"
                     )
@@ -2132,8 +2319,8 @@ Do NOT invent or call POST endpoints that are not documented here.
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             schema = getattr(endpoint.request_body, "schema", {})
             if schema and isinstance(schema, dict):
-                required_list = schema.get("required", [])
-                properties = schema.get("properties", {})
+                # Use shared helper for allOf/oneOf/$ref handling
+                properties, required_list = self._extract_all_properties(schema)
 
                 for field_name, field_schema in properties.items():
                     if not isinstance(field_schema, dict):
@@ -2202,11 +2389,11 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         if numeric_fields:
             for name, min_val, max_val in numeric_fields:
-                if min_val is not None:
+                if min_val is not None and isinstance(min_val, (int, float)):
                     scenarios.append(
                         f"BOUNDARY: Field \"{name}\" has min={min_val}, send {min_val - 1}"
                     )
-                if max_val is not None:
+                if max_val is not None and isinstance(max_val, (int, float)):
                     scenarios.append(
                         f"BOUNDARY: Field \"{name}\" has max={max_val}, send {max_val + 1}"
                     )
@@ -2215,7 +2402,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             # Fallback: at least test invalid query params if available
             if query_params:
                 for name, ptype in query_params:
-                    if "int" in ptype.lower():
+                    if ptype.lower() in ("integer", "number") or ptype.lower().startswith("array[int"):
                         scenarios.append(f"INVALID_QUERY: Send \"{name}=not_a_number\" (expects integer)")
                     else:
                         scenarios.append(f"INVALID_QUERY: Send very long string for \"{name}\"")
@@ -2244,64 +2431,51 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Check if endpoint has request body
         if not hasattr(endpoint, "request_body") or not endpoint.request_body:
-            # No request body - nothing to pre-compute for field generation
             return ""
 
         schema = getattr(endpoint.request_body, "schema", {})
         if not schema or not isinstance(schema, dict):
             return ""
 
-        properties = schema.get("properties", {})
+        # Use shared helper for allOf merging and discriminated union extraction
+        properties, required_list = self._extract_all_properties(schema)
 
-        # Handle allOf: merge properties from all items
-        all_of = schema.get("allOf")
-        if all_of and isinstance(all_of, list):
-            merged_properties = {}
-            merged_required = list(schema.get("required", []))
-            for item in all_of:
-                if isinstance(item, dict):
-                    merged_properties.update(item.get("properties", {}))
-                    merged_required.extend(item.get("required", []))
-            if merged_properties:
-                properties = {**merged_properties, **properties}
-                # Update schema with merged data for downstream use
-                schema = dict(schema)
-                schema["properties"] = properties
-                schema["required"] = list(set(merged_required + schema.get("required", [])))
-
-        # Handle discriminated unions (oneOf/anyOf at top level)
+        # Handle discriminated unions: provide per-variant instructions
         one_of = schema.get("oneOf") or schema.get("anyOf")
         discriminator = schema.get("discriminator", {})
-        if one_of and isinstance(one_of, list) and not properties:
-            # Schema is a discriminated union with no direct properties
+        if one_of and isinstance(one_of, list) and not schema.get("properties"):
             disc_prop = discriminator.get("propertyName", "")
             lines.append("FIELD GENERATION INSTRUCTIONS (DISCRIMINATED UNION):")
             if disc_prop:
                 lines.append(f"Discriminator field: \"{disc_prop}\"")
             lines.append("Pick ONE variant and include ALL its required fields:")
             lines.append("")
-            for i, variant in enumerate(one_of[:4]):  # Limit to 4 variants
+            for i, variant in enumerate(one_of[:4]):
                 if not isinstance(variant, dict):
                     continue
+                # Resolve variant allOf if present
                 v_props = variant.get("properties", {})
                 v_required = variant.get("required", [])
+                v_all_of = variant.get("allOf")
+                if v_all_of and isinstance(v_all_of, list):
+                    for sub in v_all_of:
+                        if isinstance(sub, dict) and sub.get("properties"):
+                            v_props = {**v_props, **sub["properties"]}
+                            v_required = v_required + sub.get("required", [])
                 v_title = variant.get("title", f"Variant {i+1}")
                 if v_props:
-                    lines.append(f"  Variant \"{v_title}\" (required: {v_required}):")
+                    lines.append(f"  Variant \"{v_title}\" (required: {list(set(v_required))}):")
                     for vp_name, vp_schema in v_props.items():
-                        vp_type = vp_schema.get("type", "string") if isinstance(vp_schema, dict) else "string"
-                        vp_enum = vp_schema.get("enum") if isinstance(vp_schema, dict) else None
-                        if vp_enum:
-                            lines.append(f"    \"{vp_name}\": random.choice({vp_enum})")
-                        else:
-                            lines.append(f"    \"{vp_name}\": <{vp_type}>")
+                        if not isinstance(vp_schema, dict):
+                            continue
+                        unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
+                        instruction = self._get_type_instruction(unwrapped_vp)
+                        lines.append(f"    \"{vp_name}\": {instruction}")
                     lines.append("")
             return "\n".join(lines)
 
         if not properties:
             return ""
-
-        required_list = schema.get("required", [])
 
         lines.append("FIELD GENERATION INSTRUCTIONS (use these EXACTLY):")
         lines.append(f"Required fields: {required_list if required_list else 'none'}")
@@ -2316,117 +2490,10 @@ Do NOT invent or call POST endpoints that are not documented here.
 
             field_type = unwrapped.get("type", "string")
             field_format = unwrapped.get("format", "")
-            field_enum = unwrapped.get("enum")
-            field_pattern = unwrapped.get("pattern")
-            field_items = unwrapped.get("items", {})
             required_marker = " [REQUIRED]" if field_name in required_list else ""
 
-            # Determine exact generation instruction
-            if field_enum:
-                instruction = f"random.choice({field_enum})"
-            elif field_pattern:
-                # Escape the pattern for use in Python string
-                escaped_pattern = field_pattern.replace('"', '\\"')
-                instruction = f'test_data_generator.generate_string(pattern="{escaped_pattern}")'
-            elif field_format == "date":
-                instruction = "test_data_generator.random_date()"
-            elif field_format == "date-time":
-                instruction = "datetime.now().isoformat()"
-            elif field_format == "email":
-                instruction = "test_data_generator.generate_email()"
-            elif field_format == "uuid":
-                instruction = "test_data_generator.random_uuid()"
-            elif field_format in ("uri", "url"):
-                instruction = '"https://example.com/test"'
-            elif field_format == "ipv4":
-                instruction = '"192.168.1.1"'
-            elif field_format == "ipv6":
-                instruction = '"::1"'
-            elif field_format == "hostname":
-                instruction = '"test.example.com"'
-            elif field_format == "time":
-                instruction = '"12:30:00"'
-            elif field_type == "string":
-                length = unwrapped.get("maxLength", 10)
-                if length > 50:
-                    length = 10
-                instruction = f"test_data_generator.generate_string(length={length})"
-            elif field_type == "integer":
-                exclusive_min = unwrapped.get("exclusiveMinimum")
-                exclusive_max = unwrapped.get("exclusiveMaximum")
-                min_val = exclusive_min if exclusive_min is not None else unwrapped.get("minimum", 1)
-                max_val = exclusive_max if exclusive_max is not None else unwrapped.get("maximum", 1000)
-                multiple_of = unwrapped.get("multipleOf")
-                exclusive = exclusive_min is not None or exclusive_max is not None
-                parts = [f"min_val={min_val}", f"max_val={max_val}"]
-                if exclusive:
-                    parts.append("exclusive=True")
-                if multiple_of:
-                    parts.append(f"multiple_of={multiple_of}")
-                instruction = f"test_data_generator.generate_integer({', '.join(parts)})"
-            elif field_type == "number":
-                exclusive_min = unwrapped.get("exclusiveMinimum")
-                exclusive_max = unwrapped.get("exclusiveMaximum")
-                min_val = exclusive_min if exclusive_min is not None else unwrapped.get("minimum", 0.0)
-                max_val = exclusive_max if exclusive_max is not None else unwrapped.get("maximum", 1000.0)
-                exclusive = exclusive_min is not None or exclusive_max is not None
-                if exclusive:
-                    instruction = f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val}, exclusive=True)"
-                else:
-                    instruction = f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val})"
-            elif field_type == "boolean":
-                instruction = "test_data_generator.generate_boolean()"
-            elif field_type == "object":
-                # Nested object - generate dict with sub-properties
-                sub_props = unwrapped.get("properties", {})
-                if sub_props:
-                    instruction = self._precompute_object_instruction(unwrapped)
-                elif unwrapped.get("additionalProperties"):
-                    # Map/dict type - generate sample key-value pairs
-                    add_props = unwrapped["additionalProperties"]
-                    if isinstance(add_props, dict):
-                        val_type = add_props.get("type", "string")
-                        if val_type == "integer":
-                            val_gen = "test_data_generator.generate_integer()"
-                        elif val_type == "number":
-                            val_gen = "test_data_generator.generate_float()"
-                        elif val_type == "boolean":
-                            val_gen = "test_data_generator.generate_boolean()"
-                        else:
-                            val_gen = "test_data_generator.generate_string()"
-                        instruction = '{f"key_{i}": ' + val_gen + ' for i in range(3)}'
-                    else:
-                        instruction = '{"key1": "value1", "key2": "value2"}'
-                else:
-                    instruction = "{}"
-            elif field_type == "array":
-                items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
-                items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
-                items_ref = field_items.get("$ref") if isinstance(field_items, dict) else None
-                if items_enum:
-                    instruction = f"[random.choice({items_enum}) for _ in range(3)]"
-                elif items_type == "object" or items_ref:
-                    # Array of objects
-                    items_props = field_items.get("properties", {}) if isinstance(field_items, dict) else {}
-                    if items_props:
-                        obj_instr = self._precompute_object_instruction(field_items)
-                        instruction = f"[{obj_instr} for _ in range(2)]"
-                    else:
-                        instruction = "[{}]"
-                elif items_type == "string":
-                    instruction = "[test_data_generator.generate_string() for _ in range(3)]"
-                elif items_type == "integer":
-                    instruction = "[test_data_generator.generate_integer() for _ in range(3)]"
-                elif items_type == "number":
-                    instruction = "[test_data_generator.generate_float() for _ in range(3)]"
-                elif items_type == "boolean":
-                    instruction = "[test_data_generator.generate_boolean() for _ in range(3)]"
-                elif items_type == "array":
-                    instruction = "[[test_data_generator.generate_string() for _ in range(2)] for _ in range(3)]"
-                else:
-                    instruction = "[test_data_generator.generate_string() for _ in range(3)]"
-            else:
-                instruction = "test_data_generator.generate_string(length=10)"
+            # Use shared type→instruction mapper
+            instruction = self._get_type_instruction(unwrapped)
 
             lines.append(f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}")
 
@@ -2459,72 +2526,9 @@ Do NOT invent or call POST endpoints that are not documented here.
 
             # Unwrap nullable pattern
             unwrapped, _ = self._unwrap_nullable_schema(prop_schema)
-            prop_type = unwrapped.get("type", "string")
-            prop_enum = unwrapped.get("enum")
-            prop_pattern = unwrapped.get("pattern")
-            prop_format = unwrapped.get("format", "")
 
-            if prop_enum:
-                val = f"random.choice({prop_enum})"
-            elif prop_pattern:
-                escaped = prop_pattern.replace('"', '\\"')
-                val = f'test_data_generator.generate_string(pattern="{escaped}")'
-            elif prop_format == "email":
-                val = "test_data_generator.generate_email()"
-            elif prop_format == "uuid":
-                val = "test_data_generator.random_uuid()"
-            elif prop_format == "date":
-                val = "test_data_generator.random_date()"
-            elif prop_format == "date-time":
-                val = "datetime.now().isoformat()"
-            elif prop_type == "integer":
-                min_v = unwrapped.get("minimum", 1)
-                max_v = unwrapped.get("maximum", 1000)
-                val = f"test_data_generator.generate_integer(min_val={min_v}, max_val={max_v})"
-            elif prop_type == "number":
-                min_v = unwrapped.get("minimum", 0.0)
-                max_v = unwrapped.get("maximum", 1000.0)
-                val = f"test_data_generator.generate_float(min_val={min_v}, max_val={max_v})"
-            elif prop_type == "boolean":
-                val = "test_data_generator.generate_boolean()"
-            elif prop_type == "array":
-                items_schema = unwrapped.get("items", {})
-                items_unwrapped, _ = self._unwrap_nullable_schema(items_schema) if isinstance(items_schema, dict) else (items_schema, False)
-                items_type = items_unwrapped.get("type", "string") if isinstance(items_unwrapped, dict) else "string"
-                if items_type == "object" and isinstance(items_unwrapped, dict) and items_unwrapped.get("properties"):
-                    obj_val = self._precompute_object_instruction(items_unwrapped, new_ancestors)
-                    val = f"[{obj_val} for _ in range(2)]"
-                elif items_type == "integer":
-                    val = "[test_data_generator.generate_integer() for _ in range(2)]"
-                elif items_type == "number":
-                    val = "[test_data_generator.generate_float() for _ in range(2)]"
-                elif items_type == "boolean":
-                    val = "[test_data_generator.generate_boolean() for _ in range(2)]"
-                else:
-                    val = "[test_data_generator.generate_string() for _ in range(2)]"
-            elif prop_type == "object":
-                sub_props = unwrapped.get("properties", {})
-                if sub_props:
-                    val = self._precompute_object_instruction(unwrapped, new_ancestors)
-                elif unwrapped.get("additionalProperties"):
-                    add_props = unwrapped["additionalProperties"]
-                    if isinstance(add_props, dict):
-                        val_type = add_props.get("type", "string")
-                        if val_type == "integer":
-                            val_gen = "test_data_generator.generate_integer()"
-                        elif val_type == "number":
-                            val_gen = "test_data_generator.generate_float()"
-                        elif val_type == "boolean":
-                            val_gen = "test_data_generator.generate_boolean()"
-                        else:
-                            val_gen = "test_data_generator.generate_string()"
-                        val = '{f"key_{i}": ' + val_gen + ' for i in range(3)}'
-                    else:
-                        val = '{"key1": "value1", "key2": "value2"}'
-                else:
-                    val = "{}"
-            else:
-                val = "test_data_generator.generate_string(length=10)"
+            # Delegate to shared type→instruction mapper with ancestry tracking
+            val = self._get_type_instruction(unwrapped, _object_ancestors=new_ancestors)
             parts.append(f'"{prop_name}": {val}')
 
         return "{" + ", ".join(parts) + "}"

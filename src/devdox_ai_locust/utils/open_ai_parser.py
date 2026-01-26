@@ -286,9 +286,19 @@ class OpenAPIParser:
                 items = effective_schema.get("items", {})
                 param_type = f"array[{items.get('type', 'string')}]"
 
+            param_in = param.get("in", "query")
+            try:
+                location = ParameterType(param_in)
+            except ValueError:
+                logger.warning(
+                    f"Invalid parameter location '{param_in}' for parameter "
+                    f"'{param.get('name', '')}' - skipping (only OpenAPI 3.x locations supported)"
+                )
+                continue
+
             parameter = Parameter(
                 name=param.get("name", ""),
-                location=ParameterType(param.get("in", "query")),
+                location=location,
                 required=param.get("required", False),
                 type=param_type,
                 description=param.get("description"),

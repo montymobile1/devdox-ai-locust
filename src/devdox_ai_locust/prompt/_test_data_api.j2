@@ -1,0 +1,18 @@
+=== TEST DATA GENERATOR API (COMPLETE — these are the ONLY parameters that exist) ===
+```python
+test_data_generator.generate_string(length=10, pattern=None, default=None) -> str
+test_data_generator.generate_email() -> str
+test_data_generator.generate_integer(min_val=1, max_val=1000, default=None, exclusive=False, multiple_of=None) -> int
+test_data_generator.generate_float(min_val=0.0, max_val=1000.0, default=None, exclusive=False) -> float
+test_data_generator.generate_boolean() -> bool
+test_data_generator.random_uuid() -> str
+test_data_generator.random_date() -> str  # ISO format date
+```
+- For exclusive bounds (gt/lt): exclusive=True. Example: gt=0, lt=100 → generate_integer(min_val=0, max_val=100, exclusive=True)
+- For multipleOf: multiple_of=N. Example: multipleOf=5 → generate_integer(min_val=0, max_val=1000, multiple_of=5)
+- For regex patterns: generate_string(pattern="^ORD-\\d+$") generates a matching string
+- For enum fields: use random.choice([...]) with the EXACT enum values, NEVER generate_string()
+- For object-type fields: generate a dict with correct nested structure, NEVER generate_string()
+- For array-type fields: generate a list, NEVER a string
+- For integer/number fields: use generate_integer()/generate_float(), NEVER generate_string()
+CRITICAL: Do NOT invent parameters beyond what is listed above. Do NOT use parameters like "format", "regex", etc.
