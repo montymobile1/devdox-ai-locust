@@ -338,6 +338,10 @@ class BaseTaskMethods:
                     response.failure(f"Response validation failed for {method} {path} (status: {response.status_code})")
                     return None
 
+                # Mark as success for Locust (required with catch_response=True)
+                # Without this, Locust auto-fails on 4xx even if we expect them
+                response.success()
+
                 try:
                     return response.json() if response.content else None
                 except json.JSONDecodeError:
