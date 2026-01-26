@@ -146,29 +146,24 @@ PATH_TRAVERSAL = ["../../../etc/passwd", "..\\..\\..\\windows\\system32"]
 
 Before writing code, you MUST reason through these steps:
 
-**STEP 1 - ANALYZE THE ENDPOINT:**
-- What is the HTTP method and path?
-- Use exactly expected_status={{ endpoint_expected_status }} in ALL make_request calls
-- Does it accept a request body? (POST/PUT/PATCH usually do)
-- Does it have query parameters?
-- Does the endpoint have string fields that could be injection points?
+**STEP 1 - USE THESE EXACT VALUES:**
+- Method: {{ method }}
+- Path: {{ path }}
+- expected_status={{ endpoint_expected_status }}
 
-**STEP 2 - IDENTIFY INJECTION POINTS:**
-- List ALL string fields from the request body schema (exact names!)
-- List ALL query parameters that accept strings
-- These are where we inject payloads
+**STEP 2 - INJECTION POINTS (inject ONLY into these):**
+{{ injection_points }}
 - NEVER inject into path parameters (they are URL routing, not validation)
 
 **STEP 3 - PLAN SECURITY TESTS:**
-For each string field, plan:
+For each injection point listed above:
 - SQL injection test: inject SQL_PAYLOAD into that field
 - XSS test: inject XSS_PAYLOAD into that field
 - Include ALL required fields with valid data, only inject into ONE field at a time
 
-**STEP 4 - DETERMINE EXPECTED BEHAVIOR:**
-- Use exactly expected_status={{ endpoint_expected_status }} in all make_request calls
-- 500: POTENTIAL VULNERABILITY (bad - server error/crash from injection)
-- The goal is to verify the server doesn't crash (500) when receiving malicious input
+**STEP 4 - EXPECTED BEHAVIOR:**
+- 500 = POTENTIAL VULNERABILITY (server crashed from injection)
+- Any other status code in expected_status = server handled it correctly
 
 === CRITICAL: RESPONSE VALIDATION ===
 
@@ -272,25 +267,19 @@ Then, provide ONLY valid Python code in <code> tags.
 No markdown fences, no explanations outside the tags.
 
 <analysis>
-STEP 1 - ENDPOINT ANALYSIS:
+STEP 1 - ENDPOINT:
 Method: {{ method }}
 Path: {{ path }}
 expected_status={{ endpoint_expected_status }}
-Accepts body: [yes/no]
-Query params: [list them]
 
-STEP 2 - INJECTION POINTS:
-String fields from request body: [list exact field names]
-Query params that accept strings: [list them]
-(NEVER inject into path parameters)
+STEP 2 - INJECTION POINTS (from pre-computed list):
+{{ injection_points }}
 
 STEP 3 - SECURITY TEST PLAN:
-- SQL injection in field: [field name]
-- XSS injection in field: [field name]
-- Path traversal test: [if applicable]
+[For each injection point above, plan SQL + XSS tests]
 
 STEP 4 - EXPECTED RESPONSES:
-Status codes from spec = Success (proper handling)
+expected_status={{ endpoint_expected_status }} = Success (proper handling)
 500 = Failure (potential vulnerability)
 </analysis>
 

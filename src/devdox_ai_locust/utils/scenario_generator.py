@@ -660,6 +660,23 @@ class ScenarioWorkflowGenerator:
             )
             return None
 
+        # Pre-compute security injection points - skip if no valid targets
+        injection_points = ""
+        if scenario_type == ScenarioType.SECURITY:
+            injection_points_result = self._precompute_injection_points(endpoint)
+            if injection_points_result is None:
+                logger.info(
+                    f"Skipping security workflow for [{endpoint.method} {endpoint.path}] - "
+                    f"no valid injection points (no body string fields or query params)"
+                )
+                return None
+            injection_points = injection_points_result
+
+        # Pre-compute negative test scenarios
+        negative_scenarios = ""
+        if scenario_type == ScenarioType.NEGATIVE:
+            negative_scenarios = self._precompute_negative_scenarios(endpoint)
+
         # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
         setup_endpoints_section = ""
         if all_endpoints and endpoint.method.upper() != "POST":
@@ -678,6 +695,8 @@ class ScenarioWorkflowGenerator:
             "path": endpoint.path,
             "endpoint_expected_status": expected_status_codes,
             "expected_status_info": expected_status_info,
+            "injection_points": injection_points,
+            "negative_scenarios": negative_scenarios,
             "setup_endpoints": setup_endpoints_section,
             "custom_requirement": custom_requirement or "",
             "db_type": db_type,
@@ -1740,6 +1759,213 @@ Do NOT invent or call POST endpoints that are not documented here.
                 lines.append(f"- {code}: {desc}")
             else:
                 lines.append(f"- {code}")
+        return "\n".join(lines)
+
+    def _precompute_injection_points(self, endpoint: Any) -> Optional[str]:
+        """
+        Pre-compute valid security injection points for an endpoint.
+
+        Scans the endpoint's request body and query parameters for string fields
+        that can receive injection payloads. If no valid injection points exist,
+        returns None (caller should skip security generation).
+
+        Returns:
+            Formatted string listing injection points, or None if no valid targets.
+        """
+        body_fields: List[str] = []
+        query_params: List[str] = []
+
+        # Scan request body for string fields
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            schema = getattr(endpoint.request_body, "schema", {})
+            if schema and isinstance(schema, dict):
+                properties = schema.get("properties", {})
+                for field_name, field_schema in properties.items():
+                    if isinstance(field_schema, dict):
+                        field_type = field_schema.get("type", "")
+                        if field_type == "string":
+                            body_fields.append(field_name)
+
+        # Scan parameters for string query params
+        if hasattr(endpoint, "parameters") and endpoint.parameters:
+            for param in endpoint.parameters:
+                param_location = getattr(param, "location", None)
+                if param_location is None:
+                    param_location = getattr(param, "in_", "query")
+                if hasattr(param_location, "value"):
+                    param_location = param_location.value
+
+                if param_location == "query":
+                    param_type = getattr(param, "type", "string")
+                    if param_type == "string" or "string" in str(param_type):
+                        query_params.append(getattr(param, "name", "unknown"))
+
+        # No valid injection points - skip security generation
+        if not body_fields and not query_params:
+            return None
+
+        # Format for prompt
+        lines = []
+        if body_fields:
+            lines.append("Request body string fields (inject payloads here):")
+            for f in body_fields:
+                lines.append(f"  - {f}")
+        if query_params:
+            lines.append("Query parameters (inject payloads here):")
+            for p in query_params:
+                lines.append(f"  - {p}")
+
+        return "\n".join(lines)
+
+    def _precompute_negative_scenarios(self, endpoint: Any) -> str:
+        """
+        Pre-compute which negative test scenarios are valid for this endpoint.
+
+        Based on the endpoint's schema, determines what can actually be tested:
+        - Path params → non-existent ID test
+        - Required body fields → missing field test
+        - Typed fields → wrong type test
+        - Enum fields → invalid enum test
+        - Pattern fields → invalid pattern test
+        - Numeric constraints → boundary test
+
+        Returns:
+            Formatted string listing testable scenarios with details.
+        """
+        scenarios: List[str] = []
+
+        # Check path parameters
+        path_params: List[Tuple[str, str]] = []
+        query_params: List[Tuple[str, str]] = []
+        if hasattr(endpoint, "parameters") and endpoint.parameters:
+            for param in endpoint.parameters:
+                param_name = getattr(param, "name", "unknown")
+                param_type = getattr(param, "type", "string")
+                param_location = getattr(param, "location", None)
+                if param_location is None:
+                    param_location = getattr(param, "in_", "query")
+                if hasattr(param_location, "value"):
+                    param_location = param_location.value
+
+                if param_location == "path":
+                    path_params.append((param_name, param_type))
+                elif param_location == "query":
+                    query_params.append((param_name, param_type))
+
+        if path_params:
+            for name, ptype in path_params:
+                if "int" in ptype.lower():
+                    scenarios.append(
+                        f"NON_EXISTENT_ID: Test {{{name}}} with value 999999999 (integer path param)"
+                    )
+                else:
+                    scenarios.append(
+                        f"NON_EXISTENT_ID: Test {{{name}}} with value \"nonexistent-id-12345\" (string path param)"
+                    )
+
+        # Check request body fields
+        required_fields: List[str] = []
+        typed_fields: List[Tuple[str, str]] = []
+        enum_fields: List[Tuple[str, List[Any]]] = []
+        pattern_fields: List[Tuple[str, str]] = []
+        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]] = []
+
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            schema = getattr(endpoint.request_body, "schema", {})
+            if schema and isinstance(schema, dict):
+                required_list = schema.get("required", [])
+                properties = schema.get("properties", {})
+
+                for field_name, field_schema in properties.items():
+                    if not isinstance(field_schema, dict):
+                        continue
+
+                    field_type = field_schema.get("type", "")
+
+                    # Required fields
+                    if field_name in required_list:
+                        required_fields.append(field_name)
+
+                    # Typed fields (for wrong-type tests)
+                    if field_type in ("integer", "number", "boolean", "array"):
+                        typed_fields.append((field_name, field_type))
+
+                    # Enum fields
+                    field_enum = field_schema.get("enum")
+                    if field_enum:
+                        enum_fields.append((field_name, field_enum))
+
+                    # Pattern fields
+                    field_pattern = field_schema.get("pattern")
+                    if field_pattern:
+                        pattern_fields.append((field_name, field_pattern))
+
+                    # Numeric constraints
+                    if field_type in ("integer", "number"):
+                        minimum = field_schema.get("minimum")
+                        maximum = field_schema.get("maximum")
+                        exclusive_min = field_schema.get("exclusiveMinimum")
+                        exclusive_max = field_schema.get("exclusiveMaximum")
+                        if minimum is not None or maximum is not None or exclusive_min is not None or exclusive_max is not None:
+                            effective_min = exclusive_min if exclusive_min is not None else minimum
+                            effective_max = exclusive_max if exclusive_max is not None else maximum
+                            numeric_fields.append((field_name, effective_min, effective_max))
+
+        if required_fields:
+            scenarios.append(
+                f"MISSING_REQUIRED: Remove one of these required fields: {required_fields}"
+            )
+
+        if typed_fields:
+            examples = []
+            for name, ftype in typed_fields[:3]:  # Limit to 3 examples
+                if ftype == "integer" or ftype == "number":
+                    examples.append(f'"{name}": "not_a_number" (expects {ftype})')
+                elif ftype == "boolean":
+                    examples.append(f'"{name}": "not_a_bool" (expects boolean)')
+                elif ftype == "array":
+                    examples.append(f'"{name}": "not_an_array" (expects array)')
+            scenarios.append(f"WRONG_TYPE: Send wrong type: {examples}")
+
+        if enum_fields:
+            for name, values in enum_fields[:3]:  # Limit
+                scenarios.append(
+                    f"INVALID_ENUM: Field \"{name}\" allows only {values}, send \"INVALID_VALUE_XYZ\""
+                )
+
+        if pattern_fields:
+            for name, pattern in pattern_fields[:3]:  # Limit
+                scenarios.append(
+                    f"INVALID_PATTERN: Field \"{name}\" must match pattern {pattern}, send \"!!!invalid!!!\""
+                )
+
+        if numeric_fields:
+            for name, min_val, max_val in numeric_fields[:3]:  # Limit
+                if min_val is not None:
+                    scenarios.append(
+                        f"BOUNDARY: Field \"{name}\" has min={min_val}, send {min_val - 1}"
+                    )
+                if max_val is not None:
+                    scenarios.append(
+                        f"BOUNDARY: Field \"{name}\" has max={max_val}, send {max_val + 1}"
+                    )
+
+        if not scenarios:
+            # Fallback: at least test invalid query params if available
+            if query_params:
+                for name, ptype in query_params[:2]:
+                    if "int" in ptype.lower():
+                        scenarios.append(f"INVALID_QUERY: Send \"{name}=not_a_number\" (expects integer)")
+                    else:
+                        scenarios.append(f"INVALID_QUERY: Send very long string for \"{name}\"")
+
+        if not scenarios:
+            return ""
+
+        lines = ["TESTABLE NEGATIVE SCENARIOS (implement ONLY these):"]
+        for s in scenarios:
+            lines.append(f"  - {s}")
+
         return "\n".join(lines)
 
     def _format_endpoints_list(self, endpoints: List[Any]) -> str:
