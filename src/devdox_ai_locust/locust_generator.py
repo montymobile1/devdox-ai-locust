@@ -739,6 +739,8 @@ def {method_name}(self):
                 "DATA_SEED": "42",
                 "REQUEST_TIMEOUT": "30",
                 "MAX_RETRIES": "3",
+                "# Set LOCUST_WEIGHT_OVERRIDE to override all @task weights at runtime (e.g., 1 for equal distribution)": "",
+                "LOCUST_WEIGHT_OVERRIDE": "",
             }
 
             if db_type == DatabaseType.MONGO.value:

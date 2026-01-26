@@ -44,7 +44,8 @@ dependencies = [
     "jinja2>=3.0.0",
     "aiofiles>=23.0.0",
     "black==25.1.0",
-    "pydantic-settings==2.10.1"
+    "pydantic-settings==2.10.1",
+    "rstr>=3.2.0",  # Regex-to-string generation for test data
 ]
 
 # Optional dependencies for different features

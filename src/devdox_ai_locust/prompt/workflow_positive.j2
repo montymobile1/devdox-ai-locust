@@ -53,6 +53,7 @@ from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+from utils import get_task_weight
 {% if db_type == "mongo" %}
 from mongo_data_provider import MongoDataProvider
 {% endif %}
@@ -184,6 +185,46 @@ create_result = self.make_request("POST", "/items", expected_status={{ endpoint_
 
 If you output ANY non-ASCII character, the code will FAIL to parse.
 
+=== CRITICAL: @task METHOD SIGNATURE ===
+
+**ALL @task methods MUST have ONLY `self` as a parameter:**
+```python
+# CORRECT - only self parameter
+@task(get_task_weight(10))
+def test_valid_request(self):
+    data = {"field": "value"}
+    self.make_request("POST", "/items", expected_status=[201], json=data)
+
+# WRONG - extra parameters cause TypeError at runtime!
+@task(get_task_weight(10))
+def test_valid_request(self, item_id):  # WRONG! No extra params!
+    ...
+
+# WRONG - default parameters still cause issues
+@task(get_task_weight(10))
+def test_valid_request(self, count=5):  # WRONG! No extra params!
+    ...
+```
+
+If a task needs dynamic data, generate it INSIDE the method or use instance variables from on_start().
+
+=== CRITICAL: ARRAY FIELD GENERATION ===
+
+**ALL elements in an array field MUST be the SAME type:**
+```python
+# CORRECT - all elements are strings
+"tags": [test_data_generator.generate_string() for _ in range(3)]
+
+# CORRECT - all elements are integers
+"scores": [test_data_generator.generate_integer() for _ in range(3)]
+
+# WRONG - mixed types cause 422 validation errors!
+"tags": [test_data_generator.generate_string(), 123, 45.67, True]  # NO!
+"scores": [64, "string", 78.9, False]  # NO!
+```
+
+Check the schema's array `items.type` to determine the correct element type.
+
 === CHAIN OF THOUGHT INSTRUCTIONS ===
 
 Before writing code, you MUST reason through these steps:
@@ -227,20 +268,60 @@ RULES (violations will cause test failures):
 - If it's a simple POST with no path params: just send valid data
 - NEVER use hardcoded IDs like /items/1 - they will 404!
 
+=== CRITICAL: DELETE OPERATIONS MUST BE SELF-CONTAINED ===
+
+**DELETE tasks MUST create their own resource WITHIN THE TASK before deleting it:**
+```python
+@task(get_task_weight(1))
+def test_delete_item(self):
+    # STEP 1: Create a resource specifically for this delete operation
+    create_data = {"name": test_data_generator.generate_string()}
+    create_result = self.make_request("POST", "/items", expected_status=[201], json=create_data)
+    if not create_result:
+        return  # Can't test delete without a resource
+
+    item_id = create_result.get("id")
+    if not item_id:
+        return
+
+    # STEP 2: Delete the resource we just created
+    self.make_request("DELETE", f"/items/{item_id}", expected_status=[204])
+```
+
+**WHY:** In load testing, multiple users run concurrently. If you:
+- Create in on_start() and delete in a task → Other tasks may try to use the deleted resource
+- Share resource IDs across tasks → Race conditions cause 404 errors
+- Use self.created_ids from other tasks → Already-deleted resources cause failures
+
+**NEVER do this:**
+```python
+def on_start(self):
+    # DON'T create resources here that DELETE tasks will consume
+    result = self.make_request("POST", "/items", ...)
+    self.item_id = result.get("id")  # BAD - will be deleted once, then 404 forever
+
+@task(1)
+def test_delete_item(self):
+    # DON'T rely on shared state
+    self.make_request("DELETE", f"/items/{self.item_id}", ...)  # WRONG!
+```
+
 **STEP 4 - SET TASK WEIGHTS:**
-Set @task weights to reflect realistic traffic patterns:
+Set @task weights to reflect realistic traffic patterns using `get_task_weight()`:
 - **GET endpoints**: weight=10 (most common - read operations)
 - **POST endpoints**: weight=3 (moderate - create operations)
 - **PUT/PATCH endpoints**: weight=2 (less common - update operations)
 - **DELETE endpoints**: weight=1 (rare - delete operations)
 
+**IMPORTANT:** Always wrap weights with `get_task_weight()` to allow runtime override via LOCUST_WEIGHT_OVERRIDE environment variable.
+
 Example:
 ```python
-@task(10)  # GET - high weight
+@task(get_task_weight(10))  # GET - high weight, can be overridden at runtime
 def test_list_items(self):
     ...
 
-@task(3)   # POST - moderate weight
+@task(get_task_weight(3))   # POST - moderate weight, can be overridden at runtime
 def test_create_item(self):
     ...
 ```

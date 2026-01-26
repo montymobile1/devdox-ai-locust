@@ -338,7 +338,20 @@ class BaseTaskMethods:
                     return None
 
         except Exception as e:
-            logger.error(f"Request failed {method} {path}: {e}")
+            # Classify the error type for better debugging
+            error_type = type(e).__name__
+            if "ConnectionError" in error_type or "connection" in str(e).lower():
+                error_class = "CONNECTION_ERROR"
+            elif "Timeout" in error_type or "timeout" in str(e).lower():
+                error_class = "TIMEOUT"
+            elif "SSLError" in error_type or "ssl" in str(e).lower():
+                error_class = "SSL_ERROR"
+            elif "ProxyError" in error_type:
+                error_class = "PROXY_ERROR"
+            else:
+                error_class = "REQUEST_ERROR"
+
+            logger.error(f"[{error_class}] Request failed {method} {path}: {error_type}: {e}")
             log_request_failure(request_body=request_body)
             return None
 

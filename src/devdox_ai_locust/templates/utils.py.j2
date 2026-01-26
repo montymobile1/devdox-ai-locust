@@ -4,6 +4,7 @@ Utility classes for Locust load testing
 
 import json
 import logging
+import os
 import time
 import traceback
 import sys
@@ -19,6 +20,35 @@ import requests
 from locust.runners import MasterRunner
 
 logger = logging.getLogger(__name__)
+
+
+def get_task_weight(default_weight: int) -> int:
+    """Get task weight, allowing runtime override via environment variable.
+
+    When LOCUST_WEIGHT_OVERRIDE is set in the environment, ALL tasks will use
+    that weight instead of their calculated defaults. This is useful for:
+    - Debugging: Set to 1 for equal distribution across all tests
+    - Load profiling: Override to focus on specific endpoint patterns
+
+    Args:
+        default_weight: The calculated weight based on HTTP method (e.g., GET=10, POST=3)
+
+    Returns:
+        int: The override weight if LOCUST_WEIGHT_OVERRIDE is set, otherwise the default_weight
+
+    Example:
+        @task(get_task_weight(10))  # Will use 10 unless LOCUST_WEIGHT_OVERRIDE is set
+        def test_get_items(self):
+            ...
+    """
+    override = os.environ.get("LOCUST_WEIGHT_OVERRIDE", "").strip()
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            logger.warning(f"Invalid LOCUST_WEIGHT_OVERRIDE value: {override!r}, using default {default_weight}")
+            return default_weight
+    return default_weight
 
 
 def log_request_failure(request_body: Any = None, response_body: str = None):
@@ -130,12 +160,38 @@ class ResponseValidator:
 
         # Validate status code
         if response.status_code not in valid_status_codes:
-            # Log with traceback
+            # Log with traceback and test intent
             try:
                 resp_body = response.text[:1000] if response.text else None
             except Exception:
                 resp_body = None
-            logger.error(f"Request failed: {method_upper} {endpoint} - Expected {valid_status_codes}, got {response.status_code}")
+
+            # Determine test intent based on expected vs actual status
+            actual = response.status_code
+            if actual >= 500:
+                intent = "Server error occurred (potential crash or unhandled exception)"
+            elif actual == 404 and any(s < 400 for s in valid_status_codes):
+                intent = "Resource not found - likely missing setup data or invalid ID"
+            elif actual in [200, 201, 204] and all(s >= 400 for s in valid_status_codes):
+                intent = "API accepted input that should have been rejected (validation gap)"
+            elif actual in [400, 422] and all(s < 400 for s in valid_status_codes):
+                intent = "API rejected valid input - check request body or schema compliance"
+            elif actual == 401:
+                intent = "Authentication required or token expired"
+            elif actual == 403:
+                intent = "Permission denied for this operation"
+            elif actual == 405:
+                intent = "HTTP method not allowed for this endpoint"
+            elif actual == 409:
+                intent = "Conflict - resource state prevents this operation"
+            else:
+                intent = "Unexpected status code returned"
+
+            logger.error(
+                f"Request failed: {method_upper} {endpoint} - "
+                f"Expected {valid_status_codes}, got {actual}. "
+                f"Intent: {intent}"
+            )
             log_request_failure(request_body=request_body, response_body=resp_body)
             is_valid = False
 

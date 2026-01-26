@@ -35,6 +35,7 @@ from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
+from utils import get_task_weight
 {% if db_type == "mongo" %}
 from mongo_data_provider import MongoDataProvider
 {% endif %}
@@ -123,6 +124,25 @@ expected_status={{ endpoint_expected_status }}
 - Use RAW STRINGS for regex patterns: r"pattern" not "pattern"
 
 If you output ANY non-ASCII character, the code will FAIL to parse.
+
+=== CRITICAL: @task METHOD SIGNATURE ===
+
+**ALL @task methods MUST have ONLY `self` as a parameter:**
+```python
+# CORRECT - only self parameter
+@task(get_task_weight(2))
+def test_sql_injection(self):
+    payload = random.choice(SQL_PAYLOADS)
+    data = {"name": payload}
+    self.make_request("POST", "/items", expected_status=[200, 400, 422], json=data)
+
+# WRONG - extra parameters cause TypeError at runtime!
+@task(get_task_weight(2))
+def test_injection(self, payload):  # WRONG! No extra params!
+    ...
+```
+
+If a task needs dynamic data, generate it INSIDE the method or use instance variables.
 
 === SECURITY PAYLOADS ===
 ```python
