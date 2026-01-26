@@ -358,10 +358,10 @@ class ScenarioWorkflowGenerator:
             elif result is not None:
                 results[scenario_type] = result
 
-        # If there are errors but also successes, log and return partial results
+        # If there are errors but also successes, return partial results
         if errors and results:
             for scenario_type, error in errors:
-                logger.warning(
+                logger.debug(
                     f"Scenario {scenario_type.value} failed for [{endpoint_info}], "
                     f"but other scenarios succeeded: {error}"
                 )
@@ -525,7 +525,7 @@ class ScenarioWorkflowGenerator:
             last_code = content
 
             if attempt < max_validation_retries - 1:
-                logger.warning(
+                logger.debug(
                     f"Validation failed for orchestrator [{tag_name}], "
                     f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying..."
                 )
@@ -716,10 +716,15 @@ class ScenarioWorkflowGenerator:
         if scenario_type == ScenarioType.POSITIVE:
             positive_fields = self._precompute_positive_fields(endpoint)
 
-        # Find related CREATE endpoints for setup steps (only for non-POST endpoints)
+        # Find related CREATE endpoints for setup steps
+        # Provide setup for: non-POST endpoints, OR POST endpoints with path params
+        # (POST with path params needs parent resources created first)
         setup_endpoints_section = ""
         setup_count = 0
-        if all_endpoints and endpoint.method.upper() != "POST":
+        has_path_params = any(
+            seg.startswith("{") for seg in endpoint.path.split("/") if seg
+        )
+        if all_endpoints and (endpoint.method.upper() != "POST" or has_path_params):
             related_create_endpoints = self._find_related_create_endpoints(endpoint, all_endpoints)
             setup_count = len(related_create_endpoints)
             setup_endpoints_section = self._format_related_create_endpoints(related_create_endpoints)
@@ -1014,7 +1019,7 @@ class ScenarioWorkflowGenerator:
                         validation_result={"valid": False, "error": error},
                     )
                 error_type = "Semantic" if last_is_semantic else "Syntax"
-                logger.warning(
+                logger.debug(
                     f"{error_type} validation failed for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
                     f"{error}. Retrying..."
@@ -1026,7 +1031,7 @@ class ScenarioWorkflowGenerator:
                     )
                 await asyncio.sleep(1)
             else:
-                logger.error(
+                logger.debug(
                     f"Retry FAILED for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}] after {max_validation_retries} attempts. "
                     f"Final error: {error}"
@@ -2371,10 +2376,10 @@ Do NOT invent or call POST endpoints that are not documented here.
 
             except asyncio.TimeoutError as e:
                 last_error = e
-                logger.warning(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
+                logger.debug(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
             except Exception as e:
                 last_error = e
-                logger.warning(f"AI error on attempt {attempt + 1} for {scenario_type}: {e}")
+                logger.debug(f"AI error on attempt {attempt + 1} for {scenario_type}: {e}")
 
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
