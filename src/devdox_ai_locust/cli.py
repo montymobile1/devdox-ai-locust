@@ -5,7 +5,7 @@ import aiofiles
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Tuple, Union, List, Dict, Any, TextIO
+from typing import Optional, Tuple, Union, List, Dict, Any, TextIO, TYPE_CHECKING
 from rich.console import Console
 from rich.table import Table
 from together import AsyncTogether
@@ -15,6 +15,11 @@ from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
 from devdox_ai_locust.utils.debug_recorder import DebugRecorder
 from .schemas.processing_result import SwaggerProcessingRequest
+from devdox_ai_locust.locust_generator import LocustTestGenerator
+
+if TYPE_CHECKING:
+    from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+    from devdox_ai_locust.utils.generation_progress import GenerationProgress
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -155,7 +160,7 @@ def _display_configuration(
 
 
 def _show_results(
-    created_files: List[Dict[Any, Any]],
+    created_files: List[Dict[str, Any]],
     output_dir: Path,
     start_time: datetime,
     verbose: bool,
@@ -182,7 +187,7 @@ def _show_results(
         _show_run_instructions(output_dir, users, spawn_rate, run_time, host)
 
 
-def _show_generated_files(created_files: List[Dict[Any, Any]], verbose: bool) -> None:
+def _show_generated_files(created_files: List[Dict[str, Any]], verbose: bool) -> None:
     """Display list of generated files"""
     if verbose or len(created_files) <= 10:
         console.print("\n[bold]Generated files:[/bold]")
@@ -295,7 +300,7 @@ async def _generate_and_create_tests(
     max_llm_workers: int = 1,
     debug_recorder: Optional[DebugRecorder] = None,
     verbose: bool = False,
-) -> List[Dict[Any, Any]]:
+) -> List[Dict[str, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
     together_client = AsyncTogether(api_key=api_key)
 
@@ -332,9 +337,8 @@ async def _generate_scenario_based_tests(
     max_llm_workers: int = 1,
     debug_recorder: Optional[DebugRecorder] = None,
     verbose: bool = False,
-) -> List[Dict[Any, Any]]:
+) -> List[Dict[str, Any]]:
     """Generate tests using per-endpoint approach (5 scenarios per endpoint)"""
-    from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
     from devdox_ai_locust.locust_generator import LocustTestGenerator
 
     grouped_endpoints = _group_endpoints_by_tag(endpoints)
@@ -407,12 +411,17 @@ async def _generate_scenario_based_tests(
 
     _report_orchestrator_results(orchestrator_files, orchestrator_failures, num_tags)
     _report_generation_summary(
-        scenario_gen, state.failed_endpoints, state.completed_count,
-        state.failed_count, num_endpoints,
+        scenario_gen,
+        state.failed_endpoints,
+        state.completed_count,
+        state.failed_count,
+        num_endpoints,
     )
 
     _create_init_files(
-        workflows_dir, grouped_endpoints, scenario_gen,
+        workflows_dir,
+        grouped_endpoints,
+        scenario_gen,
     )
     _write_base_files(base_files, output_dir, workflows_dir, state.created_files)
 
@@ -445,7 +454,7 @@ def _init_scenario_generator(
     ai_config: AIEnhancementConfig,
     max_llm_workers: int,
     debug_recorder: Optional[DebugRecorder],
-) -> Any:
+) -> "ScenarioWorkflowGenerator":
     """Initialize the ScenarioWorkflowGenerator."""
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
 
@@ -461,7 +470,7 @@ def _init_scenario_generator(
 
 def _print_generation_plan(
     ai_config: AIEnhancementConfig,
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
     num_endpoints: int,
     num_tags: int,
 ) -> None:
@@ -481,7 +490,7 @@ def _print_generation_plan(
 
 
 def _generate_base_files(
-    template_gen: Any,
+    template_gen: LocustTestGenerator,
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
     auth: bool,
@@ -559,7 +568,10 @@ def _to_class_name(name: str) -> str:
 
 
 def _generate_pre_llm_workflow(
-    endpoint: Any, scenario_type: str, scenario_gen: Any, template_gen: Any,
+    endpoint: Endpoint,
+    scenario_type: str,
+    scenario_gen: "ScenarioWorkflowGenerator",
+    template_gen: LocustTestGenerator,
 ) -> str:
     """Generate a pre-LLM fallback workflow for an endpoint and scenario type."""
     operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
@@ -592,7 +604,9 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 
 
 def _generate_pre_llm_templates(
-    endpoints: List[Endpoint], scenario_gen: Any, template_gen: Any,
+    endpoints: List[Endpoint],
+    scenario_gen: "ScenarioWorkflowGenerator",
+    template_gen: LocustTestGenerator,
 ) -> Dict[Tuple[int, str], str]:
     """Generate all pre-LLM fallback templates. Exits on failure."""
     console.print("→ Generating base templates...")
@@ -627,7 +641,9 @@ def _build_endpoint_tag_mapping(
     return mapping
 
 
-def _init_progress(scenario_gen: Any, num_endpoints: int, verbose: bool) -> Any:
+def _init_progress(
+    scenario_gen: "ScenarioWorkflowGenerator", num_endpoints: int, verbose: bool
+) -> "GenerationProgress":
     """Initialize and attach the GenerationProgress display."""
     from devdox_ai_locust.utils.generation_progress import GenerationProgress
 
@@ -642,20 +658,20 @@ def _init_progress(scenario_gen: Any, num_endpoints: int, verbose: bool) -> Any:
 
 
 async def _process_and_save_endpoint(
-    endpoint: Any,
+    endpoint: Endpoint,
     state: _GenerationState,
     endpoint_to_tag: Dict[int, str],
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
     workflows_dir: Path,
     base_workflow_content: str,
     test_data_content: str,
-    auth_endpoints: Optional[List[Any]],
-    all_endpoints: List[Any],
+    auth_endpoints: Optional[List[Endpoint]],
+    all_endpoints: List[Endpoint],
     custom_requirement: Optional[str],
     db_type: str,
     pre_llm_templates: Dict[Tuple[int, str], str],
-    template_gen: Any,
-    progress: Any,
+    template_gen: LocustTestGenerator,
+    progress: "GenerationProgress",
 ) -> List[Dict[str, Any]]:
     """Process a single endpoint: generate scenarios and save files."""
     tag_name = endpoint_to_tag.get(id(endpoint), "default")
@@ -701,20 +717,20 @@ async def _process_and_save_endpoint(
 
 
 async def _save_generated_scenarios(
-    endpoint: Any,
+    endpoint: Endpoint,
     state: _GenerationState,
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
     endpoint_dir: Path,
     base_workflow_content: str,
     test_data_content: str,
-    auth_endpoints: Optional[List[Any]],
-    all_endpoints: List[Any],
+    auth_endpoints: Optional[List[Endpoint]],
+    all_endpoints: List[Endpoint],
     tag_name: str,
     custom_requirement: Optional[str],
     db_type: str,
     operation_id: str,
     endpoint_info: str,
-    progress: Any,
+    progress: "GenerationProgress",
 ) -> List[Dict[str, Any]]:
     """Generate and save scenario workflows for a single endpoint."""
     endpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -737,13 +753,15 @@ async def _save_generated_scenarios(
             file_path = endpoint_dir / filename
             async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
                 await f.write(content)
-            local_files.append({
-                "path": str(file_path),
-                "size": len(content),
-                "tag": tag_name,
-                "operation_id": operation_id,
-                "scenario": scenario_type.value,
-            })
+            local_files.append(
+                {
+                    "path": str(file_path),
+                    "size": len(content),
+                    "tag": tag_name,
+                    "operation_id": operation_id,
+                    "scenario": scenario_type.value,
+                }
+            )
 
     async with state.file_write_lock:
         state.completed_count += 1
@@ -757,16 +775,16 @@ async def _save_generated_scenarios(
 async def _handle_endpoint_failure(
     e: Exception,
     state: _GenerationState,
-    endpoint: Any,
+    endpoint: Endpoint,
     endpoint_dir: Path,
     workflows_dir: Path,
     operation_id: str,
     endpoint_info: str,
     tag_name: str,
     pre_llm_templates: Dict[Tuple[int, str], str],
-    scenario_gen: Any,
-    template_gen: Any,
-    progress: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
+    template_gen: LocustTestGenerator,
+    progress: "GenerationProgress",
 ) -> List[Dict[str, Any]]:
     """Handle a failed endpoint by saving failure info and writing fallback files."""
     saved_failure_path = await _save_failure_code(
@@ -785,13 +803,15 @@ async def _handle_endpoint_failure(
 
     async with state.file_write_lock:
         state.failed_count += 1
-        state.failed_endpoints.append({
-            "endpoint": endpoint_info,
-            "operation_id": operation_id,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "saved_code": saved_failure_path,
-        })
+        state.failed_endpoints.append(
+            {
+                "endpoint": endpoint_info,
+                "operation_id": operation_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "saved_code": saved_failure_path,
+            }
+        )
         state.created_files.extend(fallback_files)
 
     progress.endpoint_failed(endpoint_info, e)
@@ -799,7 +819,10 @@ async def _handle_endpoint_failure(
 
 
 async def _save_failure_code(
-    e: Exception, workflows_dir: Path, operation_id: str, endpoint_info: str,
+    e: Exception,
+    workflows_dir: Path,
+    operation_id: str,
+    endpoint_info: str,
 ) -> Optional[str]:
     """Save failed LLM-generated code to the failures directory."""
     if not (hasattr(e, "code") and e.code):
@@ -826,22 +849,20 @@ async def _save_failure_code(
 
 
 async def _write_fallback_files(
-    endpoint: Any,
+    endpoint: Endpoint,
     endpoint_dir: Path,
     tag_name: str,
     operation_id: str,
     pre_llm_templates: Dict[Tuple[int, str], str],
-    scenario_gen: Any,
-    template_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
+    template_gen: LocustTestGenerator,
 ) -> List[Dict[str, Any]]:
     """Write pre-LLM fallback templates when LLM generation fails."""
     endpoint_dir.mkdir(parents=True, exist_ok=True)
     fallback_files = []
 
     for scenario_type in ["positive", "negative", "security"]:
-        fallback_content = pre_llm_templates.get(
-            (id(endpoint), scenario_type), ""
-        )
+        fallback_content = pre_llm_templates.get((id(endpoint), scenario_type), "")
         if not fallback_content:
             fallback_content = _generate_pre_llm_workflow(
                 endpoint, scenario_type, scenario_gen, template_gen
@@ -851,14 +872,16 @@ async def _write_fallback_files(
         try:
             async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
                 await f.write(fallback_content)
-            fallback_files.append({
-                "path": str(file_path),
-                "size": len(fallback_content),
-                "tag": tag_name,
-                "operation_id": operation_id,
-                "scenario": scenario_type,
-                "fallback": True,
-            })
+            fallback_files.append(
+                {
+                    "path": str(file_path),
+                    "size": len(fallback_content),
+                    "tag": tag_name,
+                    "operation_id": operation_id,
+                    "scenario": scenario_type,
+                    "fallback": True,
+                }
+            )
         except Exception as write_error:
             logger.error(f"Failed to write fallback file {file_path}: {write_error}")
 
@@ -868,14 +891,14 @@ async def _write_fallback_files(
 async def _generate_orchestrators(
     grouped_endpoints: Dict[str, List[Endpoint]],
     successful_endpoints: set,
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
     workflows_dir: Path,
     base_workflow_content: str,
     test_data_content: str,
-    auth_endpoints: Optional[List[Any]],
+    auth_endpoints: Optional[List[Endpoint]],
     custom_requirement: Optional[str],
     db_type: str,
-    progress: Any,
+    progress: "GenerationProgress",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Generate orchestrator workflows for each tag."""
     num_tags = len(grouped_endpoints)
@@ -886,9 +909,7 @@ async def _generate_orchestrators(
 
     for tag_name, tag_endpoints in grouped_endpoints.items():
         tag_dir_name = _sanitize_dir_name(tag_name)
-        valid_endpoints = [
-            ep for ep in tag_endpoints if id(ep) in successful_endpoints
-        ]
+        valid_endpoints = [ep for ep in tag_endpoints if id(ep) in successful_endpoints]
 
         if not valid_endpoints:
             progress.orchestrator_skipped(tag_dir_name, "no valid endpoints")
@@ -910,11 +931,13 @@ async def _generate_orchestrators(
             orchestrator_path = tag_dir / "orchestrator_workflow.py"
             async with aiofiles.open(orchestrator_path, "w", encoding="utf-8") as f:
                 await f.write(orchestrator_code)
-            orchestrator_files.append({
-                "path": str(orchestrator_path),
-                "size": len(orchestrator_code),
-                "tag": tag_name,
-            })
+            orchestrator_files.append(
+                {
+                    "path": str(orchestrator_path),
+                    "size": len(orchestrator_code),
+                    "tag": tag_name,
+                }
+            )
             progress.orchestrator_done(tag_dir_name)
 
         except Exception as e:
@@ -939,7 +962,7 @@ def _report_orchestrator_results(
 
 
 def _report_generation_summary(
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
     failed_endpoints: List[Dict[str, Any]],
     completed_count: int,
     failed_count: int,
@@ -982,15 +1005,14 @@ def _print_failure_details(failed_endpoints: List[Dict[str, Any]]) -> None:
 def _create_init_files(
     workflows_dir: Path,
     grouped_endpoints: Dict[str, List[Endpoint]],
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
 ) -> None:
     """Generate __init__.py files for workflow directories."""
     console.print("→ Creating workflow __init__.py files...")
 
     # Main workflows/__init__.py
     tag_imports = [
-        f"from .{_sanitize_dir_name(tag)} import *"
-        for tag in grouped_endpoints.keys()
+        f"from .{_sanitize_dir_name(tag)} import *" for tag in grouped_endpoints.keys()
     ]
     (workflows_dir / "__init__.py").write_text(
         "\n".join(tag_imports) + "\n", encoding="utf-8"
@@ -1017,7 +1039,7 @@ def _build_tag_init_lines(
     tag_dir: Path,
     tag_dir_name: str,
     tag_endpoints: List[Endpoint],
-    scenario_gen: Any,
+    scenario_gen: "ScenarioWorkflowGenerator",
 ) -> List[str]:
     """Build import lines for a tag's __init__.py."""
     init_lines = ['"""Auto-generated workflow exports"""']
@@ -1036,9 +1058,7 @@ def _build_tag_init_lines(
     orchestrator_path = tag_dir / "orchestrator_workflow.py"
     if orchestrator_path.exists():
         orchestrator_class = _to_class_name(tag_dir_name) + "Orchestrator"
-        init_lines.append(
-            f"from .orchestrator_workflow import {orchestrator_class}"
-        )
+        init_lines.append(f"from .orchestrator_workflow import {orchestrator_class}")
 
     return init_lines
 
@@ -1224,15 +1244,36 @@ async def _async_generate(
         debug_recorder = DebugRecorder(output_dir, enabled=debug)
 
         _record_debug_cli_args(
-            debug, debug_recorder, swagger_url, output_dir, users, spawn_rate,
-            run_time, host, auth, db_type, dry_run, custom_requirement,
-            timeout, schema_timeout, max_llm_workers,
+            debug,
+            debug_recorder,
+            swagger_url,
+            output_dir,
+            users,
+            spawn_rate,
+            run_time,
+            host,
+            auth,
+            db_type,
+            dry_run,
+            custom_requirement,
+            timeout,
+            schema_timeout,
+            max_llm_workers,
         )
 
         _display_configuration(
-            swagger_url, output_dir, users, spawn_rate, run_time, host,
-            auth, custom_requirement, dry_run, db_type=db_type,
-            timeout=timeout, debug=debug,
+            swagger_url,
+            output_dir,
+            users,
+            spawn_rate,
+            run_time,
+            host,
+            auth,
+            custom_requirement,
+            dry_run,
+            db_type=db_type,
+            timeout=timeout,
+            debug=debug,
         )
 
         raw_schema, endpoints, api_info = await _process_api_schema(
@@ -1240,14 +1281,31 @@ async def _async_generate(
         )
 
         _record_debug_parsed_schema(
-            debug, debug_recorder, raw_schema, endpoints, api_info,
-            host, auth, db_type, timeout, custom_requirement,
+            debug,
+            debug_recorder,
+            raw_schema,
+            endpoints,
+            api_info,
+            host,
+            auth,
+            db_type,
+            timeout,
+            custom_requirement,
         )
 
         created_files = await _generate_and_create_tests(
-            api_key, endpoints, api_info, output_dir, custom_requirement,
-            host, auth, db_type, timeout, max_llm_workers,
-            debug_recorder, verbose=ctx.obj["verbose"],
+            api_key,
+            endpoints,
+            api_info,
+            output_dir,
+            custom_requirement,
+            host,
+            auth,
+            db_type,
+            timeout,
+            max_llm_workers,
+            debug_recorder,
+            verbose=ctx.obj["verbose"],
         )
 
         if debug:
@@ -1257,8 +1315,15 @@ async def _async_generate(
             )
 
         _show_results(
-            created_files, output_dir, start_time, ctx.obj["verbose"],
-            dry_run, users, spawn_rate, run_time, host,
+            created_files,
+            output_dir,
+            start_time,
+            ctx.obj["verbose"],
+            dry_run,
+            users,
+            spawn_rate,
+            run_time,
+            host,
         )
 
     except Exception as e:
@@ -1289,30 +1354,30 @@ def _record_debug_cli_args(
     """Record CLI arguments to debug recorder if debug mode is enabled."""
     if not debug:
         return
-    console.print(
-        "[blue]🔍 Debug mode enabled[/blue] - recording intermediate states"
+    console.print("[blue]🔍 Debug mode enabled[/blue] - recording intermediate states")
+    debug_recorder.record_cli_args(
+        {
+            "swagger_url": swagger_url,
+            "output": str(output_dir),
+            "users": users,
+            "spawn_rate": spawn_rate,
+            "run_time": run_time,
+            "host": host,
+            "auth": auth,
+            "db_type": db_type,
+            "dry_run": dry_run,
+            "custom_requirement": custom_requirement,
+            "timeout": timeout,
+            "schema_timeout": schema_timeout,
+            "max_llm_workers": max_llm_workers,
+        }
     )
-    debug_recorder.record_cli_args({
-        "swagger_url": swagger_url,
-        "output": str(output_dir),
-        "users": users,
-        "spawn_rate": spawn_rate,
-        "run_time": run_time,
-        "host": host,
-        "auth": auth,
-        "db_type": db_type,
-        "dry_run": dry_run,
-        "custom_requirement": custom_requirement,
-        "timeout": timeout,
-        "schema_timeout": schema_timeout,
-        "max_llm_workers": max_llm_workers,
-    })
 
 
 def _record_debug_parsed_schema(
     debug: bool,
     debug_recorder: DebugRecorder,
-    raw_schema: Any,
+    raw_schema: dict,
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
     host: Optional[str],
@@ -1326,14 +1391,16 @@ def _record_debug_parsed_schema(
         return
     debug_recorder.record_openapi_raw(raw_schema)
     debug_recorder.record_openapi_parsed(endpoints, api_info)
-    debug_recorder.record_resolved_config({
-        "api_info": api_info,
-        "host": host,
-        "auth": auth,
-        "db_type": db_type,
-        "timeout": timeout,
-        "custom_requirement": custom_requirement,
-    })
+    debug_recorder.record_resolved_config(
+        {
+            "api_info": api_info,
+            "host": host,
+            "auth": auth,
+            "db_type": db_type,
+            "timeout": timeout,
+            "custom_requirement": custom_requirement,
+        }
+    )
 
 
 @cli.command()

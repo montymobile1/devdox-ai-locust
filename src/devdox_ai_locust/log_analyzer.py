@@ -17,7 +17,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, TextIO
+from typing import Dict, Iterator, List, TextIO
 
 
 # Patterns compiled once
@@ -122,8 +122,12 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
             # Detect traceback blocks
             if _TRACEBACK_START.match(line):
                 tb_dup = _collect_traceback(
-                    line, line_iter, context_buffer,
-                    exception_signatures, exception_samples, exception_apis,
+                    line,
+                    line_iter,
+                    context_buffer,
+                    exception_signatures,
+                    exception_samples,
+                    exception_apis,
                 )
                 total_lines += tb_dup[0]
                 duplicates_removed += tb_dup[1]
@@ -133,8 +137,11 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
             # Detect error lines
             if _ERROR_PATTERN.search(line):
                 duplicates_removed += _record_error(
-                    line, context_buffer,
-                    error_signatures, error_samples, error_apis,
+                    line,
+                    context_buffer,
+                    error_signatures,
+                    error_samples,
+                    error_apis,
                 )
                 context_buffer.clear()
                 continue
@@ -220,7 +227,7 @@ def _record_error(
     return 1
 
 
-def _line_iterator(f: TextIO):
+def _line_iterator(f: TextIO) -> Iterator[str]:
     """Yield lines from file, stripping newlines."""
     for line in f:
         yield line.rstrip("\n\r")
@@ -283,7 +290,7 @@ def _write_reduced_log(
                 out.write("\n")
 
 
-def main():
+def main() -> int:
     if len(sys.argv) < 2:
         print("Usage: devdox_ai_locust_analyze <log_file_path> [output_path]")
         print(

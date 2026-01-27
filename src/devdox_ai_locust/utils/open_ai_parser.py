@@ -287,9 +287,7 @@ class OpenAPIParser:
                     resolved_variants.append(self._resolve_reference(v) or v)
                 elif isinstance(v, dict):
                     resolved_variants.append(v)
-            real_variants = [
-                v for v in resolved_variants if v.get("type") != "null"
-            ]
+            real_variants = [v for v in resolved_variants if v.get("type") != "null"]
             if len(real_variants) == 1:
                 effective_schema = real_variants[0]
 
@@ -537,9 +535,7 @@ class OpenAPIParser:
         self._resolve_nested_schemas(result, _ancestors)
         return result
 
-    def _resolve_nested_schemas(
-        self, result: Dict[str, Any], _ancestors: set
-    ) -> None:
+    def _resolve_nested_schemas(self, result: Dict[str, Any], _ancestors: set) -> None:
         """Resolve nested $refs within properties, items, and composition keywords."""
         if "properties" in result and isinstance(result["properties"], dict):
             resolved_props = {}

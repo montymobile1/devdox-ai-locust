@@ -239,7 +239,9 @@ class CodeValidator:
 
         return violations
 
-    def _check_inline_empty_dict(self, line: str, line_num: int) -> List[ValidationViolation]:
+    def _check_inline_empty_dict(
+        self, line: str, line_num: int
+    ) -> List[ValidationViolation]:
         """Check for single-line empty dict assignments like `user_data = {}`."""
         for pattern in self._SETUP_VAR_SUFFIXES:
             if pattern in line and "=" in line:
@@ -248,14 +250,16 @@ class CodeValidator:
                     line,
                 )
                 if match:
-                    return [ValidationViolation(
-                        rule="empty_setup_dict",
-                        message=f"Empty setup data dict '{match.group(1)}'. "
-                        f"You MUST generate actual field values for setup API calls. "
-                        f"Do NOT leave empty dicts with placeholder comments.",
-                        line_number=line_num,
-                        severity="error",
-                    )]
+                    return [
+                        ValidationViolation(
+                            rule="empty_setup_dict",
+                            message=f"Empty setup data dict '{match.group(1)}'. "
+                            f"You MUST generate actual field values for setup API calls. "
+                            f"Do NOT leave empty dicts with placeholder comments.",
+                            line_number=line_num,
+                            severity="error",
+                        )
+                    ]
         return []
 
     def _check_multiline_empty_dict(
@@ -273,13 +277,15 @@ class CodeValidator:
             ):
                 var_match = re.match(r"\s*(\w+_data|\w+_payload|\w+_body)", line)
                 if var_match:
-                    return [ValidationViolation(
-                        rule="empty_setup_dict",
-                        message=f"Empty setup data dict '{var_match.group(1)}'. "
-                        f"You MUST generate actual field values for setup API calls.",
-                        line_number=line_num,
-                        severity="error",
-                    )]
+                    return [
+                        ValidationViolation(
+                            rule="empty_setup_dict",
+                            message=f"Empty setup data dict '{var_match.group(1)}'. "
+                            f"You MUST generate actual field values for setup API calls.",
+                            line_number=line_num,
+                            severity="error",
+                        )
+                    ]
         return []
 
     def _check_security_path_injection(self, code: str) -> List[ValidationViolation]:

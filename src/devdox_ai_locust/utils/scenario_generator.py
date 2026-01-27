@@ -14,7 +14,7 @@ import logging
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
-from jinja2 import Environment, FileSystemLoader, TemplateError
+from jinja2 import Environment, FileSystemLoader
 
 from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
 from devdox_ai_locust.utils.code_validator import CodeValidator
@@ -44,7 +44,13 @@ if TYPE_CHECKING:
         GenerationProgress,
         EndpointAnalysis,
         OrchestratorAnalysis,
+        SchemaAnalysis,
+        SetupAnalysis,
     )
+    from devdox_ai_locust.utils.open_ai_parser import Endpoint
+    from devdox_ai_locust.config import AIEnhancementConfig
+    from devdox_ai_locust.utils.llm_client import LLMClient
+    from jinja2 import Template
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +116,8 @@ class ScenarioWorkflowGenerator:
     def __init__(
         self,
         prompt_dir: Path,
-        ai_client: Any,
-        ai_config: Any,
+        ai_client: "LLMClient",
+        ai_config: "AIEnhancementConfig",
         max_concurrency: int = MAX_CONCURRENCY,
         debug_recorder: Optional["DebugRecorder"] = None,
         progress: Optional["GenerationProgress"] = None,
@@ -260,7 +266,7 @@ class ScenarioWorkflowGenerator:
 
         # Create tasks for all endpoints
         async def process_endpoint(
-            endpoint: Any,
+            endpoint: "Endpoint",
         ) -> Tuple[str, Dict[ScenarioType, str]]:
             operation_id = getattr(
                 endpoint, "operation_id", ""
@@ -287,12 +293,12 @@ class ScenarioWorkflowGenerator:
 
     async def generate_endpoint_workflows(
         self,
-        endpoint: Any,
+        endpoint: "Endpoint",
         base_workflow_content: str,
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
         tag_name: str = "default",
-        all_endpoints: Optional[List[Any]] = None,
+        all_endpoints: Optional[List["Endpoint"]] = None,
         custom_requirement: Optional[str] = None,
         db_type: str = "",
     ) -> Dict[ScenarioType, str]:
@@ -388,9 +394,7 @@ class ScenarioWorkflowGenerator:
             status=status,
             skip_reason=skip_reason,
         )
-        self.progress.record_scenario_result(
-            endpoint_info, scenario_type.value, result
-        )
+        self.progress.record_scenario_result(endpoint_info, scenario_type.value, result)
 
     def _process_llm_results(
         self,
@@ -415,7 +419,7 @@ class ScenarioWorkflowGenerator:
         return results, errors
 
     def _analyze_schema_for_verbose(
-        self, endpoint: Any, schema_analysis_cls: type
+        self, endpoint: "Endpoint", schema_analysis_cls: type
     ) -> Any:
         """Analyze request body schema for verbose mode."""
         schema_analysis = schema_analysis_cls()
@@ -455,7 +459,7 @@ class ScenarioWorkflowGenerator:
         return schema_analysis
 
     def _analyze_injection_for_verbose(
-        self, endpoint: Any, injection_analysis_cls: type
+        self, endpoint: "Endpoint", injection_analysis_cls: type
     ) -> Any:
         """Analyze injection points for verbose mode."""
         injection_analysis = injection_analysis_cls()
@@ -501,8 +505,8 @@ class ScenarioWorkflowGenerator:
 
     def _build_endpoint_analysis(
         self,
-        endpoint: Any,
-        all_endpoints: Optional[List[Any]] = None,
+        endpoint: "Endpoint",
+        all_endpoints: Optional[List["Endpoint"]] = None,
     ) -> "EndpointAnalysis":
         """Build verbose analysis data for an endpoint."""
         from devdox_ai_locust.utils.generation_progress import (
@@ -545,7 +549,7 @@ class ScenarioWorkflowGenerator:
             warnings=warnings,
         )
 
-    def _get_endpoint_content_type(self, endpoint: Any) -> str:
+    def _get_endpoint_content_type(self, endpoint: "Endpoint") -> str:
         """Extract content type from endpoint request body."""
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             ct = getattr(endpoint.request_body, "content_type", None)
@@ -554,7 +558,9 @@ class ScenarioWorkflowGenerator:
         return "application/json"
 
     def _build_setup_analysis(
-        self, endpoint: Any, all_endpoints: Optional[List[Any]],
+        self,
+        endpoint: "Endpoint",
+        all_endpoints: Optional[List["Endpoint"]],
     ) -> "SetupAnalysis":
         """Build setup analysis for related create endpoints."""
         from devdox_ai_locust.utils.generation_progress import SetupAnalysis
@@ -572,7 +578,7 @@ class ScenarioWorkflowGenerator:
             ]
         return setup_analysis
 
-    def _count_positive_fields(self, endpoint: Any) -> int:
+    def _count_positive_fields(self, endpoint: "Endpoint") -> int:
         """Count the number of request body fields for positive scenarios."""
         if not (hasattr(endpoint, "request_body") and endpoint.request_body):
             return 0
@@ -582,13 +588,15 @@ class ScenarioWorkflowGenerator:
         properties, _ = extract_all_properties(schema)
         return len(properties)
 
-    def _get_negative_scenario_types(self, endpoint: Any) -> List[str]:
+    def _get_negative_scenario_types(self, endpoint: "Endpoint") -> List[str]:
         """Get list of negative scenario type names for an endpoint."""
         negative_scenarios = self._precompute_negative_scenarios(endpoint)
         return self._parse_negative_scenario_types(negative_scenarios)
 
     def _build_analysis_warnings(
-        self, responses_defined: List[int], schema_analysis: Any,
+        self,
+        responses_defined: List[int],
+        schema_analysis: "SchemaAnalysis",
     ) -> List[str]:
         """Build warning messages for endpoint analysis."""
         warnings = []
@@ -599,7 +607,7 @@ class ScenarioWorkflowGenerator:
         return warnings
 
     def _build_orchestrator_endpoint_info(
-        self, endpoint: Any, endpoint_info_cls: Any
+        self, endpoint: "Endpoint", endpoint_info_cls: Any
     ) -> Any:
         """Build endpoint info object for orchestrator analysis."""
         operation_id = getattr(
@@ -779,14 +787,22 @@ class ScenarioWorkflowGenerator:
 
         # Record orchestrator context and prompt
         await self._record_orchestrator_context(
-            tag_name, tag_endpoints, class_name, custom_requirement,
-            db_type, endpoints_list, prompt
+            tag_name,
+            tag_endpoints,
+            class_name,
+            custom_requirement,
+            db_type,
+            endpoints_list,
+            prompt,
         )
 
         return await self._orchestrator_retry_loop(tag_name, class_name, prompt)
 
     async def _orchestrator_retry_loop(
-        self, tag_name: str, class_name: str, prompt: str,
+        self,
+        tag_name: str,
+        class_name: str,
+        prompt: str,
     ) -> str:
         """Execute LLM call with validation retry for orchestrator generation."""
         max_retries = 2
@@ -799,13 +815,19 @@ class ScenarioWorkflowGenerator:
                 current_prompt = self._render_fix_prompt(last_code, last_error)
 
             content = await self._orchestrator_single_attempt(
-                tag_name, class_name, current_prompt, attempt,
+                tag_name,
+                class_name,
+                current_prompt,
+                attempt,
             )
             is_valid, error = self._code_processor.validate_python_code(content)
 
             if is_valid:
                 return await self._finalize_orchestrator_success(
-                    tag_name, content, attempt, max_retries,
+                    tag_name,
+                    content,
+                    attempt,
+                    max_retries,
                 )
 
             last_error = error
@@ -817,7 +839,11 @@ class ScenarioWorkflowGenerator:
         )
 
     async def _orchestrator_single_attempt(
-        self, tag_name: str, class_name: str, prompt: str, attempt: int,
+        self,
+        tag_name: str,
+        class_name: str,
+        prompt: str,
+        attempt: int,
     ) -> str:
         """Execute a single orchestrator LLM call and process the response."""
         await self._record_orchestrator_llm_call(tag_name, attempt)
@@ -832,7 +858,11 @@ class ScenarioWorkflowGenerator:
         return self._apply_orchestrator_fixes(content, class_name)
 
     async def _finalize_orchestrator_success(
-        self, tag_name: str, content: str, attempt: int, max_retries: int,
+        self,
+        tag_name: str,
+        content: str,
+        attempt: int,
+        max_retries: int,
     ) -> str:
         """Record success and log retry info for orchestrator generation."""
         await self._record_orchestrator_success(tag_name, content, attempt)
@@ -844,7 +874,11 @@ class ScenarioWorkflowGenerator:
         return content
 
     def _log_orchestrator_retry(
-        self, tag_name: str, attempt: int, max_retries: int, error: Optional[str],
+        self,
+        tag_name: str,
+        attempt: int,
+        max_retries: int,
+        error: Optional[str],
     ) -> None:
         """Log orchestrator validation failure and sleep before retry."""
         if attempt < max_retries - 1:
@@ -867,18 +901,22 @@ class ScenarioWorkflowGenerator:
     def _group_endpoints_by_method(self, endpoints: List[Any]) -> Dict[str, List[Any]]:
         """Group endpoints by HTTP method."""
         by_method: Dict[str, List[Any]] = {
-            "POST": [], "GET": [], "PUT": [], "PATCH": [], "DELETE": [],
+            "POST": [],
+            "GET": [],
+            "PUT": [],
+            "PATCH": [],
+            "DELETE": [],
         }
         for ep in endpoints:
             method = ep.method.upper()
             by_method.setdefault(method, []).append(ep)
         return by_method
 
-    def _format_orchestrator_endpoint(self, ep: Any, method: str) -> List[str]:
+    def _format_orchestrator_endpoint(self, ep: "Endpoint", method: str) -> List[str]:
         """Format a single endpoint for orchestrator prompt."""
-        operation_id = getattr(
-            ep, "operation_id", ""
-        ) or self._generate_operation_id(ep)
+        operation_id = getattr(ep, "operation_id", "") or self._generate_operation_id(
+            ep
+        )
         summary = getattr(ep, "summary", "") or "No summary"
         lines = [
             f"  - {ep.path}",
@@ -889,7 +927,9 @@ class ScenarioWorkflowGenerator:
         lines.extend(self._format_orchestrator_response_schema(ep))
         return lines
 
-    def _format_orchestrator_request_body(self, ep: Any, method: str) -> List[str]:
+    def _format_orchestrator_request_body(
+        self, ep: "Endpoint", method: str
+    ) -> List[str]:
         """Format request body schema for orchestrator prompt (POST/PUT/PATCH only)."""
         if method not in ("POST", "PUT", "PATCH"):
             return []
@@ -902,7 +942,7 @@ class ScenarioWorkflowGenerator:
         lines.extend(self._format_schema(schema, indent=3))
         return lines
 
-    def _format_orchestrator_response_schema(self, ep: Any) -> List[str]:
+    def _format_orchestrator_response_schema(self, ep: "Endpoint") -> List[str]:
         """Format the first 2xx response schema for orchestrator prompt."""
         if not (hasattr(ep, "responses") and ep.responses):
             return []
@@ -976,9 +1016,7 @@ class ScenarioWorkflowGenerator:
             tag=tag_name, prompt=prompt
         )
 
-    async def _record_orchestrator_llm_call(
-        self, tag_name: str, attempt: int
-    ) -> None:
+    async def _record_orchestrator_llm_call(self, tag_name: str, attempt: int) -> None:
         """Record orchestrator LLM request."""
         if not self.debug_recorder or not self.debug_recorder.enabled:
             return
@@ -1041,9 +1079,17 @@ class ScenarioWorkflowGenerator:
         scenario_name: str,
     ) -> Optional[str]:
         """Check if scenario should be skipped. Returns skip reason or None."""
-        if scenario_type == ScenarioType.POSITIVE and all_status_codes and not expected_status_codes:
+        if (
+            scenario_type == ScenarioType.POSITIVE
+            and all_status_codes
+            and not expected_status_codes
+        ):
             return f"spec defines no 2xx codes (defined: {all_status_codes})"
-        if scenario_type == ScenarioType.NEGATIVE and all_status_codes and not expected_status_codes:
+        if (
+            scenario_type == ScenarioType.NEGATIVE
+            and all_status_codes
+            and not expected_status_codes
+        ):
             return f"spec defines no 4xx codes (defined: {all_status_codes})"
         return None
 
@@ -1060,7 +1106,7 @@ class ScenarioWorkflowGenerator:
     def _precompute_scenario_specific_data(
         self,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         endpoint_info: str,
         scenario_name: str,
     ) -> Tuple[str, str, str, Optional[str]]:
@@ -1073,7 +1119,9 @@ class ScenarioWorkflowGenerator:
         if scenario_type == ScenarioType.SECURITY:
             result = self._precompute_injection_points(endpoint)
             if result is None:
-                skip_reason = "no valid injection points (no body string fields or query params)"
+                skip_reason = (
+                    "no valid injection points (no body string fields or query params)"
+                )
             else:
                 injection_points = result
 
@@ -1088,7 +1136,7 @@ class ScenarioWorkflowGenerator:
         return injection_points, negative_scenarios, positive_fields, skip_reason
 
     def _find_setup_endpoints(
-        self, endpoint: Any, all_endpoints: Optional[List[Any]]
+        self, endpoint: "Endpoint", all_endpoints: Optional[List["Endpoint"]]
     ) -> Tuple[str, int]:
         """Find related CREATE endpoints for setup. Returns (section_text, count)."""
         if not all_endpoints:
@@ -1135,7 +1183,7 @@ class ScenarioWorkflowGenerator:
         test_data_content: str,
         class_name: str,
         operation_id: str,
-        endpoint: Any,
+        endpoint: "Endpoint",
         expected_status_codes: List[int],
         expected_status_info: str,
         injection_points: str,
@@ -1171,7 +1219,7 @@ class ScenarioWorkflowGenerator:
 
     def _render_scenario_template(
         self,
-        template: Any,
+        template: "Template",
         context: Dict[str, Any],
         scenario_type: ScenarioType,
     ) -> str:
@@ -1186,7 +1234,7 @@ class ScenarioWorkflowGenerator:
         self,
         tag_name: str,
         endpoint_dir_name: str,
-        endpoint: Any,
+        endpoint: "Endpoint",
         endpoint_details: str,
         scenario_name: str,
         class_name: str,
@@ -1202,9 +1250,14 @@ class ScenarioWorkflowGenerator:
             return
 
         context = self._build_debug_context(
-            endpoint, endpoint_details, class_name, operation_id,
-            expected_status_codes, setup_endpoints_section,
-            custom_requirement, db_type
+            endpoint,
+            endpoint_details,
+            class_name,
+            operation_id,
+            expected_status_codes,
+            setup_endpoints_section,
+            custom_requirement,
+            db_type,
         )
         await self.debug_recorder.record_scenario_context(
             tag=tag_name,
@@ -1221,7 +1274,7 @@ class ScenarioWorkflowGenerator:
 
     def _build_debug_context(
         self,
-        endpoint: Any,
+        endpoint: "Endpoint",
         endpoint_details: str,
         class_name: str,
         operation_id: str,
@@ -1257,7 +1310,7 @@ class ScenarioWorkflowGenerator:
         return self._code_processor.fix_isoformat_calls(after_import)
 
     def _validate_llm_response(
-        self, content: Optional[str], scenario_type: ScenarioType, endpoint: Any
+        self, content: Optional[str], scenario_type: ScenarioType, endpoint: "Endpoint"
     ) -> None:
         """Validate that LLM response is usable, raise if not."""
         if not content:
@@ -1294,7 +1347,7 @@ class ScenarioWorkflowGenerator:
         return self._render_fix_prompt(last_code, last_error)
 
     def _get_semantic_validation_context(
-        self, endpoint: Any, all_endpoints: Optional[List[Any]]
+        self, endpoint: "Endpoint", all_endpoints: Optional[List["Endpoint"]]
     ) -> Tuple[List[str], Any]:
         """Get context needed for semantic validation."""
         all_paths = []
@@ -1382,8 +1435,12 @@ class ScenarioWorkflowGenerator:
         if not self.debug_recorder or not self.debug_recorder.enabled:
             return
         fix_prompt = self._prepare_retry_prompt(
-            content, error, last_is_semantic,
-            expected_status_codes, endpoint_path, endpoint_method
+            content,
+            error,
+            last_is_semantic,
+            expected_status_codes,
+            endpoint_path,
+            endpoint_method,
         )
         await self.debug_recorder.record_retry_attempt(
             tag=tag_name,
@@ -1401,7 +1458,7 @@ class ScenarioWorkflowGenerator:
     def _log_semantic_failure(
         self,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         violations: List[Any],
         endpoint_info: str,
         scenario_name: str,
@@ -1412,9 +1469,7 @@ class ScenarioWorkflowGenerator:
             f"[{endpoint.method} {endpoint.path}]: {len(violations)} violation(s)"
         )
         if self.progress:
-            summary = "; ".join(
-                f"[{v.rule}] {v.message[:80]}" for v in violations[:3]
-            )
+            summary = "; ".join(f"[{v.rule}] {v.message[:80]}" for v in violations[:3])
             self.progress.scenario_detail(
                 endpoint_info, scenario_name, f"semantic FAILED: {summary}"
             )
@@ -1467,15 +1522,13 @@ class ScenarioWorkflowGenerator:
                 scenario_type=scenario_name,
                 is_valid=is_valid,
                 error=error if not is_valid else None,
-                checks=[
-                    {"check": "python_syntax", "passed": is_valid, "error": error}
-                ],
+                checks=[{"check": "python_syntax", "passed": is_valid, "error": error}],
             )
 
     def _prepare_scenario_precomputation(
         self,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         auth_endpoints: Optional[List[Any]],
         endpoint_info: str,
         scenario_name: str,
@@ -1517,9 +1570,9 @@ class ScenarioWorkflowGenerator:
 
     async def _build_and_record_prompt(
         self,
-        template: Any,
+        template: "Template",
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         endpoint_details: str,
         auth_endpoints: Optional[List[Any]],
         base_workflow_content: str,
@@ -1623,7 +1676,7 @@ class ScenarioWorkflowGenerator:
         content: str,
         last_is_semantic: bool,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         endpoint_info: str,
         scenario_name: str,
         tag_name: str,
@@ -1633,9 +1686,16 @@ class ScenarioWorkflowGenerator:
         """Handle retry logging or final failure logging."""
         if attempt < max_retries - 1:
             await self._record_retry_debug(
-                tag_name, endpoint_dir_name, scenario_name, attempt,
-                error, content, last_is_semantic, expected_status_codes,
-                endpoint.path, endpoint.method.upper()
+                tag_name,
+                endpoint_dir_name,
+                scenario_name,
+                attempt,
+                error,
+                content,
+                last_is_semantic,
+                expected_status_codes,
+                endpoint.path,
+                endpoint.method.upper(),
             )
             error_type = "Semantic" if last_is_semantic else "Syntax"
             logger.debug(
@@ -1645,8 +1705,11 @@ class ScenarioWorkflowGenerator:
             )
             if self.progress:
                 self.progress.scenario_retry(
-                    endpoint_info, scenario_name,
-                    attempt + 1, max_retries, f"{error_type}: {error}",
+                    endpoint_info,
+                    scenario_name,
+                    attempt + 1,
+                    max_retries,
+                    f"{error_type}: {error}",
                 )
             await asyncio.sleep(1)
         else:
@@ -1659,12 +1722,12 @@ class ScenarioWorkflowGenerator:
     async def _generate_llm_scenario(
         self,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         base_workflow_content: str,
         test_data_content: str,
         auth_endpoints: Optional[List[Any]] = None,
         tag_name: str = "default",
-        all_endpoints: Optional[List[Any]] = None,
+        all_endpoints: Optional[List["Endpoint"]] = None,
         custom_requirement: Optional[str] = None,
         db_type: str = "",
     ) -> Optional[str]:
@@ -1684,7 +1747,9 @@ class ScenarioWorkflowGenerator:
 
         template = self.prompt_env.get_template(template_name)
         exclude_2xx = scenario_type in (ScenarioType.NEGATIVE, ScenarioType.SECURITY)
-        endpoint_details = self._format_single_endpoint(endpoint, exclude_2xx=exclude_2xx)
+        endpoint_details = self._format_single_endpoint(
+            endpoint, exclude_2xx=exclude_2xx
+        )
         class_name = self._operation_to_class_name(endpoint)
 
         # Pre-compute status codes (returns None if skip)
@@ -1708,36 +1773,60 @@ class ScenarioWorkflowGenerator:
         # Find setup endpoints and log
         setup_section, setup_count = self._find_setup_endpoints(endpoint, all_endpoints)
         self._log_precomputation_results(
-            endpoint_info, scenario_name, expected_status_codes,
-            setup_count, positive_fields, negative_scenarios, injection_points
+            endpoint_info,
+            scenario_name,
+            expected_status_codes,
+            setup_count,
+            positive_fields,
+            negative_scenarios,
+            injection_points,
         )
 
         # Build prompt and record debug
         prompt = await self._build_and_record_prompt(
-            template, scenario_type, endpoint, endpoint_details,
-            auth_endpoints, base_workflow_content, test_data_content,
-            class_name, operation_id, expected_status_codes,
-            expected_status_info, injection_points, negative_scenarios,
-            positive_fields, setup_section, custom_requirement,
-            db_type, tag_name, scenario_name,
+            template,
+            scenario_type,
+            endpoint,
+            endpoint_details,
+            auth_endpoints,
+            base_workflow_content,
+            test_data_content,
+            class_name,
+            operation_id,
+            expected_status_codes,
+            expected_status_info,
+            injection_points,
+            negative_scenarios,
+            positive_fields,
+            setup_section,
+            custom_requirement,
+            db_type,
+            tag_name,
+            scenario_name,
         )
 
         # Run LLM with retry loop
         return await self._run_llm_retry_loop(
-            scenario_type, endpoint, endpoint_info, scenario_name,
-            class_name, tag_name, all_endpoints, expected_status_codes,
+            scenario_type,
+            endpoint,
+            endpoint_info,
+            scenario_name,
+            class_name,
+            tag_name,
+            all_endpoints,
+            expected_status_codes,
             prompt,
         )
 
     async def _run_llm_retry_loop(
         self,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         endpoint_info: str,
         scenario_name: str,
         class_name: str,
         tag_name: str,
-        all_endpoints: Optional[List[Any]],
+        all_endpoints: Optional[List["Endpoint"]],
         expected_status_codes: List[int],
         prompt: str,
     ) -> str:
@@ -1752,19 +1841,33 @@ class ScenarioWorkflowGenerator:
         for attempt in range(max_retries):
             if attempt > 0 and last_error and last_code:
                 current_prompt = self._prepare_retry_prompt(
-                    last_code, last_error, last_is_semantic,
-                    expected_status_codes, endpoint.path, endpoint.method.upper(),
+                    last_code,
+                    last_error,
+                    last_is_semantic,
+                    expected_status_codes,
+                    endpoint.path,
+                    endpoint.method.upper(),
                 )
 
             raw = await self._fetch_llm_response(
-                tag_name, endpoint_dir_name, scenario_name, scenario_type,
-                endpoint_info, current_prompt, attempt, max_retries,
+                tag_name,
+                endpoint_dir_name,
+                scenario_name,
+                scenario_type,
+                endpoint_info,
+                current_prompt,
+                attempt,
+                max_retries,
             )
             self._validate_llm_response(raw, scenario_type, endpoint)
 
             content, is_valid, error = await self._extract_and_validate_code(
-                raw, class_name, scenario_type,
-                tag_name, endpoint_dir_name, scenario_name,
+                raw,
+                class_name,
+                scenario_type,
+                tag_name,
+                endpoint_dir_name,
+                scenario_name,
             )
 
             if not is_valid:
@@ -1772,9 +1875,16 @@ class ScenarioWorkflowGenerator:
                 is_semantic_error = False
             else:
                 result = self._check_and_finalize_scenario(
-                    content, scenario_type, endpoint, all_endpoints,
-                    tag_name, endpoint_dir_name, scenario_name,
-                    endpoint_info, attempt, max_retries,
+                    content,
+                    scenario_type,
+                    endpoint,
+                    all_endpoints,
+                    tag_name,
+                    endpoint_dir_name,
+                    scenario_name,
+                    endpoint_info,
+                    attempt,
+                    max_retries,
                 )
                 if isinstance(result, str):
                     return result
@@ -1785,13 +1895,24 @@ class ScenarioWorkflowGenerator:
             last_is_semantic = is_semantic_error if is_valid else False
 
             await self._handle_retry_or_fail(
-                attempt, max_retries, error, content, last_is_semantic,
-                scenario_type, endpoint, endpoint_info, scenario_name,
-                tag_name, endpoint_dir_name, expected_status_codes,
+                attempt,
+                max_retries,
+                error,
+                content,
+                last_is_semantic,
+                scenario_type,
+                endpoint,
+                endpoint_info,
+                scenario_name,
+                tag_name,
+                endpoint_dir_name,
+                expected_status_codes,
             )
 
         raise CodeValidationError(
-            scenario_type.value, last_error, last_code,
+            scenario_type.value,
+            last_error,
+            last_code,
             endpoint_info=f"{endpoint.method} {endpoint.path}",
         )
 
@@ -1812,8 +1933,7 @@ class ScenarioWorkflowGenerator:
         )
         if self.progress:
             label = (
-                f"attempt {attempt + 1}/{max_retries}"
-                if attempt > 0 else "calling LLM"
+                f"attempt {attempt + 1}/{max_retries}" if attempt > 0 else "calling LLM"
             )
             self.progress.scenario_detail(endpoint_info, scenario_name, label)
 
@@ -1824,21 +1944,25 @@ class ScenarioWorkflowGenerator:
         return raw
 
     def _report_syntax_failure(
-        self, endpoint_info: str, scenario_name: str, error: Optional[str],
+        self,
+        endpoint_info: str,
+        scenario_name: str,
+        error: Optional[str],
     ) -> None:
         """Report syntax validation failure via progress."""
         if self.progress:
             self.progress.scenario_detail(
-                endpoint_info, scenario_name,
-                f"syntax FAILED: {error[:120] if error else 'unknown'}"
+                endpoint_info,
+                scenario_name,
+                f"syntax FAILED: {error[:120] if error else 'unknown'}",
             )
 
     async def _check_and_finalize_scenario(
         self,
         content: str,
         scenario_type: ScenarioType,
-        endpoint: Any,
-        all_endpoints: Optional[List[Any]],
+        endpoint: "Endpoint",
+        all_endpoints: Optional[List["Endpoint"]],
         tag_name: str,
         endpoint_dir_name: str,
         scenario_name: str,
@@ -1852,13 +1976,22 @@ class ScenarioWorkflowGenerator:
         )
         if result is None:
             return await self._finalize_scenario_success(
-                tag_name, endpoint_dir_name, scenario_name,
-                content, endpoint_info, scenario_type, endpoint,
-                attempt, max_retries,
+                tag_name,
+                endpoint_dir_name,
+                scenario_name,
+                content,
+                endpoint_info,
+                scenario_type,
+                endpoint,
+                attempt,
+                max_retries,
             )
         self._log_semantic_failure(
-            scenario_type, endpoint, result.violations,
-            endpoint_info, scenario_name,
+            scenario_type,
+            endpoint,
+            result.violations,
+            endpoint_info,
+            scenario_name,
         )
         return (result.error_message, True)
 
@@ -1870,13 +2003,17 @@ class ScenarioWorkflowGenerator:
         content: str,
         endpoint_info: str,
         scenario_type: ScenarioType,
-        endpoint: Any,
+        endpoint: "Endpoint",
         attempt: int,
         max_retries: int,
     ) -> str:
         """Record success, log retry info, and return validated content."""
         await self._record_validation_success(
-            tag_name, endpoint_dir_name, scenario_name, content, attempt,
+            tag_name,
+            endpoint_dir_name,
+            scenario_name,
+            content,
+            attempt,
         )
         if attempt > 0:
             logger.info(
@@ -1892,8 +2029,8 @@ class ScenarioWorkflowGenerator:
         self,
         content: str,
         scenario_type: ScenarioType,
-        endpoint: Any,
-        all_endpoints: Optional[List[Any]],
+        endpoint: "Endpoint",
+        all_endpoints: Optional[List["Endpoint"]],
     ) -> Optional[Any]:
         """Run semantic validation. Returns None if valid, result if failed."""
         all_paths, request_schema = self._get_semantic_validation_context(
@@ -1986,7 +2123,7 @@ class ScenarioWorkflowGenerator:
         return "test_data_generator.generate_string(length=10)"
 
     def _format_endpoint_parameters(
-        self, endpoint: Any
+        self, endpoint: "Endpoint"
     ) -> Tuple[List[str], bool, bool]:
         """Format endpoint parameters section.
 
@@ -2080,7 +2217,7 @@ class ScenarioWorkflowGenerator:
             "  CORRECT: headers={'X-Count': '10'}",
         ]
 
-    def _format_endpoint_request_body(self, endpoint: Any) -> List[str]:
+    def _format_endpoint_request_body(self, endpoint: "Endpoint") -> List[str]:
         """Format endpoint request body section."""
         lines = []
         if not (hasattr(endpoint, "request_body") and endpoint.request_body):
@@ -2118,7 +2255,7 @@ class ScenarioWorkflowGenerator:
         ]
 
     def _format_endpoint_responses(
-        self, endpoint: Any, exclude_2xx: bool = False
+        self, endpoint: "Endpoint", exclude_2xx: bool = False
     ) -> List[str]:
         """Format endpoint responses section."""
         lines = []
@@ -2169,7 +2306,9 @@ class ScenarioWorkflowGenerator:
 
         return lines
 
-    def _format_single_endpoint(self, endpoint: Any, exclude_2xx: bool = False) -> str:
+    def _format_single_endpoint(
+        self, endpoint: "Endpoint", exclude_2xx: bool = False
+    ) -> str:
         """Format a single endpoint with full details for the prompt.
 
         Args:
@@ -2540,7 +2679,9 @@ class ScenarioWorkflowGenerator:
         return self._try_resolve_variant_by_const(one_of, ref)
 
     def _try_resolve_variant_by_ref(
-        self, variant: dict, ref: str,
+        self,
+        variant: dict,
+        ref: str,
     ) -> Optional[dict]:
         """Try to resolve a variant by direct $ref match or allOf containing the $ref."""
         if variant.get("$ref") == ref:
@@ -2572,16 +2713,24 @@ class ScenarioWorkflowGenerator:
 
     @staticmethod
     def _try_resolve_variant_by_const(
-        one_of: List[dict], ref: str,
+        one_of: List[dict],
+        ref: str,
     ) -> Optional[dict]:
         """Try to match a variant by const value matching the ref name."""
-        ref_name = ref.split("/")[-1].lower().replace("_", "").replace("-", "") if ref else ""
+        ref_name = (
+            ref.split("/")[-1].lower().replace("_", "").replace("-", "") if ref else ""
+        )
         for variant in one_of:
             variant_props = variant.get("properties", {})
             if not variant_props:
                 continue
             for _, prop_schema in variant_props.items():
-                const_val = str(prop_schema.get("const", "")).lower().replace("_", "").replace("-", "")
+                const_val = (
+                    str(prop_schema.get("const", ""))
+                    .lower()
+                    .replace("_", "")
+                    .replace("-", "")
+                )
                 if const_val == ref_name:
                     return variant
         return None
@@ -2697,7 +2846,7 @@ class ScenarioWorkflowGenerator:
         return 0.0, None
 
     def _score_tag_match(
-        self, endpoint: Any, target_tags: set, current_score: float
+        self, endpoint: "Endpoint", target_tags: set, current_score: float
     ) -> Tuple[float, Optional[str]]:
         """Score endpoint based on tag matching."""
         if current_score == 0:
@@ -2711,7 +2860,7 @@ class ScenarioWorkflowGenerator:
 
     def _calculate_endpoint_relevance(
         self,
-        endpoint: Any,
+        endpoint: "Endpoint",
         parent_paths: List[str],
         target_prefix: List[str],
         target_tags: set,
@@ -2745,7 +2894,7 @@ class ScenarioWorkflowGenerator:
 
     def _find_related_create_endpoints(
         self,
-        target_endpoint: Any,
+        target_endpoint: "Endpoint",
         all_endpoints: List[Any],
     ) -> List[Tuple[Any, float, str]]:
         """Find CREATE (POST) endpoints that are parents of the target endpoint."""
@@ -2860,7 +3009,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             "",
         ]
 
-    def _get_setup_endpoint_status_codes(self, endpoint: Any) -> List[int]:
+    def _get_setup_endpoint_status_codes(self, endpoint: "Endpoint") -> List[int]:
         """Get status codes for a setup endpoint, with defaults."""
         all_codes = self._extract_expected_status_codes(endpoint)
         filtered = self._filter_status_codes_for_scenario(
@@ -2869,7 +3018,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         return filtered if filtered else [200, 201]
 
     def _format_single_setup_endpoint(
-        self, endpoint: Any, rank: int, score: float, reason: str
+        self, endpoint: "Endpoint", rank: int, score: float, reason: str
     ) -> List[str]:
         """Format a single setup endpoint for the prompt."""
         operation_id = getattr(
@@ -2894,7 +3043,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         lines.append("")
         return lines
 
-    def _format_setup_endpoint_schema(self, endpoint: Any) -> List[str]:
+    def _format_setup_endpoint_schema(self, endpoint: "Endpoint") -> List[str]:
         """Format request body schema for a setup endpoint."""
         if not hasattr(endpoint, "request_body") or not endpoint.request_body:
             return []
@@ -2903,7 +3052,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             return []
         return ["Request Body Schema:"] + self._format_schema(schema, indent=1)
 
-    def _format_setup_call_pattern(self, first_endpoint: Any) -> List[str]:
+    def _format_setup_call_pattern(self, first_endpoint: "Endpoint") -> List[str]:
         """Format the setup call pattern example."""
         status_codes = self._get_setup_endpoint_status_codes(first_endpoint)
         return [
@@ -2948,7 +3097,8 @@ Do NOT invent or call POST endpoints that are not documented here.
 
     @staticmethod
     def _filter_int_codes_by_scenario(
-        codes: List[int], scenario_type: ScenarioType,
+        codes: List[int],
+        scenario_type: ScenarioType,
     ) -> List[int]:
         """Filter integer status codes by scenario type."""
         if scenario_type == ScenarioType.POSITIVE:
@@ -3003,7 +3153,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         return sorted(all_codes)
 
-    def _extract_expected_status_codes(self, endpoint: Any) -> List[int]:
+    def _extract_expected_status_codes(self, endpoint: "Endpoint") -> List[int]:
         """Extract expected HTTP status codes from the OpenAPI spec responses."""
         if not hasattr(endpoint, "responses") or not endpoint.responses:
             return []
@@ -3042,7 +3192,8 @@ Do NOT invent or call POST endpoints that are not documented here.
         return codes
 
     def _extract_status_codes_with_descriptions(
-        self, endpoint: Any,
+        self,
+        endpoint: "Endpoint",
     ) -> List[Tuple[int, str]]:
         """Extract status codes with descriptions from OpenAPI spec responses."""
         if not hasattr(endpoint, "responses") or not endpoint.responses:
@@ -3147,7 +3298,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
     def _precompute_scenario_status_codes(
         self,
-        endpoint: Any,
+        endpoint: "Endpoint",
         scenario_type: ScenarioType,
         has_auth: bool,
     ) -> List[Tuple[int, str]]:
@@ -3187,7 +3338,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                 lines.append(f"- {code}")
         return "\n".join(lines)
 
-    def _precompute_injection_points(self, endpoint: Any) -> Optional[str]:
+    def _precompute_injection_points(self, endpoint: "Endpoint") -> Optional[str]:
         """Pre-compute valid security injection points for an endpoint.
 
         Returns:
@@ -3201,7 +3352,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         return self._format_injection_points(body_fields, query_params)
 
-    def _scan_body_string_fields(self, endpoint: Any) -> List[str]:
+    def _scan_body_string_fields(self, endpoint: "Endpoint") -> List[str]:
         """Scan request body for string fields suitable for injection."""
         if not (hasattr(endpoint, "request_body") and endpoint.request_body):
             return []
@@ -3218,7 +3369,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                     fields.append(field_name)
         return fields
 
-    def _scan_query_string_params(self, endpoint: Any) -> List[str]:
+    def _scan_query_string_params(self, endpoint: "Endpoint") -> List[str]:
         """Scan endpoint parameters for string query params."""
         if not (hasattr(endpoint, "parameters") and endpoint.parameters):
             return []
@@ -3244,7 +3395,8 @@ Do NOT invent or call POST endpoints that are not documented here.
 
     @staticmethod
     def _format_injection_points(
-        body_fields: List[str], query_params: List[str],
+        body_fields: List[str],
+        query_params: List[str],
     ) -> str:
         """Format injection points into a prompt-ready string."""
         lines = []
@@ -3257,7 +3409,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         return "\n".join(lines)
 
     def _extract_endpoint_params(
-        self, endpoint: Any
+        self, endpoint: "Endpoint"
     ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
         """Extract path and query parameters from endpoint.
 
@@ -3304,7 +3456,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                 )
         return scenarios
 
-    def _extract_body_field_categories(self, endpoint: Any) -> Tuple[
+    def _extract_body_field_categories(self, endpoint: "Endpoint") -> Tuple[
         List[str],
         List[Tuple[str, str]],
         List[Tuple[str, List[Any]]],
@@ -3332,15 +3484,27 @@ Do NOT invent or call POST endpoints that are not documented here.
             if not isinstance(field_schema, dict):
                 continue
             self._categorize_field(
-                field_name, field_schema, required_list,
-                required_fields, typed_fields, enum_fields,
-                pattern_fields, numeric_fields,
+                field_name,
+                field_schema,
+                required_list,
+                required_fields,
+                typed_fields,
+                enum_fields,
+                pattern_fields,
+                numeric_fields,
             )
 
-        return (required_fields, typed_fields, enum_fields, pattern_fields, numeric_fields)
+        return (
+            required_fields,
+            typed_fields,
+            enum_fields,
+            pattern_fields,
+            numeric_fields,
+        )
 
     def _get_body_properties(
-        self, endpoint: Any,
+        self,
+        endpoint: "Endpoint",
     ) -> Tuple[Optional[Dict], List[str]]:
         """Extract properties and required list from endpoint body schema."""
         if not (hasattr(endpoint, "request_body") and endpoint.request_body):
@@ -3421,8 +3585,10 @@ Do NOT invent or call POST endpoints that are not documented here.
     def _build_wrong_type_scenario(typed_fields: List[Tuple[str, str]]) -> str:
         """Build a WRONG_TYPE scenario string from typed fields."""
         type_mismatch = {
-            "integer": "not_a_number", "number": "not_a_number",
-            "boolean": "not_a_bool", "array": "not_an_array",
+            "integer": "not_a_number",
+            "number": "not_a_number",
+            "boolean": "not_a_bool",
+            "array": "not_an_array",
         }
         examples = [
             f'"{name}": "{type_mismatch.get(ftype, "wrong")}" (expects {ftype})'
@@ -3477,7 +3643,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                 )
         return scenarios
 
-    def _precompute_negative_scenarios(self, endpoint: Any) -> str:
+    def _precompute_negative_scenarios(self, endpoint: "Endpoint") -> str:
         """
         Pre-compute which negative test scenarios are valid for this endpoint.
 
@@ -3592,7 +3758,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         format_part = f", format={field_format}" if field_format else ""
         return f'  "{field_name}": {instruction}  # type={field_type}{format_part}{required_marker}'
 
-    def _precompute_positive_fields(self, endpoint: Any) -> str:
+    def _precompute_positive_fields(self, endpoint: "Endpoint") -> str:
         """Pre-compute field generation instructions for positive tests."""
         if not hasattr(endpoint, "request_body") or not endpoint.request_body:
             return ""
@@ -3695,7 +3861,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             name = f"n{name}"
         return name or "unnamed"
 
-    def _operation_to_class_name(self, endpoint: Any) -> str:
+    def _operation_to_class_name(self, endpoint: "Endpoint") -> str:
         """Convert operation_id to valid Python class name"""
         operation_id = getattr(
             endpoint, "operation_id", ""
@@ -3705,7 +3871,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         words = sanitized.replace("_", " ").split()
         return "".join(word.capitalize() for word in words) or "Unnamed"
 
-    def _generate_operation_id(self, endpoint: Any) -> str:
+    def _generate_operation_id(self, endpoint: "Endpoint") -> str:
         """Generate operation_id from method and path if not present"""
         path_parts = (
             endpoint.path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
@@ -3713,7 +3879,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         raw_id = f"{endpoint.method.lower()}_{path_parts}"
         return self._sanitize_identifier(raw_id)
 
-    def get_endpoint_dir_name(self, endpoint: Any) -> str:
+    def get_endpoint_dir_name(self, endpoint: "Endpoint") -> str:
         """Get directory name for an endpoint"""
         operation_id = getattr(
             endpoint, "operation_id", ""
@@ -3758,7 +3924,10 @@ Do NOT invent or call POST endpoints that are not documented here.
         ]
 
     async def _try_ai_call(
-        self, messages: List[Dict[str, str]], scenario_type: str, attempt: int,
+        self,
+        messages: List[Dict[str, str]],
+        scenario_type: str,
+        attempt: int,
     ) -> "str | Exception":
         """Attempt a single AI call. Returns content string on success, Exception on failure."""
         try:
@@ -3784,9 +3953,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             logger.debug(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
             return e
         except Exception as e:
-            logger.debug(
-                f"AI error on attempt {attempt + 1} for {scenario_type}: {e}"
-            )
+            logger.debug(f"AI error on attempt {attempt + 1} for {scenario_type}: {e}")
             return e
 
     def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
@@ -3903,7 +4070,9 @@ Fix ALL the violations and output the complete corrected Python code:"""
         return allowed
 
     def _extract_imports_from_template(
-        self, template_file: str, allowed: set,
+        self,
+        template_file: str,
+        allowed: set,
     ) -> None:
         """Extract imports from a single template file into the allowed set."""
         import re

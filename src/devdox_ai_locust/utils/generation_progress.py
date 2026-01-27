@@ -482,9 +482,7 @@ class GenerationProgress:
             c.print(
                 f"  [dim]│[/dim] parent_resources: {', '.join(setup.parent_resources)}"
             )
-        c.print(
-            f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}"
-        )
+        c.print(f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}")
 
     def _print_endpoint_injection(self, c: Console, inj: InjectionAnalysis) -> None:
         """Print injection analysis section if relevant."""
@@ -494,15 +492,13 @@ class GenerationProgress:
         c.print("  [dim]│[/dim] [cyan]── Injection Analysis ──[/cyan]")
         c.print(f"  [dim]│[/dim] injectable_fields: {inj.total_injectable}")
         if inj.high_risk_fields:
-            c.print(
-                f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}"
-            )
+            c.print(f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}")
         if inj.injection_locations:
-            c.print(
-                f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}"
-            )
+            c.print(f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}")
 
-    def _print_endpoint_precomputed(self, c: Console, analysis: EndpointAnalysis) -> None:
+    def _print_endpoint_precomputed(
+        self, c: Console, analysis: EndpointAnalysis
+    ) -> None:
         """Print pre-computation section if relevant."""
         if (
             analysis.positive_fields_precomputed <= 0
@@ -698,7 +694,9 @@ class GenerationProgress:
         c.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py generated")
         c.print()  # Blank line after orchestrator
 
-    def _print_orchestrator_info(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+    def _print_orchestrator_info(
+        self, c: Console, analysis: OrchestratorAnalysis
+    ) -> None:
         """Print orchestrator basic info."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── Orchestrator Info ──[/cyan]")
@@ -707,7 +705,9 @@ class GenerationProgress:
             f"  [dim]│[/dim] endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)"
         )
 
-    def _print_orchestrator_endpoints(self, c: Console, endpoints: List[OrchestratorEndpointInfo]) -> None:
+    def _print_orchestrator_endpoints(
+        self, c: Console, endpoints: List[OrchestratorEndpointInfo]
+    ) -> None:
         """Print endpoint composition section."""
         if not endpoints:
             return
@@ -726,7 +726,9 @@ class GenerationProgress:
         if len(endpoints) > 5:
             c.print(f"  [dim]│[/dim]   ... and {len(endpoints) - 5} more")
 
-    def _print_orchestrator_crud(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+    def _print_orchestrator_crud(
+        self, c: Console, analysis: OrchestratorAnalysis
+    ) -> None:
         """Print CRUD detection section."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── CRUD Detection ──[/cyan]")
@@ -745,20 +747,20 @@ class GenerationProgress:
             f"  [dim]│[/dim] crud_lifecycle_possible: {analysis.crud_lifecycle_possible}"
         )
 
-    def _print_orchestrator_auth(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+    def _print_orchestrator_auth(
+        self, c: Console, analysis: OrchestratorAnalysis
+    ) -> None:
         """Print auth detection section if relevant."""
         if analysis.auth_endpoints_found <= 0 and not analysis.auth_tests_possible:
             return
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
-        c.print(
-            f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}"
-        )
-        c.print(
-            f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}"
-        )
+        c.print(f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}")
+        c.print(f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}")
 
-    def _print_orchestrator_capabilities(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+    def _print_orchestrator_capabilities(
+        self, c: Console, analysis: OrchestratorAnalysis
+    ) -> None:
         """Print orchestration capabilities section."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── Orchestration Capabilities ──[/cyan]")
@@ -773,7 +775,9 @@ class GenerationProgress:
         )
         c.print(f"  [dim]│[/dim] resource_limit_tests: {analysis.resource_limit_tests}")
 
-    def _print_orchestrator_stats(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+    def _print_orchestrator_stats(
+        self, c: Console, analysis: OrchestratorAnalysis
+    ) -> None:
         """Print generation stats section if relevant."""
         if analysis.time_seconds <= 0 and analysis.prompt_tokens <= 0:
             return
@@ -788,9 +792,9 @@ class GenerationProgress:
         if analysis.retries > 0:
             c.print(f"  [dim]│[/dim] [yellow]retries: {analysis.retries}[/yellow]")
 
-    def __enter__(self):
+    def __enter__(self) -> "GenerationProgress":
         self.start()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: object) -> None:
         self.stop()
