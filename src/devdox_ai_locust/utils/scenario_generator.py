@@ -344,45 +344,12 @@ class ScenarioWorkflowGenerator:
         # Use return_exceptions=True to preserve successful results even if some fail
         llm_results = await asyncio.gather(*llm_tasks, return_exceptions=True)
 
-        # Separate successes from failures
-        results = {}
-        errors = []
-        for scenario_type, result in zip(scenario_types, llm_results):
-            if isinstance(result, Exception):
-                errors.append((scenario_type, result))
-                # Record failure in verbose mode
-                if self.progress and self.progress.verbose:
-                    from devdox_ai_locust.utils.generation_progress import (
-                        ScenarioResult,
-                    )
+        # Process results and separate successes from failures
+        results, errors = self._process_llm_results(
+            scenario_types, llm_results, endpoint_info
+        )
 
-                    self.progress.record_scenario_result(
-                        endpoint_info,
-                        scenario_type.value,
-                        ScenarioResult(
-                            scenario_type=scenario_type.value,
-                            status="failed",
-                            skip_reason=str(result)[:100],
-                        ),
-                    )
-            elif result is not None:
-                results[scenario_type] = result
-                # Record success in verbose mode
-                if self.progress and self.progress.verbose:
-                    from devdox_ai_locust.utils.generation_progress import (
-                        ScenarioResult,
-                    )
-
-                    self.progress.record_scenario_result(
-                        endpoint_info,
-                        scenario_type.value,
-                        ScenarioResult(
-                            scenario_type=scenario_type.value,
-                            status="success",
-                        ),
-                    )
-
-        # If there are errors but also successes, return partial results
+        # Return partial results if some succeeded
         if errors and results:
             for scenario_type, error in errors:
                 logger.debug(
@@ -393,10 +360,52 @@ class ScenarioWorkflowGenerator:
 
         # If ALL scenarios failed, raise the first error
         if errors and not results:
-            _, first_error = errors[0]
-            raise first_error
+            raise errors[0][1]
 
         return results
+
+    def _record_scenario_verbose_result(
+        self,
+        endpoint_info: str,
+        scenario_type: ScenarioType,
+        status: str,
+        skip_reason: Optional[str] = None,
+    ) -> None:
+        """Record scenario result for verbose mode."""
+        if not (self.progress and self.progress.verbose):
+            return
+        from devdox_ai_locust.utils.generation_progress import ScenarioResult
+
+        result = ScenarioResult(
+            scenario_type=scenario_type.value,
+            status=status,
+            skip_reason=skip_reason,
+        )
+        self.progress.record_scenario_result(
+            endpoint_info, scenario_type.value, result
+        )
+
+    def _process_llm_results(
+        self,
+        scenario_types: List[ScenarioType],
+        llm_results: List[Any],
+        endpoint_info: str,
+    ) -> Tuple[Dict[ScenarioType, str], List[Tuple[ScenarioType, Exception]]]:
+        """Process LLM results, separating successes from failures."""
+        results = {}
+        errors = []
+        for scenario_type, result in zip(scenario_types, llm_results):
+            if isinstance(result, Exception):
+                errors.append((scenario_type, result))
+                self._record_scenario_verbose_result(
+                    endpoint_info, scenario_type, "failed", str(result)[:100]
+                )
+            elif result is not None:
+                results[scenario_type] = result
+                self._record_scenario_verbose_result(
+                    endpoint_info, scenario_type, "success"
+                )
+        return results, errors
 
     def _analyze_schema_for_verbose(
         self, endpoint: Any, schema_analysis_cls: type
