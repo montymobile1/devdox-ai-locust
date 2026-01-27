@@ -11,13 +11,32 @@ Uses 3 LLM calls per endpoint for focused, non-truncated output.
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader, TemplateError
+
 from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
 from devdox_ai_locust.utils.code_validator import CodeValidator
+from devdox_ai_locust.utils.code_processor import CodeProcessor
+from devdox_ai_locust.utils.llm_client import (
+    AIServiceError,
+    RateLimitInfo,
+    TimeEstimate,
+)
+from devdox_ai_locust.utils.schema_utils import (
+    escape_for_raw_string,
+    extract_all_properties,
+    unwrap_nullable_schema,
+)
+from devdox_ai_locust.utils.type_instruction import (
+    get_format_instruction,
+    get_string_instruction,
+    get_integer_instruction,
+    get_number_instruction,
+    get_object_instruction,
+    get_array_instruction,
+)
 
 if TYPE_CHECKING:
     from devdox_ai_locust.utils.debug_recorder import DebugRecorder
@@ -53,76 +72,12 @@ class CodeValidationError(ScenarioGenerationError):
         super().__init__(msg)
 
 
-class AIServiceError(ScenarioGenerationError):
-    """Raised when AI service fails after all retries"""
-
-    pass
-
-
 class ScenarioType(Enum):
     """Types of test scenarios (all LLM-generated)"""
 
     POSITIVE = "positive"  # Happy path + state-dependent tests
     NEGATIVE = "negative"  # Validation errors + edge cases + error handling
     SECURITY = "security"  # Injection attacks + auth bypass
-
-
-@dataclass
-class RateLimitInfo:
-    """Rate limit information from API response"""
-
-    requests_per_second: int
-    requests_per_minute: int
-    remaining: int
-    reset_seconds: float
-
-    @classmethod
-    def from_headers(cls, headers: Dict[str, str]) -> "RateLimitInfo":
-        """Parse rate limit info from response headers"""
-        try:
-            rps = int(headers.get("x-ratelimit-limit", "1"))
-        except (ValueError, TypeError):
-            rps = 1
-        try:
-            remaining = int(headers.get("x-ratelimit-remaining", "0"))
-        except (ValueError, TypeError):
-            remaining = 0
-        try:
-            reset = float(headers.get("x-ratelimit-reset", "1"))
-        except (ValueError, TypeError):
-            reset = 1.0
-
-        return cls(
-            requests_per_second=rps,
-            requests_per_minute=rps * 60,
-            remaining=remaining,
-            reset_seconds=reset,
-        )
-
-    @classmethod
-    def default(cls) -> "RateLimitInfo":
-        """Default rate limit (conservative estimate)"""
-        return cls(
-            requests_per_second=1,
-            requests_per_minute=60,
-            remaining=60,
-            reset_seconds=1,
-        )
-
-
-@dataclass
-class TimeEstimate:
-    """Time estimate for generation"""
-
-    total_calls: int
-    rpm: int
-    estimated_minutes: float
-    estimated_seconds: float
-
-    def __str__(self) -> str:
-        if self.estimated_minutes < 1:
-            return f"~{self.estimated_seconds:.0f} seconds"
-        return f"~{self.estimated_minutes:.1f} minutes"
 
 
 class ScenarioWorkflowGenerator:
@@ -194,6 +149,9 @@ class ScenarioWorkflowGenerator:
         # Extract allowed imports dynamically from prompt templates
         # This replaces the hardcoded ALLOWED_IMPORTS to avoid maintenance burden
         self._allowed_imports = self._extract_allowed_imports_from_templates()
+
+        # Initialize code processor for post-processing LLM output
+        self._code_processor = CodeProcessor(self._allowed_imports)
 
     def _update_concurrency(self, rpm: int) -> None:
         """
@@ -440,17 +398,97 @@ class ScenarioWorkflowGenerator:
 
         return results
 
+    def _analyze_schema_for_verbose(
+        self, endpoint: Any, schema_analysis_cls: type
+    ) -> Any:
+        """Analyze request body schema for verbose mode."""
+        schema_analysis = schema_analysis_cls()
+        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
+            return schema_analysis
+
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not (schema and isinstance(schema, dict)):
+            return schema_analysis
+
+        properties, required_list = extract_all_properties(schema)
+        schema_analysis.total_fields = len(properties)
+        schema_analysis.required_fields = len(required_list)
+
+        # Check for discriminator
+        one_of = schema.get("oneOf") or schema.get("anyOf")
+        discriminator = schema.get("discriminator", {})
+        if one_of and discriminator:
+            schema_analysis.schema_type = "discriminated_union"
+            schema_analysis.discriminator = discriminator.get("propertyName", "")
+            mapping = discriminator.get("mapping", {})
+            schema_analysis.variants = list(mapping.keys()) if mapping else []
+
+        # Count constraints
+        for prop_schema in properties.values():
+            unwrapped, _ = unwrap_nullable_schema(prop_schema)
+            if unwrapped.get("pattern"):
+                schema_analysis.patterns_found += 1
+            if unwrapped.get("enum"):
+                schema_analysis.enums_found += 1
+            if unwrapped.get("format"):
+                schema_analysis.formats_found += 1
+            if unwrapped.get("type") == "array":
+                if unwrapped.get("minItems") or unwrapped.get("maxItems"):
+                    schema_analysis.arrays_with_constraints += 1
+
+        return schema_analysis
+
+    def _analyze_injection_for_verbose(
+        self, endpoint: Any, injection_analysis_cls: type
+    ) -> Any:
+        """Analyze injection points for verbose mode."""
+        injection_analysis = injection_analysis_cls()
+        injection_result = self._precompute_injection_points(endpoint)
+
+        if injection_result:
+            for line in injection_result.split("\n"):
+                if "HIGH_RISK" in line and ":" in line:
+                    field_name = line.split(":")[0].strip().lstrip("-").strip()
+                    injection_analysis.high_risk_fields.append(field_name)
+                injection_analysis.total_injectable += 1
+
+        # Determine locations
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            injection_analysis.injection_locations.append("body")
+        if hasattr(endpoint, "parameters") and endpoint.parameters:
+            for param in endpoint.parameters:
+                loc = getattr(param, "location", None) or getattr(param, "in_", "query")
+                if hasattr(loc, "value"):
+                    loc = loc.value
+                if (
+                    loc == "query"
+                    and "query" not in injection_analysis.injection_locations
+                ):
+                    injection_analysis.injection_locations.append("query")
+
+        return injection_analysis
+
+    def _parse_negative_scenario_types(self, negative_scenarios: str) -> List[str]:
+        """Parse negative scenario types from precomputed string."""
+        negative_types = []
+        if not negative_scenarios:
+            return negative_types
+
+        for line in negative_scenarios.split("\n"):
+            if line.strip().startswith("-"):
+                scenario_name = line.strip().lstrip("-").strip()
+                if ":" in scenario_name:
+                    scenario_name = scenario_name.split(":")[0].strip()
+                if scenario_name:
+                    negative_types.append(scenario_name)
+        return negative_types
+
     def _build_endpoint_analysis(
         self,
         endpoint: Any,
         all_endpoints: Optional[List[Any]] = None,
     ) -> "EndpointAnalysis":
-        """Build verbose analysis data for an endpoint.
-
-        This is called in verbose mode to provide detailed insight into
-        what the generator sees and decides for each endpoint.
-        """
-        # Import here to avoid circular import at module level
+        """Build verbose analysis data for an endpoint."""
         from devdox_ai_locust.utils.generation_progress import (
             EndpointAnalysis,
             SchemaAnalysis,
@@ -462,10 +500,7 @@ class ScenarioWorkflowGenerator:
             endpoint, "operation_id", ""
         ) or self._generate_operation_id(endpoint)
 
-        # Extract responses from spec
         responses_defined = self._extract_expected_status_codes(endpoint)
-
-        # Determine source of truth
         source_of_truth = "spec" if responses_defined else "fallback"
 
         # Get content type
@@ -475,100 +510,34 @@ class ScenarioWorkflowGenerator:
             if ct:
                 content_type = ct
 
-        # Analyze schema
-        schema_analysis = SchemaAnalysis()
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            schema = getattr(endpoint.request_body, "schema", {})
-            if schema and isinstance(schema, dict):
-                properties, required_list = self._extract_all_properties(schema)
-                schema_analysis.total_fields = len(properties)
-                schema_analysis.required_fields = len(required_list)
-
-                # Check for discriminator
-                one_of = schema.get("oneOf") or schema.get("anyOf")
-                discriminator = schema.get("discriminator", {})
-                if one_of and discriminator:
-                    schema_analysis.schema_type = "discriminated_union"
-                    schema_analysis.discriminator = discriminator.get(
-                        "propertyName", ""
-                    )
-                    mapping = discriminator.get("mapping", {})
-                    schema_analysis.variants = list(mapping.keys()) if mapping else []
-
-                # Count constraints
-                for prop_name, prop_schema in properties.items():
-                    unwrapped, _ = self._unwrap_nullable_schema(prop_schema)
-                    if unwrapped.get("pattern"):
-                        schema_analysis.patterns_found += 1
-                    if unwrapped.get("enum"):
-                        schema_analysis.enums_found += 1
-                    if unwrapped.get("format"):
-                        schema_analysis.formats_found += 1
-                    if unwrapped.get("type") == "array":
-                        if unwrapped.get("minItems") or unwrapped.get("maxItems"):
-                            schema_analysis.arrays_with_constraints += 1
+        # Analyze components
+        schema_analysis = self._analyze_schema_for_verbose(endpoint, SchemaAnalysis)
+        injection_analysis = self._analyze_injection_for_verbose(
+            endpoint, InjectionAnalysis
+        )
 
         # Setup analysis
         setup_analysis = SetupAnalysis()
         if all_endpoints:
-            # Returns List[Tuple[endpoint, score, reason]]
             setup_results = self._find_related_create_endpoints(endpoint, all_endpoints)
             setup_analysis.setup_endpoints_found = len(setup_results)
             if setup_results:
                 setup_analysis.needs_setup = True
-                # Extract endpoint from tuple (endpoint, score, reason)
                 setup_analysis.setup_endpoints = [
                     f"{ep[0].method} {ep[0].path}" for ep in setup_results[:3]
                 ]
 
-        # Injection analysis
-        injection_analysis = InjectionAnalysis()
-        injection_result = self._precompute_injection_points(endpoint)
-        if injection_result:
-            # Count injection points from the result
-            lines = injection_result.split("\n")
-            for line in lines:
-                if "HIGH_RISK" in line:
-                    # Extract field name
-                    if ":" in line:
-                        field_name = line.split(":")[0].strip().lstrip("-").strip()
-                        injection_analysis.high_risk_fields.append(field_name)
-                injection_analysis.total_injectable += 1
-            # Determine locations
-            if hasattr(endpoint, "request_body") and endpoint.request_body:
-                injection_analysis.injection_locations.append("body")
-            if hasattr(endpoint, "parameters") and endpoint.parameters:
-                for param in endpoint.parameters:
-                    loc = getattr(param, "location", None) or getattr(
-                        param, "in_", "query"
-                    )
-                    if hasattr(loc, "value"):
-                        loc = loc.value
-                    if (
-                        loc == "query"
-                        and "query" not in injection_analysis.injection_locations
-                    ):
-                        injection_analysis.injection_locations.append("query")
-
-        # Pre-computed fields
+        # Count positive fields
         positive_fields = 0
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             schema = getattr(endpoint.request_body, "schema", {})
             if schema:
-                properties, _ = self._extract_all_properties(schema)
+                properties, _ = extract_all_properties(schema)
                 positive_fields = len(properties)
 
         # Negative scenarios
         negative_scenarios = self._precompute_negative_scenarios(endpoint)
-        negative_types = []
-        if negative_scenarios:
-            for line in negative_scenarios.split("\n"):
-                if line.strip().startswith("-"):
-                    scenario_name = line.strip().lstrip("-").strip()
-                    if ":" in scenario_name:
-                        scenario_name = scenario_name.split(":")[0].strip()
-                    if scenario_name:
-                        negative_types.append(scenario_name)
+        negative_types = self._parse_negative_scenario_types(negative_scenarios)
 
         # Build warnings
         warnings = []
@@ -586,7 +555,7 @@ class ScenarioWorkflowGenerator:
             content_type=content_type,
             schema=schema_analysis,
             strings_with_pattern=schema_analysis.patterns_found,
-            numbers_with_bounds=0,  # TODO: count these
+            numbers_with_bounds=0,
             fields_with_format=schema_analysis.formats_found,
             setup=setup_analysis,
             injection=injection_analysis,
@@ -596,72 +565,54 @@ class ScenarioWorkflowGenerator:
             warnings=warnings,
         )
 
-    def _build_orchestrator_analysis(
-        self,
-        tag_name: str,
-        class_name: str,
-        tag_endpoints: List[Any],
-        auth_endpoints: Optional[List[Any]] = None,
-    ) -> "OrchestratorAnalysis":
-        """Build verbose analysis data for an orchestrator.
-
-        This is called in verbose mode to provide detailed insight into
-        what the generator sees and decides for each orchestrator.
-        """
-        # Import here to avoid circular import at module level
-        from devdox_ai_locust.utils.generation_progress import (
-            OrchestratorAnalysis,
-            OrchestratorEndpointInfo,
+    def _build_orchestrator_endpoint_info(
+        self, endpoint: Any, endpoint_info_cls: Any
+    ) -> Any:
+        """Build endpoint info object for orchestrator analysis."""
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
+        return endpoint_info_cls(
+            method=endpoint.method.upper(),
+            path=endpoint.path,
+            operation_id=operation_id,
+            has_positive=True,
+            has_negative=True,
+            has_security=True,
         )
 
-        # Build endpoint info list
-        endpoints_info = []
-        for ep in tag_endpoints:
-            operation_id = getattr(
-                ep, "operation_id", ""
-            ) or self._generate_operation_id(ep)
-            ep_info = OrchestratorEndpointInfo(
-                method=ep.method.upper(),
-                path=ep.path,
-                operation_id=operation_id,
-                # Assume all scenarios are present for valid endpoints
-                has_positive=True,
-                has_negative=True,
-                has_security=True,
-            )
-            endpoints_info.append(ep_info)
-
-        # Detect CRUD operations
+    def _detect_crud_operations(
+        self, tag_endpoints: List[Any]
+    ) -> Tuple[bool, bool, bool, bool]:
+        """Detect CRUD operations from endpoints."""
         has_create = any(ep.method.upper() == "POST" for ep in tag_endpoints)
         has_read = any(ep.method.upper() == "GET" for ep in tag_endpoints)
         has_update = any(ep.method.upper() in ("PUT", "PATCH") for ep in tag_endpoints)
         has_delete = any(ep.method.upper() == "DELETE" for ep in tag_endpoints)
+        return has_create, has_read, has_update, has_delete
 
-        # CRUD lifecycle is possible if we have at least create + read + delete
-        crud_lifecycle_possible = has_create and has_read and has_delete
-
-        # Detect state-dependent test possibilities
-        state_dependent_tests = []
+    def _detect_state_dependent_tests(
+        self, has_create: bool, has_read: bool, has_update: bool, has_delete: bool
+    ) -> List[str]:
+        """Detect possible state-dependent tests based on CRUD operations."""
+        tests = []
         if has_create and has_delete:
-            state_dependent_tests.append("double_delete")
+            tests.append("double_delete")
         if has_create and has_read:
-            state_dependent_tests.append("read_after_delete")
+            tests.append("read_after_delete")
         if has_create and has_update:
-            state_dependent_tests.append("update_after_delete")
+            tests.append("update_after_delete")
         if has_create:
-            state_dependent_tests.append("409_conflict")
+            tests.append("409_conflict")
+        return tests
 
-        # Concurrent tests possible if we have create or update
-        concurrent_tests_possible = has_create or has_update
-
-        # Resource limit tests possible with any write operation
-        resource_limit_tests = has_create or has_update
-
-        # Auth detection
-        auth_endpoints_count = len(auth_endpoints) if auth_endpoints else 0
-        auth_tests_possible = auth_endpoints_count > 0
-
-        # Build warnings
+    def _build_orchestrator_warnings(
+        self,
+        has_create: bool,
+        crud_lifecycle_possible: bool,
+        endpoint_count: int,
+    ) -> List[str]:
+        """Build warning messages for orchestrator analysis."""
         warnings = []
         if not has_create:
             warnings.append("No POST endpoint - create operations not possible")
@@ -669,8 +620,40 @@ class ScenarioWorkflowGenerator:
             warnings.append(
                 "Full CRUD lifecycle not possible - missing some operations"
             )
-        if len(tag_endpoints) < 2:
+        if endpoint_count < 2:
             warnings.append("Only one endpoint - limited orchestration possibilities")
+        return warnings
+
+    def _build_orchestrator_analysis(
+        self,
+        tag_name: str,
+        class_name: str,
+        tag_endpoints: List[Any],
+        auth_endpoints: Optional[List[Any]] = None,
+    ) -> "OrchestratorAnalysis":
+        """Build verbose analysis data for an orchestrator."""
+        from devdox_ai_locust.utils.generation_progress import (
+            OrchestratorAnalysis,
+            OrchestratorEndpointInfo,
+        )
+
+        endpoints_info = [
+            self._build_orchestrator_endpoint_info(ep, OrchestratorEndpointInfo)
+            for ep in tag_endpoints
+        ]
+
+        has_create, has_read, has_update, has_delete = self._detect_crud_operations(
+            tag_endpoints
+        )
+        crud_lifecycle_possible = has_create and has_read and has_delete
+        state_dependent_tests = self._detect_state_dependent_tests(
+            has_create, has_read, has_update, has_delete
+        )
+
+        auth_endpoints_count = len(auth_endpoints) if auth_endpoints else 0
+        warnings = self._build_orchestrator_warnings(
+            has_create, crud_lifecycle_possible, len(tag_endpoints)
+        )
 
         return OrchestratorAnalysis(
             tag_name=tag_name,
@@ -684,10 +667,10 @@ class ScenarioWorkflowGenerator:
             has_delete=has_delete,
             crud_lifecycle_possible=crud_lifecycle_possible,
             auth_endpoints_found=auth_endpoints_count,
-            auth_tests_possible=auth_tests_possible,
+            auth_tests_possible=auth_endpoints_count > 0,
             state_dependent_tests=state_dependent_tests,
-            concurrent_tests_possible=concurrent_tests_possible,
-            resource_limit_tests=resource_limit_tests,
+            concurrent_tests_possible=has_create or has_update,
+            resource_limit_tests=has_create or has_update,
             warnings=warnings,
         )
 
@@ -826,15 +809,15 @@ class ScenarioWorkflowGenerator:
                     f"API returned HTML error page for orchestrator [{tag_name}]"
                 )
 
-            # Extract and clean code
-            extracted = self._extract_code(content)
-            sanitized = self._sanitize_unicode(extracted)
+            # Extract and clean code using code processor
+            extracted = self._code_processor.extract_code(content)
+            sanitized = self._code_processor.sanitize_unicode(extracted)
             after_class_fix = self._fix_orchestrator_class_name(sanitized, class_name)
-            after_bytes_fix = self._fix_bytes_literals(after_class_fix)
-            after_regex_fix = self._fix_regex_strings(after_bytes_fix)
+            after_bytes_fix = self._code_processor.fix_bytes_literals(after_class_fix)
+            after_regex_fix = self._code_processor.fix_regex_strings(after_bytes_fix)
             content = after_regex_fix
 
-            is_valid, error = self._validate_python_code(content)
+            is_valid, error = self._code_processor.validate_python_code(content)
 
             if is_valid:
                 # Record final orchestrator code
@@ -1287,8 +1270,8 @@ class ScenarioWorkflowGenerator:
                     f"This may indicate an API error or rate limiting. First 200 chars: {content[:200]}"
                 )
 
-            # Extract code from response
-            extracted = self._extract_code(content)
+            # Extract code from response using code processor
+            extracted = self._code_processor.extract_code(content)
 
             # Record extracted code
             if self.debug_recorder and self.debug_recorder.enabled:
@@ -1299,26 +1282,17 @@ class ScenarioWorkflowGenerator:
                     code=extracted,
                 )
 
-            # Sanitize any non-ASCII Unicode characters the LLM may have injected
-            sanitized = self._sanitize_unicode(extracted)
-
-            # Fix class name to match expected naming convention
-            # LLMs sometimes ignore the template and generate their own class names
-            after_class_fix = self._fix_class_name(
+            # Apply all code fixes using code processor
+            sanitized = self._code_processor.sanitize_unicode(extracted)
+            after_class_fix = self._code_processor.fix_class_name(
                 sanitized, class_name, scenario_type.value
             )
-
-            # Fix bytes literals with unicode (b'tëst' → 'tëst'.encode('utf-8'))
-            after_bytes_fix = self._fix_bytes_literals(after_class_fix)
-
-            # Fix regex strings (convert to raw strings to avoid SyntaxWarnings)
-            after_regex_fix = self._fix_regex_strings(after_bytes_fix)
-
-            # Fix missing imports (LLM sometimes forgets to import get_task_weight, etc.)
-            after_import_fix = self._fix_missing_imports(after_regex_fix)
-
-            # Fix redundant .isoformat() calls on date methods that already return strings
-            after_isoformat_fix = self._fix_isoformat_calls(after_import_fix)
+            after_bytes_fix = self._code_processor.fix_bytes_literals(after_class_fix)
+            after_regex_fix = self._code_processor.fix_regex_strings(after_bytes_fix)
+            after_import_fix = self._code_processor.fix_missing_imports(after_regex_fix)
+            after_isoformat_fix = self._code_processor.fix_isoformat_calls(
+                after_import_fix
+            )
 
             content = after_isoformat_fix
 
@@ -1331,7 +1305,7 @@ class ScenarioWorkflowGenerator:
                     code=content,
                 )
 
-            is_valid, error = self._validate_python_code(content)
+            is_valid, error = self._code_processor.validate_python_code(content)
 
             # Record validation result
             if self.debug_recorder and self.debug_recorder.enabled:
@@ -1487,129 +1461,6 @@ class ScenarioWorkflowGenerator:
             endpoint_info=f"{endpoint.method} {endpoint.path}",
         )
 
-    @staticmethod
-    def _unwrap_nullable_schema(schema: dict) -> tuple:
-        """Unwrap OpenAPI 3.1 anyOf nullable pattern and 3.0 nullable flag.
-
-        Handles:
-        - OpenAPI 3.1: anyOf: [{actual_type_schema}, {type: null}]
-        - OpenAPI 3.0: {type: string, nullable: true}
-
-        Returns:
-            (unwrapped_schema, is_nullable) tuple.
-            If nullable pattern detected, returns the real type schema and True.
-            Otherwise returns the original schema unchanged and False.
-        """
-        if not isinstance(schema, dict):
-            return schema, False
-
-        # OpenAPI 3.0: nullable flag alongside type
-        if schema.get("nullable") is True and schema.get("type"):
-            return schema, True
-
-        # OpenAPI 3.1: anyOf with exactly one null type variant
-        any_of = schema.get("anyOf") or schema.get("oneOf")
-        if any_of and isinstance(any_of, list):
-            null_variants = [
-                v for v in any_of if isinstance(v, dict) and v.get("type") == "null"
-            ]
-            real_variants = [
-                v for v in any_of if isinstance(v, dict) and v.get("type") != "null"
-            ]
-            if len(null_variants) >= 1 and len(real_variants) == 1:
-                return real_variants[0], True
-
-        return schema, False
-
-    def _extract_all_properties(self, schema: dict) -> Tuple[Dict[str, Any], List[str]]:
-        """Extract all properties from a schema, handling allOf merging and discriminated unions.
-
-        Handles:
-        - Direct properties
-        - allOf: merges properties from all items (items are already $ref-resolved by parser)
-        - oneOf/anyOf discriminated unions: merges properties from all variants
-          (union of all possible fields, so all can be recognized)
-
-        Args:
-            schema: Request body schema dict
-
-        Returns:
-            (properties_dict, required_list) tuple
-        """
-        if not isinstance(schema, dict):
-            return {}, []
-
-        properties = dict(schema.get("properties", {}))
-        required_list = list(schema.get("required", []))
-
-        # Handle allOf: merge properties from all items
-        all_of = schema.get("allOf")
-        if all_of and isinstance(all_of, list):
-            for item in all_of:
-                if not isinstance(item, dict):
-                    continue
-                # Item may itself have allOf (nested composition)
-                item_props = item.get("properties", {})
-                if item_props:
-                    properties.update(item_props)
-                    required_list.extend(item.get("required", []))
-                # If item has its own allOf (e.g. resolved $ref that uses composition)
-                nested_all_of = item.get("allOf")
-                if nested_all_of and isinstance(nested_all_of, list):
-                    for sub in nested_all_of:
-                        if isinstance(sub, dict) and sub.get("properties"):
-                            properties.update(sub["properties"])
-                            required_list.extend(sub.get("required", []))
-
-        # Handle discriminated unions: merge all variant properties
-        one_of = schema.get("oneOf") or schema.get("anyOf")
-        if one_of and isinstance(one_of, list) and not properties:
-            for variant in one_of:
-                if not isinstance(variant, dict):
-                    continue
-                v_props = variant.get("properties", {})
-                if v_props:
-                    properties.update(v_props)
-                    required_list.extend(variant.get("required", []))
-                # Variant might use allOf internally
-                v_all_of = variant.get("allOf")
-                if v_all_of and isinstance(v_all_of, list):
-                    for sub in v_all_of:
-                        if isinstance(sub, dict) and sub.get("properties"):
-                            properties.update(sub["properties"])
-                            required_list.extend(sub.get("required", []))
-
-        return properties, list(set(required_list))
-
-    @staticmethod
-    def _escape_for_python_string(value: str) -> str:
-        """Escape a string for safe embedding in a Python double-quoted string literal.
-
-        Handles backslashes, quotes, and control characters.
-        """
-        if not isinstance(value, str):
-            return str(value)
-        return (
-            value.replace("\\", "\\\\")
-            .replace('"', '\\"')
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        )
-
-    @staticmethod
-    def _escape_for_raw_string(value: str) -> str:
-        """Escape a string for safe embedding in a Python raw string literal (r"...").
-
-        For raw strings, backslashes are NOT escaped (they're literal in raw strings).
-        Only quotes need escaping. Used for regex patterns since the LLM wraps them in r"...".
-        """
-        if not isinstance(value, str):
-            return str(value)
-        # In raw strings, only quotes need escaping (and raw strings can't end with odd backslashes)
-        # For simplicity, we just escape quotes - regex patterns rarely have quotes
-        return value.replace('"', '\\"')
-
     def _get_type_instruction(
         self,
         field_schema: dict,
@@ -1618,14 +1469,11 @@ class ScenarioWorkflowGenerator:
     ) -> str:
         """Map a field schema to a Python code instruction for generating a valid value.
 
-        Handles enums, patterns, formats, string/integer/number/boolean/array/object types,
-        and nested structures. Used by both _precompute_positive_fields and
-        _precompute_object_instruction to avoid duplicated logic.
+        Delegates to type-specific helper functions in type_instruction module.
 
         Args:
             field_schema: The (already unwrapped) field schema dict
-            _object_ancestors: Optional frozenset of schema IDs for circular reference detection
-                             (passed through to _precompute_object_instruction for nested objects)
+            _object_ancestors: Frozenset for circular reference detection
             field_name: Optional field name for inferring the appropriate generator
 
         Returns:
@@ -1638,281 +1486,249 @@ class ScenarioWorkflowGenerator:
         field_format = field_schema.get("format", "")
         field_enum = field_schema.get("enum")
         field_pattern = field_schema.get("pattern")
-        field_items = field_schema.get("items", {})
         field_name_lower = field_name.lower() if field_name else ""
 
-        # Enum: always takes priority
+        # Enum takes priority
         if field_enum:
             return f"random.choice({field_enum})"
 
-        # IPv4 detection: Check field name BEFORE pattern to avoid regex-based generation
-        # that produces invalid octets (>255). IPv4 regex patterns can't validate octet ranges.
+        # IPv4 early detection (before pattern check)
         if field_name_lower and field_type == "string":
             if "ipv4" in field_name_lower or field_name_lower == "ip_address":
                 return "test_data_generator.random_ipv4()"
 
-        # Pattern: regex-based generation (use raw string since prompts tell LLM to use r"...")
+        # Pattern-based generation
         if field_pattern:
-            escaped = self._escape_for_raw_string(field_pattern)
+            escaped = escape_for_raw_string(field_pattern)
             return f'test_data_generator.generate_string(pattern=r"{escaped}")'
 
-        # Format-specific generators - use dedicated methods that return strings directly
-        # IMPORTANT: These methods return strings, NOT datetime objects!
-        if field_format == "date":
-            return "test_data_generator.random_date()"  # Returns "2024-03-15" string
-        if field_format == "date-time":
-            return "test_data_generator.random_datetime()"  # Returns "2024-03-15T14:30:00" string
-        if field_format == "time":
-            return "test_data_generator.random_time()"  # Returns "14:30:00" string
-        if field_format == "email":
-            return "test_data_generator.generate_email()"
-        if field_format == "uuid":
-            return "test_data_generator.random_uuid()"
-        if field_format in ("uri", "url"):
-            return "test_data_generator.random_uri()"
-        if field_format == "ipv4":
-            return "test_data_generator.random_ipv4()"
-        if field_format == "ipv6":
-            return "test_data_generator.random_ipv6()"
-        if field_format == "hostname":
-            return "test_data_generator.random_hostname()"
-        if field_format == "byte":
-            return "test_data_generator.random_base64()"
+        # Format-specific generators
+        format_instr = get_format_instruction(field_format)
+        if format_instr:
+            return format_instr
 
-        # Type-based generators
+        # Type-specific generators
         if field_type == "string":
-            max_length = field_schema.get("maxLength", 50)
-
-            # Infer generator from field name (generic patterns, not hardcoded)
-            if field_name_lower:
-                # Country codes: 2-3 char fields with "country" in name
-                if "country" in field_name_lower and max_length <= 3:
-                    return "test_data_generator.random_country_code()"
-                # Currency codes: 3-char fields with "currency" in name
-                if "currency" in field_name_lower and max_length <= 4:
-                    return "test_data_generator.random_currency_code()"
-                # Locale fields
-                if "locale" in field_name_lower:
-                    return "test_data_generator.random_locale()"
-                # Color fields
-                if "color" in field_name_lower or "colour" in field_name_lower:
-                    return "test_data_generator.random_hex_color()"
-                # Date/time fields by name (when format isn't specified)
-                if any(
-                    kw in field_name_lower
-                    for kw in ["created_at", "updated_at", "modified_at", "timestamp"]
-                ):
-                    return "test_data_generator.random_datetime()"
-                if (
-                    any(
-                        kw in field_name_lower
-                        for kw in ["birth_date", "start_date", "end_date", "date"]
-                    )
-                    and "time" not in field_name_lower
-                ):
-                    return "test_data_generator.random_date()"
-                # Email fields by name
-                if "email" in field_name_lower:
-                    return "test_data_generator.generate_email()"
-                # URL fields by name
-                if any(
-                    kw in field_name_lower for kw in ["url", "uri", "website", "link"]
-                ):
-                    return "test_data_generator.random_uri()"
-                # Phone fields by name
-                if "phone" in field_name_lower:
-                    return "test_data_generator.random_ipv4()"  # Faker phone can have issues, use simple format
-                # IP address fields by name
-                if "ipv4" in field_name_lower or "ip_address" in field_name_lower:
-                    return "test_data_generator.random_ipv4()"
-                if "ipv6" in field_name_lower:
-                    return "test_data_generator.random_ipv6()"
-                # Hostname fields by name
-                if "hostname" in field_name_lower or "host" in field_name_lower:
-                    return "test_data_generator.random_hostname()"
-
-            # Default string generation with length constraints
-            length = (
-                max_length if isinstance(max_length, int) and max_length <= 50 else 10
-            )
-            if not isinstance(length, int):
-                length = 10
-            return f"test_data_generator.generate_string(length={length})"
+            return get_string_instruction(field_schema, field_name)
 
         if field_type == "integer":
-            # RGB/color detection: field names containing "rgb", "color" imply 0-255 range
-            if field_name_lower and any(
-                kw in field_name_lower
-                for kw in ["rgb", "color", "colour", "red", "green", "blue", "alpha"]
-            ):
-                return "test_data_generator.generate_integer(min_val=0, max_val=255)"
-
-            exclusive_min = field_schema.get("exclusiveMinimum")
-            exclusive_max = field_schema.get("exclusiveMaximum")
-            min_val = (
-                exclusive_min
-                if exclusive_min is not None
-                else field_schema.get("minimum", 1)
-            )
-            max_val = (
-                exclusive_max
-                if exclusive_max is not None
-                else field_schema.get("maximum", 1000)
-            )
-            exclusive = exclusive_min is not None or exclusive_max is not None
-            multiple_of = field_schema.get("multipleOf")
-            parts = [f"min_val={min_val}", f"max_val={max_val}"]
-            if exclusive:
-                parts.append("exclusive=True")
-            if multiple_of:
-                parts.append(f"multiple_of={multiple_of}")
-            return f"test_data_generator.generate_integer({', '.join(parts)})"
+            return get_integer_instruction(field_schema, field_name)
 
         if field_type == "number":
-            exclusive_min = field_schema.get("exclusiveMinimum")
-            exclusive_max = field_schema.get("exclusiveMaximum")
-            min_val = (
-                exclusive_min
-                if exclusive_min is not None
-                else field_schema.get("minimum", 0.0)
-            )
-            max_val = (
-                exclusive_max
-                if exclusive_max is not None
-                else field_schema.get("maximum", 1000.0)
-            )
-            exclusive = exclusive_min is not None or exclusive_max is not None
-            if exclusive:
-                return f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val}, exclusive=True)"
-            return f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val})"
+            return get_number_instruction(field_schema)
 
         if field_type == "boolean":
             return "test_data_generator.generate_boolean()"
 
         if field_type == "object":
-            sub_props = field_schema.get("properties", {})
-            if sub_props:
-                return self._precompute_object_instruction(
-                    field_schema, _object_ancestors
-                )
-            add_props = field_schema.get("additionalProperties")
-            if add_props and isinstance(add_props, dict):
-                val_type = add_props.get("type", "string")
-                if val_type == "integer":
-                    val_gen = "test_data_generator.generate_integer()"
-                elif val_type == "number":
-                    val_gen = "test_data_generator.generate_float()"
-                elif val_type == "boolean":
-                    val_gen = "test_data_generator.generate_boolean()"
-                else:
-                    val_gen = "test_data_generator.generate_string()"
-                return '{f"key_{i}": ' + val_gen + " for i in range(3)}"
-            if add_props:
-                return '{"key1": "value1", "key2": "value2"}'
-            return "{}"
+            return get_object_instruction(
+                field_schema,
+                self._precompute_object_instruction,
+                _object_ancestors,
+            )
 
         if field_type == "array":
-            items_type = (
-                field_items.get("type", "string")
-                if isinstance(field_items, dict)
-                else "string"
-            )
-            items_enum = (
-                field_items.get("enum") if isinstance(field_items, dict) else None
-            )
-            items_ref = (
-                field_items.get("$ref") if isinstance(field_items, dict) else None
-            )
-            # Check for oneOf/anyOf discriminated union in array items
-            items_one_of = (
-                field_items.get("oneOf") or field_items.get("anyOf")
-                if isinstance(field_items, dict)
-                else None
-            )
-            # Respect minItems/maxItems constraints - use minItems as array length to ensure validity
-            min_items = field_schema.get("minItems", 1)
-            max_items = field_schema.get("maxItems")
-            # Use minItems if set > 1, otherwise default to 3 (or maxItems if smaller)
-            array_len = max(min_items, 2) if min_items > 1 else 3
-            if max_items and array_len > max_items:
-                array_len = max_items
-            if items_enum:
-                return f"[random.choice({items_enum}) for _ in range({array_len})]"
-            # Handle oneOf/anyOf in array items (discriminated union like Dog|Cat|Bird)
-            if (
-                items_one_of
-                and isinstance(items_one_of, list)
-                and len(items_one_of) > 0
-            ):
-                # Use the first variant to generate sample objects
-                first_variant = items_one_of[0]
-                if isinstance(first_variant, dict):
-                    # Extract properties from the first variant (handles allOf etc.)
-                    variant_props, _ = self._extract_all_properties(first_variant)
-                    if variant_props:
-                        obj_instr = self._precompute_object_instruction(
-                            first_variant, _object_ancestors
-                        )
-                        return f"[{obj_instr} for _ in range({array_len})]"
-                return "[{}]"
-            if items_type == "object" or items_ref:
-                items_props = (
-                    field_items.get("properties", {})
-                    if isinstance(field_items, dict)
-                    else {}
-                )
-                if items_props:
-                    obj_instr = self._precompute_object_instruction(
-                        field_items, _object_ancestors
-                    )
-                    return f"[{obj_instr} for _ in range({array_len})]"
-                return "[{}]"
-            if items_type == "string":
-                return f"[test_data_generator.generate_string() for _ in range({array_len})]"
-            if items_type == "integer":
-                # RGB/color detection: field names containing "rgb", "color" imply 0-255 range
-                if field_name_lower and any(
-                    kw in field_name_lower for kw in ["rgb", "color", "colour"]
-                ):
-                    return f"[test_data_generator.generate_integer(min_val=0, max_val=255) for _ in range({array_len})]"
-                return f"[test_data_generator.generate_integer() for _ in range({array_len})]"
-            if items_type == "number":
-                return f"[test_data_generator.generate_float() for _ in range({array_len})]"
-            if items_type == "boolean":
-                return f"[test_data_generator.generate_boolean() for _ in range({array_len})]"
-            if items_type == "array":
-                # Nested array - check inner items type
-                inner_items = (
-                    field_items.get("items", {})
-                    if isinstance(field_items, dict)
-                    else {}
-                )
-                inner_type = (
-                    inner_items.get("type", "string")
-                    if isinstance(inner_items, dict)
-                    else "string"
-                )
-                if inner_type == "integer":
-                    return f"[[test_data_generator.generate_integer() for _ in range(2)] for _ in range({array_len})]"
-                elif inner_type == "number":
-                    return f"[[test_data_generator.generate_float() for _ in range(2)] for _ in range({array_len})]"
-                elif inner_type == "boolean":
-                    return f"[[test_data_generator.generate_boolean() for _ in range(2)] for _ in range({array_len})]"
-                else:
-                    return f"[[test_data_generator.generate_string() for _ in range(2)] for _ in range({array_len})]"
-            return (
-                f"[test_data_generator.generate_string() for _ in range({array_len})]"
+            return get_array_instruction(
+                field_schema,
+                self._precompute_object_instruction,
+                _object_ancestors,
+                field_name,
             )
 
         # Fallback for unknown types
         return "test_data_generator.generate_string(length=10)"
+
+    def _format_endpoint_parameters(
+        self, endpoint: Any
+    ) -> Tuple[List[str], bool, bool]:
+        """Format endpoint parameters section.
+
+        Returns:
+            Tuple of (lines, has_cookie_params, has_header_params)
+        """
+        lines = []
+        has_cookie_params = False
+        has_header_params = False
+
+        if not (hasattr(endpoint, "parameters") and endpoint.parameters):
+            return lines, has_cookie_params, has_header_params
+
+        lines.append("\nParameters:")
+        for param in endpoint.parameters:
+            param_lines, is_cookie, is_header = self._format_single_parameter(param)
+            lines.extend(param_lines)
+            has_cookie_params = has_cookie_params or is_cookie
+            has_header_params = has_header_params or is_header
+
+        # Add type coercion warnings
+        if has_cookie_params:
+            lines.extend(self._get_cookie_warning())
+        if has_header_params:
+            lines.extend(self._get_header_warning())
+
+        return lines, has_cookie_params, has_header_params
+
+    def _format_single_parameter(self, param: Any) -> Tuple[List[str], bool, bool]:
+        """Format a single parameter. Returns (lines, is_cookie, is_header)."""
+        lines = []
+        param_name = getattr(param, "name", "unknown")
+        param_in = getattr(param, "location", None) or getattr(param, "in_", "query")
+        if hasattr(param_in, "value"):
+            param_in = param_in.value
+
+        is_cookie = param_in == "cookie"
+        is_header = param_in == "header"
+
+        param_required = getattr(param, "required", False)
+        param_type = getattr(param, "type", "string")
+        param_format = getattr(param, "format", None)
+
+        required_str = "(required)" if param_required else "(optional)"
+        type_str = f"{param_type} [{param_format}]" if param_format else param_type
+        lines.append(f"  - {param_name} [{param_in}]: {type_str} {required_str}")
+
+        # Add constraints
+        if getattr(param, "enum", None):
+            lines.append(f"      allowed values: {param.enum}")
+        if getattr(param, "pattern", None):
+            lines.append(f"      pattern: {param.pattern}")
+
+        length_parts = []
+        if getattr(param, "min_length", None) is not None:
+            length_parts.append(f"minLength={param.min_length}")
+        if getattr(param, "max_length", None) is not None:
+            length_parts.append(f"maxLength={param.max_length}")
+        if length_parts:
+            lines.append(f"      constraints: {', '.join(length_parts)}")
+
+        range_parts = []
+        if getattr(param, "minimum", None) is not None:
+            range_parts.append(f"min={param.minimum}")
+        if getattr(param, "maximum", None) is not None:
+            range_parts.append(f"max={param.maximum}")
+        if range_parts:
+            lines.append(f"      constraints: {', '.join(range_parts)}")
+
+        if getattr(param, "description", None):
+            lines.append(f"      description: {param.description[:80]}")
+
+        return lines, is_cookie, is_header
+
+    def _get_cookie_warning(self) -> List[str]:
+        """Return cookie type coercion warning lines."""
+        return [
+            "",
+            "  *** COOKIE VALUES MUST BE STRINGS ***",
+            "  When passing cookies, ALL values must be strings, not integers.",
+            "  WRONG: cookies={'session_id': 123}",
+            "  CORRECT: cookies={'session_id': '123'}",
+        ]
+
+    def _get_header_warning(self) -> List[str]:
+        """Return header type coercion warning lines."""
+        return [
+            "",
+            "  *** HEADER VALUES MUST BE STRINGS ***",
+            "  When passing headers, ALL values must be strings.",
+            "  WRONG: headers={'X-Count': 10}",
+            "  CORRECT: headers={'X-Count': '10'}",
+        ]
+
+    def _format_endpoint_request_body(self, endpoint: Any) -> List[str]:
+        """Format endpoint request body section."""
+        lines = []
+        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
+            return lines
+
+        rb = endpoint.request_body
+        content_type = getattr(rb, "content_type", "application/json")
+        schema = getattr(rb, "schema", {})
+
+        lines.append("\nRequest Body:")
+        lines.append(f"  Content-Type: {content_type}")
+        if getattr(rb, "description", None):
+            lines.append(f"  Description: {rb.description[:100]}")
+        lines.append(f"  Required: {getattr(rb, 'required', True)}")
+
+        # File upload warning
+        if content_type in ["multipart/form-data", "application/octet-stream"]:
+            lines.extend(self._get_file_upload_warning())
+
+        # Format schema
+        if schema and isinstance(schema, dict):
+            lines.extend(self._format_schema(schema, indent=2))
+
+        return lines
+
+    def _get_file_upload_warning(self) -> List[str]:
+        """Return file upload warning lines."""
+        return [
+            "",
+            "  *** FILE UPLOAD ENDPOINT ***",
+            "  This endpoint requires multipart/form-data file upload.",
+            "  DO NOT use json= parameter. Use files= with actual file data:",
+            "  Example: files={'file': ('test.txt', b'file content', 'text/plain')}",
+            "",
+        ]
+
+    def _format_endpoint_responses(
+        self, endpoint: Any, exclude_2xx: bool = False
+    ) -> List[str]:
+        """Format endpoint responses section."""
+        lines = []
+        if not (hasattr(endpoint, "responses") and endpoint.responses):
+            return lines
+
+        responses = endpoint.responses
+        lines.append("\nResponses:")
+
+        if isinstance(responses, dict):
+            for status_code, response in responses.items():
+                if exclude_2xx and self._is_2xx_status(status_code):
+                    continue
+                lines.extend(self._format_single_response(status_code, response))
+        elif isinstance(responses, list):
+            for response in responses:
+                status_code = getattr(response, "status_code", "???")
+                if exclude_2xx and self._is_2xx_status(status_code):
+                    continue
+                lines.extend(self._format_single_response(status_code, response))
+
+        return lines
+
+    def _is_2xx_status(self, status_code: Any) -> bool:
+        """Check if status code is in 2xx range."""
+        try:
+            return 200 <= int(status_code) < 300
+        except (ValueError, TypeError):
+            return False
+
+    def _format_single_response(self, status_code: Any, response: Any) -> List[str]:
+        """Format a single response entry."""
+        lines = []
+        desc = (
+            getattr(response, "description", "")
+            if hasattr(response, "description")
+            else str(response)
+        )
+        desc_str = desc[:50] if len(str(desc)) > 50 else desc
+        lines.append(f"  - {status_code}: {desc_str}")
+
+        resp_schema = (
+            getattr(response, "schema", None) if hasattr(response, "schema") else None
+        )
+        if resp_schema and isinstance(resp_schema, dict):
+            lines.append("    Response Schema (use these EXACT field names):")
+            lines.extend(self._format_response_schema(resp_schema, indent=3))
+
+        return lines
 
     def _format_single_endpoint(self, endpoint: Any, exclude_2xx: bool = False) -> str:
         """Format a single endpoint with full details for the prompt.
 
         Args:
             endpoint: Endpoint object to format
-            exclude_2xx: If True, omit 2xx responses from the output (for negative/security tests)
+            exclude_2xx: If True, omit 2xx responses (for negative/security tests)
         """
         lines = []
 
@@ -1929,179 +1745,103 @@ class ScenarioWorkflowGenerator:
         if description:
             lines.append(f"Description: {description}")
 
-        # Parameters with full details
-        has_cookie_params = False
-        has_header_params = False
-        if hasattr(endpoint, "parameters") and endpoint.parameters:
-            lines.append("\nParameters:")
-            for param in endpoint.parameters:
-                param_name = getattr(param, "name", "unknown")
-                param_in = getattr(param, "location", None)
-                if param_in is None:
-                    param_in = getattr(param, "in_", "query")
-                # Handle ParameterType enum
-                if hasattr(param_in, "value"):
-                    param_in = param_in.value
-
-                # Track cookie and header params for type coercion warning
-                if param_in == "cookie":
-                    has_cookie_params = True
-                if param_in == "header":
-                    has_header_params = True
-
-                param_required = getattr(param, "required", False)
-                param_type = getattr(param, "type", "string")
-                param_format = getattr(param, "format", None)
-                param_enum = getattr(param, "enum", None)
-                param_desc = getattr(param, "description", None)
-                param_pattern = getattr(param, "pattern", None)
-                param_min_length = getattr(param, "min_length", None)
-                param_max_length = getattr(param, "max_length", None)
-                param_minimum = getattr(param, "minimum", None)
-                param_maximum = getattr(param, "maximum", None)
-
-                required_str = "(required)" if param_required else "(optional)"
-                type_str = param_type
-                if param_format:
-                    type_str = f"{param_type} [{param_format}]"
-
-                lines.append(
-                    f"  - {param_name} [{param_in}]: {type_str} {required_str}"
-                )
-                if param_enum:
-                    # Standardized format for enum values
-                    lines.append(f"      allowed values: {param_enum}")
-                if param_pattern:
-                    lines.append(f"      pattern: {param_pattern}")
-                if param_min_length is not None or param_max_length is not None:
-                    length_constraints = []
-                    if param_min_length is not None:
-                        length_constraints.append(f"minLength={param_min_length}")
-                    if param_max_length is not None:
-                        length_constraints.append(f"maxLength={param_max_length}")
-                    lines.append(f"      constraints: {', '.join(length_constraints)}")
-                if param_minimum is not None or param_maximum is not None:
-                    range_constraints = []
-                    if param_minimum is not None:
-                        range_constraints.append(f"min={param_minimum}")
-                    if param_maximum is not None:
-                        range_constraints.append(f"max={param_maximum}")
-                    lines.append(f"      constraints: {', '.join(range_constraints)}")
-                if param_desc:
-                    lines.append(f"      description: {param_desc[:80]}")
-
-            # Add type coercion warnings for cookies and headers
-            if has_cookie_params:
-                lines.append("")
-                lines.append("  *** COOKIE VALUES MUST BE STRINGS ***")
-                lines.append(
-                    "  When passing cookies, ALL values must be strings, not integers or other types."
-                )
-                lines.append("  WRONG: cookies={'session_id': 123}")
-                lines.append("  CORRECT: cookies={'session_id': '123'}")
-
-            if has_header_params:
-                lines.append("")
-                lines.append("  *** HEADER VALUES MUST BE STRINGS ***")
-                lines.append("  When passing headers, ALL values must be strings.")
-                lines.append("  WRONG: headers={'X-Count': 10}")
-                lines.append("  CORRECT: headers={'X-Count': '10'}")
-
-        # Request body with FULL SCHEMA DETAILS
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            rb = endpoint.request_body
-            content_type = getattr(rb, "content_type", "application/json")
-            schema = getattr(rb, "schema", {})
-            rb_required = getattr(rb, "required", True)
-            rb_desc = getattr(rb, "description", None)
-
-            lines.append("\nRequest Body:")
-            lines.append(f"  Content-Type: {content_type}")
-            if rb_desc:
-                lines.append(f"  Description: {rb_desc[:100]}")
-            lines.append(f"  Required: {rb_required}")
-
-            # Check for file upload - add explicit instructions
-            if content_type in ["multipart/form-data", "application/octet-stream"]:
-                lines.append("")
-                lines.append("  *** FILE UPLOAD ENDPOINT ***")
-                lines.append(
-                    "  This endpoint requires multipart/form-data file upload."
-                )
-                lines.append(
-                    "  DO NOT use json= parameter. Use files= with actual file data:"
-                )
-                lines.append(
-                    "  Example: files={'file': ('test.txt', b'file content', 'text/plain')}"
-                )
-                lines.append("")
-
-            # Format full schema with all details
-            if schema and isinstance(schema, dict):
-                schema_lines = self._format_schema(schema, indent=2)
-                lines.extend(schema_lines)
-
-        # Responses with FULL SCHEMA DETAILS
-        if hasattr(endpoint, "responses") and endpoint.responses:
-            responses = endpoint.responses
-            lines.append("\nResponses:")
-            if isinstance(responses, dict):
-                for status_code, response in responses.items():
-                    # Skip 2xx responses when exclude_2xx is set (for negative/security tests)
-                    if exclude_2xx:
-                        try:
-                            if 200 <= int(status_code) < 300:
-                                continue
-                        except (ValueError, TypeError):
-                            pass
-                    desc = (
-                        getattr(response, "description", "")
-                        if hasattr(response, "description")
-                        else str(response)
-                    )
-                    lines.append(
-                        f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}"
-                    )
-                    # Add response schema if available
-                    resp_schema = (
-                        getattr(response, "schema", None)
-                        if hasattr(response, "schema")
-                        else None
-                    )
-                    if resp_schema and isinstance(resp_schema, dict):
-                        lines.append(
-                            "    Response Schema (use these EXACT field names when accessing response):"
-                        )
-                        schema_lines = self._format_response_schema(
-                            resp_schema, indent=3
-                        )
-                        lines.extend(schema_lines)
-            elif isinstance(responses, list):
-                for response in responses:
-                    status_code = getattr(response, "status_code", "???")
-                    # Skip 2xx responses when exclude_2xx is set
-                    if exclude_2xx:
-                        try:
-                            if 200 <= int(status_code) < 300:
-                                continue
-                        except (ValueError, TypeError):
-                            pass
-                    desc = getattr(response, "description", "")
-                    lines.append(
-                        f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}"
-                    )
-                    # Add response schema if available
-                    resp_schema = getattr(response, "schema", None)
-                    if resp_schema and isinstance(resp_schema, dict):
-                        lines.append(
-                            "    Response Schema (use these EXACT field names when accessing response):"
-                        )
-                        schema_lines = self._format_response_schema(
-                            resp_schema, indent=3
-                        )
-                        lines.extend(schema_lines)
+        # Parameters, request body, and responses
+        param_lines, _, _ = self._format_endpoint_parameters(endpoint)
+        lines.extend(param_lines)
+        lines.extend(self._format_endpoint_request_body(endpoint))
+        lines.extend(self._format_endpoint_responses(endpoint, exclude_2xx))
 
         return "\n".join(lines)
+
+    def _format_property_constraints(self, schema: dict) -> List[str]:
+        """Extract constraint strings from a schema."""
+        constraints = []
+        constraint_keys = [
+            ("minLength", "minLength"),
+            ("maxLength", "maxLength"),
+            ("minimum", "min"),
+            ("maximum", "max"),
+            ("exclusiveMinimum", "exclusiveMin"),
+            ("exclusiveMaximum", "exclusiveMax"),
+            ("multipleOf", "multipleOf"),
+        ]
+        for key, label in constraint_keys:
+            if schema.get(key) is not None:
+                constraints.append(f"{label}={schema[key]}")
+        if schema.get("pattern"):
+            pattern = schema["pattern"][:40]
+            constraints.append(f"pattern='{pattern}'")
+        return constraints
+
+    def _format_discriminated_union(
+        self, one_of: List[dict], discriminator: dict, prefix: str
+    ) -> List[str]:
+        """Format a discriminated union schema."""
+        lines = []
+        prop_name = discriminator.get("propertyName", "type")
+        lines.append(f"{prefix}Schema: DISCRIMINATED UNION")
+        lines.append(f"{prefix}  *** DISCRIMINATOR FIELD: {prop_name} (REQUIRED) ***")
+        lines.append(
+            f"{prefix}  You MUST include '{prop_name}' to specify which variant."
+        )
+        lines.append(f"{prefix}")
+
+        mapping = discriminator.get("mapping", {})
+        if mapping:
+            lines.append(f"{prefix}  Valid '{prop_name}' values and their schemas:")
+            for disc_value, ref in mapping.items():
+                lines.append(f'{prefix}    - {prop_name}="{disc_value}":')
+                variant_schema = self._resolve_ref_in_union(ref, one_of)
+                if variant_schema:
+                    lines.extend(
+                        self._format_variant_properties(
+                            variant_schema, prop_name, prefix + "        "
+                        )
+                    )
+                lines.append(f"{prefix}")
+        return lines
+
+    def _format_variant_properties(
+        self, variant_schema: dict, discriminator_prop: str, prefix: str
+    ) -> List[str]:
+        """Format properties of a union variant."""
+        lines = []
+        variant_props = variant_schema.get("properties", {})
+        variant_required = variant_schema.get("required", [])
+        for vp_name, vp_schema in variant_props.items():
+            if vp_name == discriminator_prop:
+                continue
+            unwrapped_vp, _ = unwrap_nullable_schema(vp_schema)
+            vp_type = unwrapped_vp.get("type", "any")
+            req_marker = " (REQUIRED)" if vp_name in variant_required else ""
+            generator = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
+            lines.append(f"{prefix}{vp_name}: {vp_type}{req_marker}")
+            lines.append(f"{prefix}    USE: {generator}")
+        return lines
+
+    def _format_union_without_discriminator(
+        self, one_of: List[dict], prefix: str
+    ) -> List[str]:
+        """Format a union type without discriminator."""
+        lines = []
+        lines.append(f"{prefix}Schema: UNION TYPE (oneOf/anyOf)")
+        lines.append(f"{prefix}  Send ONE of the following object types:")
+        for i, variant in enumerate(one_of, 1):
+            if "$ref" in variant:
+                lines.append(f"{prefix}  Option {i}: {variant['$ref']}")
+            else:
+                variant_props = variant.get("properties", {})
+                if variant_props:
+                    lines.append(f"{prefix}  Option {i}:")
+                    for vp_name, vp_schema in variant_props.items():
+                        unwrapped_vp, _ = unwrap_nullable_schema(vp_schema)
+                        vp_type = unwrapped_vp.get("type", "any")
+                        generator = self._get_type_instruction(
+                            unwrapped_vp, field_name=vp_name
+                        )
+                        lines.append(f"{prefix}    - {vp_name}: {vp_type}")
+                        lines.append(f"{prefix}        USE: {generator}")
+        return lines
 
     def _format_schema(self, schema: dict, indent: int = 0) -> List[str]:
         """
@@ -2123,245 +1863,224 @@ class ScenarioWorkflowGenerator:
         discriminator = schema.get("discriminator")
 
         if one_of and isinstance(one_of, list):
-            # This is a union type - format it specially
             if discriminator:
-                prop_name = discriminator.get("propertyName", "type")
-                lines.append(f"{prefix}Schema: DISCRIMINATED UNION")
-                lines.append(
-                    f"{prefix}  *** DISCRIMINATOR FIELD: {prop_name} (REQUIRED) ***"
-                )
-                lines.append(
-                    f"{prefix}  You MUST include '{prop_name}' to specify which variant to use."
-                )
-                lines.append(f"{prefix}")
-
-                # Get mapping if available
-                mapping = discriminator.get("mapping", {})
-                if mapping:
-                    lines.append(
-                        f"{prefix}  Valid '{prop_name}' values and their schemas:"
-                    )
-                    for disc_value, ref in mapping.items():
-                        lines.append(f'{prefix}    - {prop_name}="{disc_value}":')
-                        # Try to resolve the reference and show fields
-                        variant_schema = self._resolve_ref_in_union(ref, one_of)
-                        if variant_schema:
-                            variant_props = variant_schema.get("properties", {})
-                            variant_required = variant_schema.get("required", [])
-                            for vp_name, vp_schema in variant_props.items():
-                                if vp_name == prop_name:
-                                    continue  # Skip discriminator field, already shown
-                                # Unwrap nullable schema for proper type detection
-                                unwrapped_vp, _ = self._unwrap_nullable_schema(
-                                    vp_schema
-                                )
-                                vp_type = unwrapped_vp.get("type", "any")
-                                req_marker = (
-                                    " (REQUIRED)" if vp_name in variant_required else ""
-                                )
-                                # Get the pre-computed generator instruction
-                                generator = self._get_type_instruction(
-                                    unwrapped_vp, field_name=vp_name
-                                )
-                                lines.append(
-                                    f"{prefix}        {vp_name}: {vp_type}{req_marker}"
-                                )
-                                lines.append(f"{prefix}            USE: {generator}")
-                        lines.append(f"{prefix}")
+                return self._format_discriminated_union(one_of, discriminator, prefix)
             else:
-                # oneOf/anyOf without discriminator
-                lines.append(f"{prefix}Schema: UNION TYPE (oneOf/anyOf)")
-                lines.append(f"{prefix}  Send ONE of the following object types:")
-                for i, variant in enumerate(one_of, 1):
-                    variant_schema = variant
-                    if "$ref" in variant:
-                        # Just note the reference, we can't resolve it fully here
-                        lines.append(f"{prefix}  Option {i}: {variant['$ref']}")
-                    else:
-                        variant_props = variant.get("properties", {})
-                        if variant_props:
-                            lines.append(f"{prefix}  Option {i}:")
-                            for vp_name, vp_schema in variant_props.items():
-                                unwrapped_vp, _ = self._unwrap_nullable_schema(
-                                    vp_schema
-                                )
-                                vp_type = unwrapped_vp.get("type", "any")
-                                generator = self._get_type_instruction(
-                                    unwrapped_vp, field_name=vp_name
-                                )
-                                lines.append(f"{prefix}    - {vp_name}: {vp_type}")
-                                lines.append(f"{prefix}        USE: {generator}")
-            return lines
+                return self._format_union_without_discriminator(one_of, prefix)
 
         required_fields = schema.get("required", [])
         properties = schema.get("properties", {})
 
         if properties:
-            lines.append(f"{prefix}Schema:")
-            if required_fields:
-                lines.append(f"{prefix}  Required fields: {required_fields}")
-            else:
-                lines.append(f"{prefix}  Required fields: none")
-            lines.append(
-                f"{prefix}  Properties (use these EXACT field names in your code):"
-            )
-
+            lines.extend(self._format_schema_header(prefix, required_fields))
             for prop_name, prop_schema in properties.items():
-                is_required = prop_name in required_fields
-
-                # Unwrap nullable pattern (OpenAPI 3.1 anyOf/3.0 nullable)
-                unwrapped, is_nullable = self._unwrap_nullable_schema(prop_schema)
-                nullable_marker = ", nullable" if is_nullable else ""
-                req_marker = (
-                    f" (REQUIRED{nullable_marker})"
-                    if is_required
-                    else f" (optional{nullable_marker})"
-                )
-
-                prop_type = unwrapped.get("type", "any")
-                prop_format = unwrapped.get("format")
-
-                # Build type string with format
-                type_str = prop_type
-                if prop_format:
-                    type_str = f"{prop_type} [{prop_format}]"
-
-                lines.append(f"{prefix}    - {prop_name}: {type_str}{req_marker}")
-
-                # Add pre-computed generator instruction so LLM knows exactly how to generate valid data
-                generator = self._get_type_instruction(unwrapped, field_name=prop_name)
-                lines.append(f"{prefix}        USE: {generator}")
-
-                # Add description (check both original and unwrapped)
-                desc_text = prop_schema.get("description") or unwrapped.get(
-                    "description"
-                )
-                if desc_text:
-                    lines.append(f"{prefix}        description: {desc_text[:80]}")
-
-                # Add constraints from unwrapped schema
-                constraints = []
-                if unwrapped.get("minLength") is not None:
-                    constraints.append(f"minLength={unwrapped['minLength']}")
-                if unwrapped.get("maxLength") is not None:
-                    constraints.append(f"maxLength={unwrapped['maxLength']}")
-                if unwrapped.get("pattern"):
-                    pattern = unwrapped["pattern"][:40]
-                    constraints.append(f"pattern='{pattern}'")
-                if unwrapped.get("minimum") is not None:
-                    constraints.append(f"min={unwrapped['minimum']}")
-                if unwrapped.get("maximum") is not None:
-                    constraints.append(f"max={unwrapped['maximum']}")
-                if unwrapped.get("exclusiveMinimum") is not None:
-                    constraints.append(f"exclusiveMin={unwrapped['exclusiveMinimum']}")
-                if unwrapped.get("exclusiveMaximum") is not None:
-                    constraints.append(f"exclusiveMax={unwrapped['exclusiveMaximum']}")
-                if unwrapped.get("multipleOf") is not None:
-                    constraints.append(f"multipleOf={unwrapped['multipleOf']}")
-
-                if constraints:
-                    lines.append(
-                        f"{prefix}        constraints: {', '.join(constraints)}"
+                lines.extend(
+                    self._format_schema_property(
+                        prop_name, prop_schema, required_fields, prefix, indent
                     )
-
-                # Add enum values from unwrapped schema
-                if unwrapped.get("enum"):
-                    enum_vals = str(unwrapped["enum"])
-                    lines.append(f"{prefix}        allowed values: {enum_vals}")
-
-                # Add default value
-                if unwrapped.get("default") is not None:
-                    lines.append(f"{prefix}        default: {unwrapped['default']}")
-
-                # Handle nested objects
-                if prop_type == "object" and unwrapped.get("properties"):
-                    lines.append(f"{prefix}        nested object properties:")
-                    nested_lines = self._format_schema(unwrapped, indent + 3)
-                    lines.extend(nested_lines)
-                elif prop_type == "object" and unwrapped.get("additionalProperties"):
-                    # Map/dict type
-                    add_props = unwrapped["additionalProperties"]
-                    if isinstance(add_props, dict):
-                        val_type = add_props.get("type", "any")
-                        lines.append(
-                            f"{prefix}        map type: string keys → {val_type} values"
-                        )
-                    else:
-                        lines.append(
-                            f"{prefix}        map type: string keys → any values"
-                        )
-
-                # Handle arrays
-                if prop_type == "array" and unwrapped.get("items"):
-                    items = unwrapped["items"]
-                    items_unwrapped, _ = self._unwrap_nullable_schema(items)
-                    # Check for oneOf/anyOf in array items (discriminated union)
-                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get(
-                        "anyOf"
-                    )
-                    if items_one_of and isinstance(items_one_of, list):
-                        # Array items are a union type
-                        variant_names = []
-                        first_variant_with_props = None
-                        for variant in items_one_of:
-                            if isinstance(variant, dict):
-                                # Try to get a meaningful name for the variant
-                                if "$ref" in variant:
-                                    ref_name = variant["$ref"].split("/")[-1]
-                                    variant_names.append(ref_name)
-                                elif "properties" in variant:
-                                    # Look for discriminator field to identify variant
-                                    for p_name, p_schema in variant.get(
-                                        "properties", {}
-                                    ).items():
-                                        if p_schema.get("const"):
-                                            variant_names.append(p_schema["const"])
-                                            break
-                                # Keep track of first variant with properties for showing schema
-                                if first_variant_with_props is None:
-                                    variant_props, _ = self._extract_all_properties(
-                                        variant
-                                    )
-                                    if variant_props:
-                                        first_variant_with_props = variant
-                        if variant_names:
-                            lines.append(
-                                f"{prefix}        array items type: oneOf ({' | '.join(variant_names)})"
-                            )
-                        else:
-                            lines.append(
-                                f"{prefix}        array items type: oneOf (union of {len(items_one_of)} variants)"
-                            )
-                        # Show first variant's schema so LLM knows what properties to include
-                        if first_variant_with_props:
-                            lines.append(
-                                f"{prefix}        first variant schema (use this structure):"
-                            )
-                            nested_lines = self._format_schema(
-                                first_variant_with_props, indent + 3
-                            )
-                            lines.extend(nested_lines)
-                    else:
-                        items_type = items_unwrapped.get("type", "any")
-                        lines.append(f"{prefix}        array items type: {items_type}")
-                    # Show minItems/maxItems constraints
-                    min_items = unwrapped.get("minItems")
-                    max_items = unwrapped.get("maxItems")
-                    if min_items is not None or max_items is not None:
-                        array_constraints = []
-                        if min_items is not None:
-                            array_constraints.append(f"minItems={min_items}")
-                        if max_items is not None:
-                            array_constraints.append(f"maxItems={max_items}")
-                        lines.append(
-                            f"{prefix}        array constraints: {', '.join(array_constraints)}"
-                        )
-                    if items_unwrapped.get("properties"):
-                        lines.append(f"{prefix}        array item properties:")
-                        nested_lines = self._format_schema(items_unwrapped, indent + 3)
-                        lines.extend(nested_lines)
+                )
 
         return lines
+
+    def _format_schema_header(
+        self, prefix: str, required_fields: List[str]
+    ) -> List[str]:
+        """Format the schema header with required fields info."""
+        lines = [f"{prefix}Schema:"]
+        if required_fields:
+            lines.append(f"{prefix}  Required fields: {required_fields}")
+        else:
+            lines.append(f"{prefix}  Required fields: none")
+        lines.append(
+            f"{prefix}  Properties (use these EXACT field names in your code):"
+        )
+        return lines
+
+    def _format_schema_property(
+        self,
+        prop_name: str,
+        prop_schema: dict,
+        required_fields: List[str],
+        prefix: str,
+        indent: int,
+    ) -> List[str]:
+        """Format a single property in the schema."""
+        lines = []
+        is_required = prop_name in required_fields
+        unwrapped, is_nullable = unwrap_nullable_schema(prop_schema)
+
+        lines.extend(
+            self._format_property_type_line(
+                prop_name, unwrapped, is_required, is_nullable, prefix
+            )
+        )
+        lines.extend(
+            self._format_property_metadata(prop_name, prop_schema, unwrapped, prefix)
+        )
+        lines.extend(self._format_nested_type(unwrapped, prefix, indent))
+
+        return lines
+
+    def _format_property_type_line(
+        self,
+        prop_name: str,
+        unwrapped: dict,
+        is_required: bool,
+        is_nullable: bool,
+        prefix: str,
+    ) -> List[str]:
+        """Format the property type line with markers."""
+        nullable_marker = ", nullable" if is_nullable else ""
+        req_marker = (
+            f" (REQUIRED{nullable_marker})"
+            if is_required
+            else f" (optional{nullable_marker})"
+        )
+
+        prop_type = unwrapped.get("type", "any")
+        prop_format = unwrapped.get("format")
+        type_str = f"{prop_type} [{prop_format}]" if prop_format else prop_type
+
+        generator = self._get_type_instruction(unwrapped, field_name=prop_name)
+        return [
+            f"{prefix}    - {prop_name}: {type_str}{req_marker}",
+            f"{prefix}        USE: {generator}",
+        ]
+
+    def _format_property_metadata(
+        self,
+        prop_name: str,
+        prop_schema: dict,
+        unwrapped: dict,
+        prefix: str,
+    ) -> List[str]:
+        """Format property metadata (description, constraints, enum, default)."""
+        lines = []
+        desc_text = prop_schema.get("description") or unwrapped.get("description")
+        if desc_text:
+            lines.append(f"{prefix}        description: {desc_text[:80]}")
+
+        constraints = self._format_property_constraints(unwrapped)
+        if constraints:
+            lines.append(f"{prefix}        constraints: {', '.join(constraints)}")
+
+        if unwrapped.get("enum"):
+            lines.append(f"{prefix}        allowed values: {unwrapped['enum']}")
+
+        if unwrapped.get("default") is not None:
+            lines.append(f"{prefix}        default: {unwrapped['default']}")
+
+        return lines
+
+    def _format_nested_type(
+        self, unwrapped: dict, prefix: str, indent: int
+    ) -> List[str]:
+        """Format nested object or array types."""
+        prop_type = unwrapped.get("type", "any")
+
+        if prop_type == "object":
+            return self._format_nested_object(unwrapped, prefix, indent)
+        elif prop_type == "array" and unwrapped.get("items"):
+            return self._format_array_items(unwrapped, prefix, indent)
+        return []
+
+    def _format_nested_object(
+        self, unwrapped: dict, prefix: str, indent: int
+    ) -> List[str]:
+        """Format nested object properties or map types."""
+        if unwrapped.get("properties"):
+            return [f"{prefix}        nested object properties:"] + self._format_schema(
+                unwrapped, indent + 3
+            )
+
+        add_props = unwrapped.get("additionalProperties")
+        if add_props:
+            val_type = (
+                add_props.get("type", "any") if isinstance(add_props, dict) else "any"
+            )
+            return [f"{prefix}        map type: string keys → {val_type} values"]
+        return []
+
+    def _format_array_items(
+        self, unwrapped: dict, prefix: str, indent: int
+    ) -> List[str]:
+        """Format array item types."""
+        lines = []
+        items = unwrapped["items"]
+        items_unwrapped, _ = unwrap_nullable_schema(items)
+        items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+
+        if items_one_of and isinstance(items_one_of, list):
+            lines.extend(self._format_union_array_items(items_one_of, prefix, indent))
+        else:
+            items_type = items_unwrapped.get("type", "any")
+            lines.append(f"{prefix}        array items type: {items_type}")
+
+        lines.extend(self._format_array_constraints(unwrapped, prefix))
+
+        if items_unwrapped.get("properties"):
+            lines.append(f"{prefix}        array item properties:")
+            lines.extend(self._format_schema(items_unwrapped, indent + 3))
+
+        return lines
+
+    def _format_union_array_items(
+        self, items_one_of: List[dict], prefix: str, indent: int
+    ) -> List[str]:
+        """Format array items that are a union type."""
+        lines = []
+        variant_names = []
+        first_variant_with_props = None
+
+        for variant in items_one_of:
+            if not isinstance(variant, dict):
+                continue
+            name = self._get_variant_name(variant)
+            if name:
+                variant_names.append(name)
+            if first_variant_with_props is None:
+                variant_props, _ = extract_all_properties(variant)
+                if variant_props:
+                    first_variant_with_props = variant
+
+        if variant_names:
+            lines.append(
+                f"{prefix}        array items type: oneOf ({' | '.join(variant_names)})"
+            )
+        else:
+            lines.append(
+                f"{prefix}        array items type: oneOf (union of {len(items_one_of)} variants)"
+            )
+
+        if first_variant_with_props:
+            lines.append(f"{prefix}        first variant schema (use this structure):")
+            lines.extend(self._format_schema(first_variant_with_props, indent + 3))
+
+        return lines
+
+    def _get_variant_name(self, variant: dict) -> Optional[str]:
+        """Get a name for a union variant."""
+        if "$ref" in variant:
+            return variant["$ref"].split("/")[-1]
+        if "properties" in variant:
+            for p_schema in variant.get("properties", {}).values():
+                if isinstance(p_schema, dict) and p_schema.get("const"):
+                    return p_schema["const"]
+        return None
+
+    def _format_array_constraints(self, unwrapped: dict, prefix: str) -> List[str]:
+        """Format array minItems/maxItems constraints."""
+        min_items = unwrapped.get("minItems")
+        max_items = unwrapped.get("maxItems")
+        if min_items is None and max_items is None:
+            return []
+
+        constraints = []
+        if min_items is not None:
+            constraints.append(f"minItems={min_items}")
+        if max_items is not None:
+            constraints.append(f"maxItems={max_items}")
+        return [f"{prefix}        array constraints: {', '.join(constraints)}"]
 
     def _resolve_ref_in_union(self, ref: str, one_of: List[dict]) -> Optional[dict]:
         """
@@ -2426,169 +2145,188 @@ class ScenarioWorkflowGenerator:
 
         return None
 
-    def _format_response_schema(self, schema: dict, indent: int = 0) -> List[str]:
-        """
-        Format a response JSON Schema for the LLM prompt.
+    def _build_response_type_string(self, unwrapped: dict, is_nullable: bool) -> str:
+        """Build type string for response schema property."""
+        prop_type = unwrapped.get("type", "any")
+        prop_format = unwrapped.get("format")
+        type_str = f"{prop_type} [{prop_format}]" if prop_format else prop_type
+        if is_nullable:
+            type_str += " (nullable)"
+        return type_str
 
-        Simpler than _format_schema - focuses on field names and types
-        so the LLM knows what fields to expect in API responses.
-        """
+    def _format_response_nested_object(self, unwrapped: dict, prefix: str) -> List[str]:
+        """Format nested object properties in response schema."""
         lines = []
-        prefix = "  " * indent
+        for nested_name, nested_schema in unwrapped.get("properties", {}).items():
+            n_unwrapped, _ = unwrap_nullable_schema(nested_schema)
+            nested_type = n_unwrapped.get("type", "any")
+            lines.append(f"{prefix}    - {nested_name}: {nested_type}")
+        return lines
 
+    def _format_response_array_type(
+        self, items_unwrapped: dict, prefix: str
+    ) -> List[str]:
+        """Format array type description in response schema."""
+        items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+        if items_one_of and isinstance(items_one_of, list):
+            return [f"{prefix}    (array of oneOf variants)"]
+        items_type = items_unwrapped.get("type", "any")
+        return [f"{prefix}    (array of {items_type})"]
+
+    def _format_response_array_properties(
+        self, items_unwrapped: dict, prefix: str
+    ) -> List[str]:
+        """Format array item properties in response schema."""
+        lines = []
+        for item_name, item_schema in items_unwrapped.get("properties", {}).items():
+            i_unwrapped, _ = unwrap_nullable_schema(item_schema)
+            item_type = i_unwrapped.get("type", "any")
+            lines.append(f"{prefix}    - {item_name}: {item_type}")
+        return lines
+
+    def _format_response_property(
+        self, prop_name: str, prop_schema: dict, prefix: str
+    ) -> List[str]:
+        """Format a single property in response schema."""
+        lines = []
+        unwrapped, is_nullable = unwrap_nullable_schema(prop_schema)
+        prop_type = unwrapped.get("type", "any")
+        type_str = self._build_response_type_string(unwrapped, is_nullable)
+
+        lines.append(f"{prefix}- {prop_name}: {type_str}")
+
+        if prop_type == "object" and unwrapped.get("properties"):
+            lines.extend(self._format_response_nested_object(unwrapped, prefix))
+
+        if prop_type == "array" and unwrapped.get("items"):
+            items_unwrapped, _ = unwrap_nullable_schema(unwrapped["items"])
+            lines.extend(self._format_response_array_type(items_unwrapped, prefix))
+            if items_unwrapped.get("properties"):
+                lines.extend(
+                    self._format_response_array_properties(items_unwrapped, prefix)
+                )
+
+        return lines
+
+    def _format_response_schema(self, schema: dict, indent: int = 0) -> List[str]:
+        """Format a response JSON Schema for the LLM prompt."""
+        prefix = "  " * indent
         schema_type = schema.get("type", "object")
         properties = schema.get("properties", {})
 
         if properties:
+            lines = []
             for prop_name, prop_schema in properties.items():
-                # Unwrap nullable pattern
-                unwrapped, is_nullable = self._unwrap_nullable_schema(prop_schema)
-                prop_type = unwrapped.get("type", "any")
-                prop_format = unwrapped.get("format")
+                lines.extend(
+                    self._format_response_property(prop_name, prop_schema, prefix)
+                )
+            return lines
 
-                # Build type string with format
-                type_str = prop_type
-                if prop_format:
-                    type_str = f"{prop_type} [{prop_format}]"
-                if is_nullable:
-                    type_str += " (nullable)"
-
-                lines.append(f"{prefix}- {prop_name}: {type_str}")
-
-                # Handle nested objects (show one level deep)
-                if prop_type == "object" and unwrapped.get("properties"):
-                    for nested_name, nested_schema in unwrapped["properties"].items():
-                        n_unwrapped, _ = self._unwrap_nullable_schema(nested_schema)
-                        nested_type = n_unwrapped.get("type", "any")
-                        lines.append(f"{prefix}    - {nested_name}: {nested_type}")
-
-                # Handle arrays
-                if prop_type == "array" and unwrapped.get("items"):
-                    items = unwrapped["items"]
-                    items_unwrapped, _ = self._unwrap_nullable_schema(items)
-                    # Check for oneOf/anyOf in array items
-                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get(
-                        "anyOf"
-                    )
-                    if items_one_of and isinstance(items_one_of, list):
-                        lines.append(f"{prefix}    (array of oneOf variants)")
-                    else:
-                        items_type = items_unwrapped.get("type", "any")
-                        lines.append(f"{prefix}    (array of {items_type})")
-                    if items_unwrapped.get("properties"):
-                        for item_name, item_schema in items_unwrapped[
-                            "properties"
-                        ].items():
-                            i_unwrapped, _ = self._unwrap_nullable_schema(item_schema)
-                            item_type = i_unwrapped.get("type", "any")
-                            lines.append(f"{prefix}    - {item_name}: {item_type}")
-        elif schema_type == "array":
-            items = schema.get("items", {})
-            items_unwrapped, _ = self._unwrap_nullable_schema(items)
-            # Check for oneOf/anyOf in array items
-            items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
-            if items_one_of and isinstance(items_one_of, list):
-                lines.append(f"{prefix}(array of oneOf variants)")
-            else:
-                items_type = items_unwrapped.get("type", "any")
-                lines.append(f"{prefix}(array of {items_type})")
+        if schema_type == "array":
+            items_unwrapped, _ = unwrap_nullable_schema(schema.get("items", {}))
+            lines = self._format_response_array_type(items_unwrapped, prefix)
             if items_unwrapped.get("properties"):
-                for item_name, item_schema in items_unwrapped["properties"].items():
-                    i_unwrapped, _ = self._unwrap_nullable_schema(item_schema)
-                    item_type = i_unwrapped.get("type", "any")
-                    lines.append(f"{prefix}- {item_name}: {item_type}")
-        else:
-            lines.append(f"{prefix}type: {schema_type}")
+                lines.extend(
+                    self._format_response_array_properties(items_unwrapped, prefix)
+                )
+            return lines
 
-        return lines
+        return [f"{prefix}type: {schema_type}"]
+
+    def _score_parent_path_match(
+        self, candidate_path: str, parent_paths: List[str]
+    ) -> Tuple[float, Optional[str]]:
+        """Score endpoint based on parent path match."""
+        for i, parent in enumerate(parent_paths):
+            if self._paths_match(candidate_path, parent):
+                score = 100.0 + (i * 10.0)
+                reason = f"parent path level {i + 1}: {parent}"
+                return score, reason
+        return 0.0, None
+
+    def _score_prefix_match(
+        self, candidate_path: str, target_prefix: List[str]
+    ) -> Tuple[float, Optional[str]]:
+        """Score endpoint based on shared prefix."""
+        candidate_prefix = self._get_static_prefix(candidate_path)
+        common_len = self._common_prefix_length(target_prefix, candidate_prefix)
+        if common_len >= 3:
+            score = 20.0 + (common_len * 5.0)
+            return score, f"shared prefix ({common_len} segments)"
+        return 0.0, None
+
+    def _score_tag_match(
+        self, endpoint: Any, target_tags: set, current_score: float
+    ) -> Tuple[float, Optional[str]]:
+        """Score endpoint based on tag matching."""
+        if current_score == 0:
+            return 0.0, None
+        endpoint_tags = set(getattr(endpoint, "tags", []) or [])
+        common_tags = target_tags & endpoint_tags
+        if common_tags:
+            score = 10.0 * len(common_tags)
+            return score, f"same tag: {', '.join(common_tags)}"
+        return 0.0, None
+
+    def _calculate_endpoint_relevance(
+        self,
+        endpoint: Any,
+        parent_paths: List[str],
+        target_prefix: List[str],
+        target_tags: set,
+    ) -> Optional[Tuple[Any, float, str]]:
+        """Calculate relevance score for a candidate endpoint."""
+        score = 0.0
+        reasons = []
+
+        parent_score, parent_reason = self._score_parent_path_match(
+            endpoint.path, parent_paths
+        )
+        if parent_score > 0:
+            score += parent_score
+            reasons.append(parent_reason)
+        else:
+            prefix_score, prefix_reason = self._score_prefix_match(
+                endpoint.path, target_prefix
+            )
+            if prefix_score > 0:
+                score += prefix_score
+                reasons.append(prefix_reason)
+
+        tag_score, tag_reason = self._score_tag_match(endpoint, target_tags, score)
+        if tag_score > 0:
+            score += tag_score
+            reasons.append(tag_reason)
+
+        if score > 0:
+            return (endpoint, score, "; ".join(reasons))
+        return None
 
     def _find_related_create_endpoints(
         self,
         target_endpoint: Any,
         all_endpoints: List[Any],
     ) -> List[Tuple[Any, float, str]]:
-        """
-        Find CREATE (POST) endpoints that are hierarchical parents of the target endpoint.
-
-        Uses path prefix matching to find POST endpoints that create resources
-        at each level of the target's path hierarchy. Only endpoints sharing
-        the same path namespace are considered.
-
-        For target: GET /api/v1/foo/users/{user_id}/posts/{post_id}/comments
-        Parent paths are:
-          - /api/v1/foo/users (creates user → user_id)
-          - /api/v1/foo/users/{user_id}/posts (creates post → post_id)
-
-        Args:
-            target_endpoint: The endpoint being tested
-            all_endpoints: All endpoints from the OpenAPI spec
-
-        Returns:
-            List of (endpoint, score, reason) tuples, sorted by relevance score (highest first).
-            Returns empty list if the target is itself a POST endpoint.
-        """
-        # Skip if target is already a POST - it doesn't need setup endpoints
+        """Find CREATE (POST) endpoints that are parents of the target endpoint."""
         if target_endpoint.method.upper() == "POST":
             return []
 
-        results: List[Tuple[Any, float, str]] = []
-        target_path = target_endpoint.path
+        parent_paths = self._extract_parent_paths(target_endpoint.path)
+        target_prefix = self._get_static_prefix(target_endpoint.path)
         target_tags = set(getattr(target_endpoint, "tags", []) or [])
 
-        # Build the hierarchy of parent paths from the target endpoint.
-        # For /a/b/{id}/c/{id2}/d, parent paths are:
-        #   /a/b (creates resource with id)
-        #   /a/b/{id}/c (creates resource with id2)
-        parent_paths = self._extract_parent_paths(target_path)
-
-        # Extract the static path prefix (segments before first {param})
-        target_prefix = self._get_static_prefix(target_path)
-
+        results = []
         for endpoint in all_endpoints:
             if endpoint.method.upper() != "POST":
                 continue
-            if (
-                endpoint.path == target_endpoint.path
-                and endpoint.method == target_endpoint.method
-            ):
+            if endpoint.path == target_endpoint.path:
                 continue
 
-            score = 0.0
-            reasons = []
-            candidate_path = endpoint.path
-
-            # Factor 1 (highest): Exact parent path match
-            # The POST endpoint's path matches one of the target's hierarchy levels
-            for i, parent in enumerate(parent_paths):
-                if self._paths_match(candidate_path, parent):
-                    # Higher score for deeper matches (more specific)
-                    score += 100.0 + (i * 10.0)
-                    reasons.append(f"parent path level {i + 1}: {parent}")
-                    break
-
-            # Factor 2: Shared path prefix (namespace matching)
-            # Only consider endpoints in the same namespace
-            if score == 0:
-                candidate_prefix = self._get_static_prefix(candidate_path)
-                common_prefix_len = self._common_prefix_length(
-                    target_prefix, candidate_prefix
-                )
-                # Require at least 3 segments in common (e.g., /api/v1/comprehensive)
-                # to avoid matching /api/v1/users with /api/v1/comprehensive/nested/users
-                if common_prefix_len >= 3:
-                    score += 20.0 + (common_prefix_len * 5.0)
-                    reasons.append(f"shared prefix ({common_prefix_len} segments)")
-
-            # Factor 3: Tag matching (tiebreaker, lower weight than path matching)
-            endpoint_tags = set(getattr(endpoint, "tags", []) or [])
-            common_tags = target_tags & endpoint_tags
-            if common_tags and score > 0:
-                score += 10.0 * len(common_tags)
-                reasons.append(f"same tag: {', '.join(common_tags)}")
-
-            if score > 0:
-                reason_str = "; ".join(reasons)
-                results.append((endpoint, score, reason_str))
+            result = self._calculate_endpoint_relevance(
+                endpoint, parent_paths, target_prefix, target_tags
+            )
+            if result:
+                results.append(result)
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results
@@ -2660,107 +2398,96 @@ class ScenarioWorkflowGenerator:
                 return False
         return True
 
-    def _format_related_create_endpoints(
-        self,
-        related_endpoints: List[Tuple[Any, float, str]],
-    ) -> str:
-        """
-        Format related CREATE endpoints for the LLM prompt.
-
-        Handles edge cases:
-        - Edge 1: Pass available endpoints with descriptions (even if not perfect match)
-        - Edge 2: Return message saying no CREATE endpoints available
-        - Edge 3: Rank and pass all with guidance message
-
-        Args:
-            related_endpoints: List of (endpoint, score, reason) from _find_related_create_endpoints
-
-        Returns:
-            Formatted string for the LLM prompt, or empty string for POST endpoints
-        """
-        if not related_endpoints:
-            # Edge case 2: No CREATE endpoints found
-            return """
+    def _get_empty_setup_endpoints_message(self) -> str:
+        """Return message when no CREATE endpoints are found."""
+        return """
 === SETUP ENDPOINTS (for creating test data) ===
 No CREATE (POST) endpoints found that are related to this resource.
 You may need to use test_data_generator or assume test data already exists.
 Do NOT invent or call POST endpoints that are not documented here.
 """
 
-        lines = []
-        lines.append("=== SETUP ENDPOINTS (for creating test data) ===")
-        lines.append("")
-        lines.append(
-            "These POST endpoints can be used to create resources before testing."
-        )
-        lines.append("They are ranked by relevance to the endpoint you are testing.")
-        lines.append(
-            "Use ONLY these endpoints for setup - do NOT invent endpoints that don't exist."
-        )
-        lines.append(
-            "**CRITICAL: Use the expected_status shown for EACH setup endpoint.**"
-        )
-        lines.append("")
+    def _get_setup_endpoints_header(self) -> List[str]:
+        """Return header lines for setup endpoints section."""
+        return [
+            "=== SETUP ENDPOINTS (for creating test data) ===",
+            "",
+            "These POST endpoints can be used to create resources before testing.",
+            "They are ranked by relevance to the endpoint you are testing.",
+            "Use ONLY these endpoints for setup - do NOT invent endpoints that don't exist.",
+            "**CRITICAL: Use the expected_status shown for EACH setup endpoint.**",
+            "",
+        ]
 
-        # Edge case 3: Pass all ranked endpoints with guidance
+    def _get_setup_endpoint_status_codes(self, endpoint: Any) -> List[int]:
+        """Get status codes for a setup endpoint, with defaults."""
+        all_codes = self._extract_expected_status_codes(endpoint)
+        filtered = self._filter_status_codes_for_scenario(
+            all_codes, ScenarioType.POSITIVE, method="POST"
+        )
+        return filtered if filtered else [200, 201]
+
+    def _format_single_setup_endpoint(
+        self, endpoint: Any, rank: int, score: float, reason: str
+    ) -> List[str]:
+        """Format a single setup endpoint for the prompt."""
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
+        summary = getattr(endpoint, "summary", "") or "No summary"
+        description = getattr(endpoint, "description", "") or ""
+        status_codes = self._get_setup_endpoint_status_codes(endpoint)
+
+        lines = [
+            f"--- Rank #{rank} (relevance: {score:.0f}) ---",
+            f"POST {endpoint.path}",
+            f"Operation ID: {operation_id}",
+            f"**expected_status={status_codes}**  <-- USE THIS for this setup call",
+            f"Why relevant: {reason}",
+            f"Summary: {summary}",
+        ]
+        if description:
+            lines.append(f"Description: {description[:150]}")
+
+        lines.extend(self._format_setup_endpoint_schema(endpoint))
+        lines.append("")
+        return lines
+
+    def _format_setup_endpoint_schema(self, endpoint: Any) -> List[str]:
+        """Format request body schema for a setup endpoint."""
+        if not hasattr(endpoint, "request_body") or not endpoint.request_body:
+            return []
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not schema or not isinstance(schema, dict):
+            return []
+        return ["Request Body Schema:"] + self._format_schema(schema, indent=1)
+
+    def _format_setup_call_pattern(self, first_endpoint: Any) -> List[str]:
+        """Format the setup call pattern example."""
+        status_codes = self._get_setup_endpoint_status_codes(first_endpoint)
+        return [
+            "=== SETUP CALL PATTERN ===",
+            "```python",
+            "# Use the expected_status from the setup endpoint above, NOT from the main endpoint",
+            f'result = self.make_request("POST", "{first_endpoint.path}", expected_status={status_codes}, json=data)',
+            "```",
+            "",
+        ]
+
+    def _format_related_create_endpoints(
+        self,
+        related_endpoints: List[Tuple[Any, float, str]],
+    ) -> str:
+        """Format related CREATE endpoints for the LLM prompt."""
+        if not related_endpoints:
+            return self._get_empty_setup_endpoints_message()
+
+        lines = self._get_setup_endpoints_header()
+
         for i, (endpoint, score, reason) in enumerate(related_endpoints, 1):
-            operation_id = getattr(
-                endpoint, "operation_id", ""
-            ) or self._generate_operation_id(endpoint)
-            summary = getattr(endpoint, "summary", "") or "No summary"
-            description = getattr(endpoint, "description", "") or ""
+            lines.extend(self._format_single_setup_endpoint(endpoint, i, score, reason))
 
-            # Extract expected status codes for THIS setup endpoint from OpenAPI spec
-            setup_all_codes = self._extract_expected_status_codes(endpoint)
-            setup_status_codes = self._filter_status_codes_for_scenario(
-                setup_all_codes, ScenarioType.POSITIVE, method="POST"
-            )
-            # If no codes found, use sensible POST defaults
-            if not setup_status_codes:
-                setup_status_codes = [200, 201]
-
-            lines.append(f"--- Rank #{i} (relevance: {score:.0f}) ---")
-            lines.append(f"POST {endpoint.path}")
-            lines.append(f"Operation ID: {operation_id}")
-            lines.append(
-                f"**expected_status={setup_status_codes}**  <-- USE THIS for this setup call"
-            )
-            lines.append(f"Why relevant: {reason}")
-            lines.append(f"Summary: {summary}")
-            if description:
-                lines.append(f"Description: {description[:150]}")
-
-            # Include request body schema so LLM knows what fields to send
-            if hasattr(endpoint, "request_body") and endpoint.request_body:
-                rb = endpoint.request_body
-                schema = getattr(rb, "schema", {})
-                if schema and isinstance(schema, dict):
-                    lines.append("Request Body Schema:")
-                    schema_lines = self._format_schema(schema, indent=1)
-                    lines.extend(schema_lines)
-
-            lines.append("")
-
-        # Add explicit example showing correct usage
-        lines.append("=== SETUP CALL PATTERN ===")
-        lines.append("```python")
-        lines.append(
-            "# Use the expected_status from the setup endpoint above, NOT from the main endpoint"
-        )
-        if related_endpoints:
-            first_endpoint = related_endpoints[0][0]
-            first_codes = self._extract_expected_status_codes(first_endpoint)
-            first_filtered = self._filter_status_codes_for_scenario(
-                first_codes, ScenarioType.POSITIVE, method="POST"
-            )
-            if not first_filtered:
-                first_filtered = [200, 201]
-            lines.append(
-                f'result = self.make_request("POST", "{first_endpoint.path}", expected_status={first_filtered}, json=data)'
-            )
-        lines.append("```")
-        lines.append("")
-
+        lines.extend(self._format_setup_call_pattern(related_endpoints[0][0]))
         return "\n".join(lines)
 
     def _filter_status_codes_for_scenario(
@@ -2945,101 +2672,83 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         return sorted(result, key=lambda x: x[0])
 
+    def _filter_codes_by_scenario_type(
+        self,
+        codes: List[Tuple[int, str]],
+        scenario_type: ScenarioType,
+    ) -> List[Tuple[int, str]]:
+        """Filter status codes by scenario type."""
+        if scenario_type == ScenarioType.POSITIVE:
+            return [(c, d) for c, d in codes if 200 <= c < 300]
+        elif scenario_type == ScenarioType.NEGATIVE:
+            return [(c, d) for c, d in codes if 400 <= c < 500]
+        elif scenario_type == ScenarioType.SECURITY:
+            return [(c, d) for c, d in codes if c < 500]
+        return codes
+
+    def _get_fallback_codes_with_descriptions(
+        self, method: str, has_auth: bool
+    ) -> List[Tuple[int, str]]:
+        """Get fallback status codes with descriptions from registry."""
+        response_block = self._fallback_registry.get_responses(
+            methods=method, exclude_auth=not has_auth
+        )
+        method_responses = response_block.as_dict().get(method, {})
+
+        codes: List[Tuple[int, str]] = []
+        for code_str, data in method_responses.items():
+            try:
+                code = int(code_str)
+                desc = data.get("description", "") if isinstance(data, dict) else ""
+                codes.append((code, desc))
+            except (ValueError, TypeError):
+                pass
+        return codes
+
+    def _get_default_codes_for_scenario(
+        self, scenario_type: ScenarioType
+    ) -> List[Tuple[int, str]]:
+        """Get default status codes when no codes found for scenario type."""
+        if scenario_type == ScenarioType.POSITIVE:
+            return [(200, "OK")]
+        elif scenario_type == ScenarioType.NEGATIVE:
+            return [(400, "Bad Request"), (422, "Unprocessable Entity")]
+        elif scenario_type == ScenarioType.SECURITY:
+            return [
+                (400, "Bad Request"),
+                (403, "Forbidden"),
+                (422, "Unprocessable Entity"),
+            ]
+        return []
+
     def _precompute_scenario_status_codes(
         self,
         endpoint: Any,
         scenario_type: ScenarioType,
         has_auth: bool,
     ) -> List[Tuple[int, str]]:
-        """
-        Pre-compute the exact status codes + descriptions for a scenario type.
-
-        Logic:
-        1. Try to get codes from spec responses (with descriptions)
-        2. Filter by scenario type (2xx for positive, 4xx for negative, all <500 for security)
-        3. If spec defines responses but filter is empty: return empty (caller handles skip)
-        4. If spec defines NO responses at all: use FallbackHttpResponseRegistry
-        5. Auth codes (401/403) included for negative/security when auth is enabled
-
-        Returns:
-            List of (code, description) tuples ready for the template.
-        """
-        method = endpoint.method.upper()
-
-        # Step 1: Get codes + descriptions from spec
+        """Pre-compute status codes + descriptions for a scenario type."""
         spec_codes = self._extract_status_codes_with_descriptions(endpoint)
+        filtered = self._filter_codes_by_scenario_type(spec_codes, scenario_type)
 
-        # Step 2: Filter by scenario type
-        if scenario_type == ScenarioType.POSITIVE:
-            filtered = [(c, d) for c, d in spec_codes if 200 <= c < 300]
-        elif scenario_type == ScenarioType.NEGATIVE:
-            filtered = [(c, d) for c, d in spec_codes if 400 <= c < 500]
-        elif scenario_type == ScenarioType.SECURITY:
-            filtered = [(c, d) for c, d in spec_codes if c < 500]
-        else:
-            filtered = spec_codes
-
-        # Step 3: If filter produced results, use them
         if filtered:
             return sorted(filtered, key=lambda x: x[0])
 
-        # Step 4: Spec defines responses but none match this scenario type
-        # For POSITIVE: spec is source of truth - no 2xx means no success case, skip
-        # For NEGATIVE/SECURITY: endpoints may reject input even without documented 4xx codes
+        # No 2xx in spec means skip positive workflow
         if spec_codes and scenario_type == ScenarioType.POSITIVE:
-            # Spec explicitly defines responses (e.g., only 431) but no 2xx codes.
-            # Return empty to signal the caller should skip positive workflow.
             return []
 
-        # Step 5: Spec defines NO responses at all - use fallback
-        exclude_auth = not has_auth
-        response_block = self._fallback_registry.get_responses(
-            methods=method,
-            exclude_auth=exclude_auth,
+        # Use fallback registry when spec has no responses
+        fallback_codes = self._get_fallback_codes_with_descriptions(
+            endpoint.method.upper(), has_auth
         )
-        method_responses = response_block.as_dict().get(method, {})
+        filtered_fallback = self._filter_codes_by_scenario_type(
+            fallback_codes, scenario_type
+        )
 
-        fallback_codes: List[Tuple[int, str]] = []
-        for code_str, data in method_responses.items():
-            try:
-                code = int(code_str)
-                desc = data.get("description", "") if isinstance(data, dict) else ""
-                fallback_codes.append((code, desc))
-            except (ValueError, TypeError):
-                pass
-
-        # Filter fallback by scenario type
-        if scenario_type == ScenarioType.POSITIVE:
-            result = sorted(
-                [(c, d) for c, d in fallback_codes if 200 <= c < 300],
-                key=lambda x: x[0],
-            )
-            return result if result else [(200, "OK")]
-        elif scenario_type == ScenarioType.NEGATIVE:
-            result = sorted(
-                [(c, d) for c, d in fallback_codes if 400 <= c < 500],
-                key=lambda x: x[0],
-            )
-            return (
-                result
-                if result
-                else [(400, "Bad Request"), (422, "Unprocessable Entity")]
-            )
-        elif scenario_type == ScenarioType.SECURITY:
-            result = sorted(
-                [(c, d) for c, d in fallback_codes if c < 500], key=lambda x: x[0]
-            )
-            return (
-                result
-                if result
-                else [
-                    (400, "Bad Request"),
-                    (403, "Forbidden"),
-                    (422, "Unprocessable Entity"),
-                ]
-            )
-
-        return sorted(fallback_codes, key=lambda x: x[0])
+        if filtered_fallback:
+            return sorted(filtered_fallback, key=lambda x: x[0])
+        return self._get_default_codes_for_scenario(scenario_type)
 
     @staticmethod
     def _format_status_codes_for_prompt(codes_with_desc: List[Tuple[int, str]]) -> str:
@@ -3072,10 +2781,10 @@ Do NOT invent or call POST endpoints that are not documented here.
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             schema = getattr(endpoint.request_body, "schema", {})
             if schema and isinstance(schema, dict):
-                properties, _ = self._extract_all_properties(schema)
+                properties, _ = extract_all_properties(schema)
                 for field_name, field_schema in properties.items():
                     if isinstance(field_schema, dict):
-                        unwrapped_fs, _ = self._unwrap_nullable_schema(field_schema)
+                        unwrapped_fs, _ = unwrap_nullable_schema(field_schema)
                         field_type = unwrapped_fs.get("type", "")
                         if field_type == "string":
                             body_fields.append(field_name)
@@ -3111,17 +2820,210 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         return "\n".join(lines)
 
+    def _extract_endpoint_params(
+        self, endpoint: Any
+    ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+        """Extract path and query parameters from endpoint.
+
+        Returns:
+            Tuple of (path_params, query_params) as lists of (name, type) tuples
+        """
+        path_params: List[Tuple[str, str]] = []
+        query_params: List[Tuple[str, str]] = []
+
+        if not (hasattr(endpoint, "parameters") and endpoint.parameters):
+            return path_params, query_params
+
+        for param in endpoint.parameters:
+            param_name = getattr(param, "name", "unknown")
+            param_type = getattr(param, "type", None) or "string"
+            param_location = getattr(param, "location", None)
+            if param_location is None:
+                param_location = getattr(param, "in_", "query")
+            if hasattr(param_location, "value"):
+                param_location = param_location.value
+
+            if param_location == "path":
+                path_params.append((param_name, param_type))
+            elif param_location == "query":
+                query_params.append((param_name, param_type))
+
+        return path_params, query_params
+
+    def _generate_nonexistent_id_scenarios(
+        self, path_params: List[Tuple[str, str]]
+    ) -> List[str]:
+        """Generate NON_EXISTENT_ID test scenarios for path params."""
+        scenarios = []
+        for name, ptype in path_params:
+            if ptype.lower() in ("integer", "number") or ptype.lower().startswith(
+                "array[int"
+            ):
+                scenarios.append(
+                    f"NON_EXISTENT_ID: Test {{{name}}} with value 999999999 (integer path param)"
+                )
+            else:
+                scenarios.append(
+                    f'NON_EXISTENT_ID: Test {{{name}}} with value "nonexistent-id-12345" (string path param)'
+                )
+        return scenarios
+
+    def _extract_body_field_categories(self, endpoint: Any) -> Tuple[
+        List[str],
+        List[Tuple[str, str]],
+        List[Tuple[str, List[Any]]],
+        List[Tuple[str, str]],
+        List[Tuple[str, Optional[float], Optional[float]]],
+    ]:
+        """Categorize request body fields for negative testing.
+
+        Returns:
+            Tuple of (required, typed, enum, pattern, numeric) field lists
+        """
+        required_fields: List[str] = []
+        typed_fields: List[Tuple[str, str]] = []
+        enum_fields: List[Tuple[str, List[Any]]] = []
+        pattern_fields: List[Tuple[str, str]] = []
+        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]] = []
+
+        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
+            return (
+                required_fields,
+                typed_fields,
+                enum_fields,
+                pattern_fields,
+                numeric_fields,
+            )
+
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not (schema and isinstance(schema, dict)):
+            return (
+                required_fields,
+                typed_fields,
+                enum_fields,
+                pattern_fields,
+                numeric_fields,
+            )
+
+        properties, required_list = extract_all_properties(schema)
+
+        for field_name, field_schema in properties.items():
+            if not isinstance(field_schema, dict):
+                continue
+
+            unwrapped_fs, _ = unwrap_nullable_schema(field_schema)
+            field_type = unwrapped_fs.get("type", "")
+
+            if field_name in required_list:
+                required_fields.append(field_name)
+
+            if field_type in ("integer", "number", "boolean", "array"):
+                typed_fields.append((field_name, field_type))
+
+            if unwrapped_fs.get("enum"):
+                enum_fields.append((field_name, unwrapped_fs["enum"]))
+
+            if unwrapped_fs.get("pattern"):
+                pattern_fields.append((field_name, unwrapped_fs["pattern"]))
+
+            if field_type in ("integer", "number"):
+                self._add_numeric_field_if_constrained(
+                    field_name, unwrapped_fs, numeric_fields
+                )
+
+        return (
+            required_fields,
+            typed_fields,
+            enum_fields,
+            pattern_fields,
+            numeric_fields,
+        )
+
+    def _add_numeric_field_if_constrained(
+        self,
+        field_name: str,
+        schema: dict,
+        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]],
+    ) -> None:
+        """Add numeric field to list if it has constraints."""
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        exclusive_min = schema.get("exclusiveMinimum")
+        exclusive_max = schema.get("exclusiveMaximum")
+
+        if any(v is not None for v in [minimum, maximum, exclusive_min, exclusive_max]):
+            effective_min = exclusive_min if exclusive_min is not None else minimum
+            effective_max = exclusive_max if exclusive_max is not None else maximum
+            numeric_fields.append((field_name, effective_min, effective_max))
+
+    def _generate_field_type_scenarios(
+        self,
+        required_fields: List[str],
+        typed_fields: List[Tuple[str, str]],
+        enum_fields: List[Tuple[str, List[Any]]],
+        pattern_fields: List[Tuple[str, str]],
+        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]],
+    ) -> List[str]:
+        """Generate negative test scenarios based on field categories."""
+        scenarios = []
+
+        if required_fields:
+            scenarios.append(
+                f"MISSING_REQUIRED: Remove one of these required fields: {required_fields}"
+            )
+
+        if typed_fields:
+            examples = []
+            for name, ftype in typed_fields:
+                if ftype in ("integer", "number"):
+                    examples.append(f'"{name}": "not_a_number" (expects {ftype})')
+                elif ftype == "boolean":
+                    examples.append(f'"{name}": "not_a_bool" (expects boolean)')
+                elif ftype == "array":
+                    examples.append(f'"{name}": "not_an_array" (expects array)')
+            scenarios.append(f"WRONG_TYPE: Send wrong type: {examples}")
+
+        for name, values in enum_fields:
+            scenarios.append(
+                f'INVALID_ENUM: Field "{name}" allows only {values}, send "INVALID_VALUE_XYZ"'
+            )
+
+        for name, pattern in pattern_fields:
+            scenarios.append(
+                f'INVALID_PATTERN: Field "{name}" must match pattern {pattern}, send "!!!invalid!!!"'
+            )
+
+        for name, min_val, max_val in numeric_fields:
+            if min_val is not None and isinstance(min_val, (int, float)):
+                scenarios.append(
+                    f'BOUNDARY: Field "{name}" has min={min_val}, send {min_val - 1}'
+                )
+            if max_val is not None and isinstance(max_val, (int, float)):
+                scenarios.append(
+                    f'BOUNDARY: Field "{name}" has max={max_val}, send {max_val + 1}'
+                )
+
+        return scenarios
+
+    def _generate_fallback_query_scenarios(
+        self, query_params: List[Tuple[str, str]]
+    ) -> List[str]:
+        """Generate fallback scenarios for query params when no body scenarios exist."""
+        scenarios = []
+        for name, ptype in query_params:
+            if ptype.lower() in ("integer", "number") or ptype.lower().startswith(
+                "array[int"
+            ):
+                scenarios.append(
+                    f'INVALID_QUERY: Send "{name}=not_a_number" (expects integer)'
+                )
+        return scenarios
+
     def _precompute_negative_scenarios(self, endpoint: Any) -> str:
         """
         Pre-compute which negative test scenarios are valid for this endpoint.
 
-        Based on the endpoint's schema, determines what can actually be tested:
-        - Path params → non-existent ID test (only for resource endpoints, not parameter-test endpoints)
-        - Required body fields → missing field test
-        - Typed fields → wrong type test
-        - Enum fields → invalid enum test
-        - Pattern fields → invalid pattern test
-        - Numeric constraints → boundary test
+        Determines testable scenarios based on endpoint schema.
 
         Returns:
             Formatted string listing testable scenarios with details.
@@ -3132,176 +3034,108 @@ Do NOT invent or call POST endpoints that are not documented here.
         endpoint_path = getattr(endpoint, "path", "")
         is_parameter_test_endpoint = "/parameters/" in endpoint_path
 
-        # Check path parameters
-        path_params: List[Tuple[str, str]] = []
-        query_params: List[Tuple[str, str]] = []
-        if hasattr(endpoint, "parameters") and endpoint.parameters:
-            for param in endpoint.parameters:
-                param_name = getattr(param, "name", "unknown")
-                param_type = getattr(param, "type", None) or "string"
-                param_location = getattr(param, "location", None)
-                if param_location is None:
-                    param_location = getattr(param, "in_", "query")
-                if hasattr(param_location, "value"):
-                    param_location = param_location.value
+        # Extract parameters
+        path_params, query_params = self._extract_endpoint_params(endpoint)
 
-                if param_location == "path":
-                    path_params.append((param_name, param_type))
-                elif param_location == "query":
-                    query_params.append((param_name, param_type))
-
-        # Generate NON_EXISTENT_ID tests ONLY for resource endpoints (not parameter-test endpoints)
-        # Parameter-test endpoints accept any value and echo it back - no resource lookup
+        # Non-existent ID tests (only for resource endpoints)
         if path_params and not is_parameter_test_endpoint:
-            for name, ptype in path_params:
-                if ptype.lower() in ("integer", "number") or ptype.lower().startswith(
-                    "array[int"
-                ):
-                    scenarios.append(
-                        f"NON_EXISTENT_ID: Test {{{name}}} with value 999999999 (integer path param)"
-                    )
-                else:
-                    scenarios.append(
-                        f'NON_EXISTENT_ID: Test {{{name}}} with value "nonexistent-id-12345" (string path param)'
-                    )
+            scenarios.extend(self._generate_nonexistent_id_scenarios(path_params))
 
-        # Check request body fields
-        required_fields: List[str] = []
-        typed_fields: List[Tuple[str, str]] = []
-        enum_fields: List[Tuple[str, List[Any]]] = []
-        pattern_fields: List[Tuple[str, str]] = []
-        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]] = []
+        # Extract body field categories and generate scenarios
+        (
+            required_fields,
+            typed_fields,
+            enum_fields,
+            pattern_fields,
+            numeric_fields,
+        ) = self._extract_body_field_categories(endpoint)
 
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            schema = getattr(endpoint.request_body, "schema", {})
-            if schema and isinstance(schema, dict):
-                # Use shared helper for allOf/oneOf/$ref handling
-                properties, required_list = self._extract_all_properties(schema)
-
-                for field_name, field_schema in properties.items():
-                    if not isinstance(field_schema, dict):
-                        continue
-
-                    # Unwrap nullable pattern
-                    unwrapped_fs, _ = self._unwrap_nullable_schema(field_schema)
-                    field_type = unwrapped_fs.get("type", "")
-
-                    # Required fields
-                    if field_name in required_list:
-                        required_fields.append(field_name)
-
-                    # Typed fields (for wrong-type tests)
-                    if field_type in ("integer", "number", "boolean", "array"):
-                        typed_fields.append((field_name, field_type))
-
-                    # Enum fields
-                    field_enum = unwrapped_fs.get("enum")
-                    if field_enum:
-                        enum_fields.append((field_name, field_enum))
-
-                    # Pattern fields
-                    field_pattern = unwrapped_fs.get("pattern")
-                    if field_pattern:
-                        pattern_fields.append((field_name, field_pattern))
-
-                    # Numeric constraints
-                    if field_type in ("integer", "number"):
-                        minimum = unwrapped_fs.get("minimum")
-                        maximum = unwrapped_fs.get("maximum")
-                        exclusive_min = unwrapped_fs.get("exclusiveMinimum")
-                        exclusive_max = unwrapped_fs.get("exclusiveMaximum")
-                        if (
-                            minimum is not None
-                            or maximum is not None
-                            or exclusive_min is not None
-                            or exclusive_max is not None
-                        ):
-                            effective_min = (
-                                exclusive_min if exclusive_min is not None else minimum
-                            )
-                            effective_max = (
-                                exclusive_max if exclusive_max is not None else maximum
-                            )
-                            numeric_fields.append(
-                                (field_name, effective_min, effective_max)
-                            )
-
-        if required_fields:
-            scenarios.append(
-                f"MISSING_REQUIRED: Remove one of these required fields: {required_fields}"
+        scenarios.extend(
+            self._generate_field_type_scenarios(
+                required_fields,
+                typed_fields,
+                enum_fields,
+                pattern_fields,
+                numeric_fields,
             )
+        )
 
-        if typed_fields:
-            examples = []
-            for name, ftype in typed_fields:
-                if ftype == "integer" or ftype == "number":
-                    examples.append(f'"{name}": "not_a_number" (expects {ftype})')
-                elif ftype == "boolean":
-                    examples.append(f'"{name}": "not_a_bool" (expects boolean)')
-                elif ftype == "array":
-                    examples.append(f'"{name}": "not_an_array" (expects array)')
-            scenarios.append(f"WRONG_TYPE: Send wrong type: {examples}")
-
-        if enum_fields:
-            for name, values in enum_fields:
-                scenarios.append(
-                    f'INVALID_ENUM: Field "{name}" allows only {values}, send "INVALID_VALUE_XYZ"'
-                )
-
-        if pattern_fields:
-            for name, pattern in pattern_fields:
-                scenarios.append(
-                    f'INVALID_PATTERN: Field "{name}" must match pattern {pattern}, send "!!!invalid!!!"'
-                )
-
-        if numeric_fields:
-            for name, min_val, max_val in numeric_fields:
-                if min_val is not None and isinstance(min_val, (int, float)):
-                    scenarios.append(
-                        f'BOUNDARY: Field "{name}" has min={min_val}, send {min_val - 1}'
-                    )
-                if max_val is not None and isinstance(max_val, (int, float)):
-                    scenarios.append(
-                        f'BOUNDARY: Field "{name}" has max={max_val}, send {max_val + 1}'
-                    )
-
-        # Fallback: test invalid query params ONLY if not a parameter-test endpoint
-        # Parameter-test endpoints accept any value, so negative tests don't make sense
-        if not scenarios and not is_parameter_test_endpoint:
-            if query_params:
-                for name, ptype in query_params:
-                    if ptype.lower() in (
-                        "integer",
-                        "number",
-                    ) or ptype.lower().startswith("array[int"):
-                        scenarios.append(
-                            f'INVALID_QUERY: Send "{name}=not_a_number" (expects integer)'
-                        )
-                    # Skip "very long string" tests - most APIs don't validate string length without explicit constraints
+        # Fallback: query param tests (only if no body scenarios)
+        if not scenarios and not is_parameter_test_endpoint and query_params:
+            scenarios.extend(self._generate_fallback_query_scenarios(query_params))
 
         if not scenarios:
             return ""
 
         lines = ["TESTABLE NEGATIVE SCENARIOS (implement ONLY these):"]
-        for s in scenarios:
-            lines.append(f"  - {s}")
+        lines.extend(f"  - {s}" for s in scenarios)
+        return "\n".join(lines)
+
+    def _resolve_variant_properties(
+        self, variant: dict
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        """Resolve properties from a variant, including allOf."""
+        v_props = dict(variant.get("properties", {}))
+        v_required = list(variant.get("required", []))
+        v_all_of = variant.get("allOf")
+        if v_all_of and isinstance(v_all_of, list):
+            for sub in v_all_of:
+                if isinstance(sub, dict) and sub.get("properties"):
+                    v_props.update(sub["properties"])
+                    v_required.extend(sub.get("required", []))
+        return v_props, v_required
+
+    def _format_variant_fields(
+        self, v_props: Dict[str, Any], v_required: List[str], v_title: str
+    ) -> List[str]:
+        """Format field instructions for a single variant."""
+        lines = [f'  Variant "{v_title}" (required: {list(set(v_required))}):']
+        for vp_name, vp_schema in v_props.items():
+            if not isinstance(vp_schema, dict):
+                continue
+            unwrapped_vp, _ = unwrap_nullable_schema(vp_schema)
+            instruction = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
+            lines.append(f'    "{vp_name}": {instruction}')
+        lines.append("")
+        return lines
+
+    def _format_union_field_instructions(
+        self, one_of: List[dict], discriminator: dict
+    ) -> str:
+        """Format field instructions for discriminated union schemas."""
+        lines = ["FIELD GENERATION INSTRUCTIONS (DISCRIMINATED UNION):"]
+        disc_prop = discriminator.get("propertyName", "")
+        if disc_prop:
+            lines.append(f'Discriminator field: "{disc_prop}"')
+        lines.append("Pick ONE variant and include ALL its required fields:")
+        lines.append("")
+
+        for i, variant in enumerate(one_of[:4]):
+            if not isinstance(variant, dict):
+                continue
+            v_props, v_required = self._resolve_variant_properties(variant)
+            v_title = variant.get("title", f"Variant {i+1}")
+            if v_props:
+                lines.extend(self._format_variant_fields(v_props, v_required, v_title))
 
         return "\n".join(lines)
 
+    def _format_field_instruction_line(
+        self, field_name: str, field_schema: dict, required_list: List[str]
+    ) -> Optional[str]:
+        """Format a single field instruction line."""
+        if not isinstance(field_schema, dict):
+            return None
+        unwrapped, _ = unwrap_nullable_schema(field_schema)
+        field_type = unwrapped.get("type", "string")
+        field_format = unwrapped.get("format", "")
+        required_marker = " [REQUIRED]" if field_name in required_list else ""
+        instruction = self._get_type_instruction(unwrapped, field_name=field_name)
+        format_part = f", format={field_format}" if field_format else ""
+        return f'  "{field_name}": {instruction}  # type={field_type}{format_part}{required_marker}'
+
     def _precompute_positive_fields(self, endpoint: Any) -> str:
-        """
-        Pre-compute field generation instructions for positive tests.
-
-        Extracts field names, types, formats, enums, patterns, and constraints
-        from the request body schema and formats them as explicit instructions
-        so the LLM doesn't have to guess from the endpoint description.
-
-        Returns:
-            Formatted string with exact field generation instructions, or empty string.
-        """
-        lines: List[str] = []
-
-        # Check if endpoint has request body
+        """Pre-compute field generation instructions for positive tests."""
         if not hasattr(endpoint, "request_body") or not endpoint.request_body:
             return ""
 
@@ -3309,71 +3143,28 @@ Do NOT invent or call POST endpoints that are not documented here.
         if not schema or not isinstance(schema, dict):
             return ""
 
-        # Use shared helper for allOf merging and discriminated union extraction
-        properties, required_list = self._extract_all_properties(schema)
-
-        # Handle discriminated unions: provide per-variant instructions
+        properties, required_list = extract_all_properties(schema)
         one_of = schema.get("oneOf") or schema.get("anyOf")
         discriminator = schema.get("discriminator", {})
+
         if one_of and isinstance(one_of, list) and not schema.get("properties"):
-            disc_prop = discriminator.get("propertyName", "")
-            lines.append("FIELD GENERATION INSTRUCTIONS (DISCRIMINATED UNION):")
-            if disc_prop:
-                lines.append(f'Discriminator field: "{disc_prop}"')
-            lines.append("Pick ONE variant and include ALL its required fields:")
-            lines.append("")
-            for i, variant in enumerate(one_of[:4]):
-                if not isinstance(variant, dict):
-                    continue
-                # Resolve variant allOf if present
-                v_props = variant.get("properties", {})
-                v_required = variant.get("required", [])
-                v_all_of = variant.get("allOf")
-                if v_all_of and isinstance(v_all_of, list):
-                    for sub in v_all_of:
-                        if isinstance(sub, dict) and sub.get("properties"):
-                            v_props = {**v_props, **sub["properties"]}
-                            v_required = v_required + sub.get("required", [])
-                v_title = variant.get("title", f"Variant {i+1}")
-                if v_props:
-                    lines.append(
-                        f'  Variant "{v_title}" (required: {list(set(v_required))}):'
-                    )
-                    for vp_name, vp_schema in v_props.items():
-                        if not isinstance(vp_schema, dict):
-                            continue
-                        unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
-                        instruction = self._get_type_instruction(
-                            unwrapped_vp, field_name=vp_name
-                        )
-                        lines.append(f'    "{vp_name}": {instruction}')
-                    lines.append("")
-            return "\n".join(lines)
+            return self._format_union_field_instructions(one_of, discriminator)
 
         if not properties:
             return ""
 
-        lines.append("FIELD GENERATION INSTRUCTIONS (use these EXACTLY):")
-        lines.append(f"Required fields: {required_list if required_list else 'none'}")
-        lines.append("")
+        lines = [
+            "FIELD GENERATION INSTRUCTIONS (use these EXACTLY):",
+            f"Required fields: {required_list if required_list else 'none'}",
+            "",
+        ]
 
         for field_name, field_schema in properties.items():
-            if not isinstance(field_schema, dict):
-                continue
-
-            # Unwrap nullable pattern (OpenAPI 3.1 anyOf/3.0 nullable)
-            unwrapped, _ = self._unwrap_nullable_schema(field_schema)
-
-            field_type = unwrapped.get("type", "string")
-            field_format = unwrapped.get("format", "")
-            required_marker = " [REQUIRED]" if field_name in required_list else ""
-
-            # Use shared type→instruction mapper (pass field_name for inference)
-            instruction = self._get_type_instruction(unwrapped, field_name=field_name)
-
-            lines.append(
-                f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}"
+            line = self._format_field_instruction_line(
+                field_name, field_schema, required_list
             )
+            if line:
+                lines.append(line)
 
         return "\n".join(lines)
 
@@ -3405,7 +3196,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                 continue
 
             # Unwrap nullable pattern
-            unwrapped, _ = self._unwrap_nullable_schema(prop_schema)
+            unwrapped, _ = unwrap_nullable_schema(prop_schema)
 
             # Delegate to shared type→instruction mapper with ancestry tracking and field name
             val = self._get_type_instruction(
@@ -3526,366 +3317,6 @@ Do NOT invent or call POST endpoints that are not documented here.
         raise AIServiceError(
             f"AI service failed after 3 attempts for {scenario_type}"
         ) from last_error
-
-    def _extract_code(self, response: str) -> str:
-        """Extract code from <code> tags with robust fallback handling.
-
-        Handles chain-of-thought responses that have <analysis> before <code>.
-        Only extracts the <code> section, ignoring analysis.
-        """
-        import re
-
-        # First, strip any <analysis> sections (from chain-of-thought prompts)
-        response = re.sub(
-            r"<analysis>.*?</analysis>", "", response, flags=re.DOTALL | re.IGNORECASE
-        )
-
-        # Try case-insensitive match with closing tag (handle attributes like <code lang="python">)
-        pattern = r"<code[^>]*>(.*?)</code>"
-        matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
-
-        if matches:
-            code = max(matches, key=len).strip()
-        else:
-            # Fallback: handle <code> without closing tag
-            code_start = re.search(r"<code[^>]*>", response, re.IGNORECASE)
-            if code_start:
-                code = response[code_start.end() :]
-            else:
-                code = response
-
-        # Aggressively strip ALL markdown code fence variations (anywhere in content)
-        # Handles: ```python, ```code, ```py, ``` with any language identifier
-        code = re.sub(
-            r"```[\w]*\s*\n?", "", code
-        )  # Opening fences with optional language
-        code = re.sub(r"\n?```\s*$", "", code)  # Trailing fence at end
-        code = re.sub(r"\n?```\s*\n", "\n", code)  # Fences in middle of content
-
-        # Strip HTML code tags that may remain (with or without attributes)
-        code = re.sub(r"</?code[^>]*>", "", code, flags=re.IGNORECASE)
-
-        # Clean up garbage lines that aren't valid Python
-        lines = code.split("\n")
-        cleaned_lines = []
-        for line in lines:
-            stripped = line.strip()
-            # Skip lines starting with ! (not valid Python, often editor garbage)
-            if stripped.startswith("!"):
-                continue
-            # Skip lines that look like file headers from editors
-            if stripped.startswith("DO NOT EDIT") or stripped.startswith(
-                "generated by"
-            ):
-                continue
-            # Skip LLM explanatory notes that aren't valid Python
-            # These often start with "Note:", "Since", "This", etc. and aren't comments
-            if stripped.startswith("Note:") or stripped.startswith("Note that"):
-                continue
-            if stripped.startswith("Since ") and not stripped.startswith("Since("):
-                continue
-            if stripped.startswith("This endpoint") or stripped.startswith("This is"):
-                continue
-            if stripped.startswith("We ") and (
-                "test" in stripped.lower() or "endpoint" in stripped.lower()
-            ):
-                continue
-            # Skip chain-of-thought analysis remnants that leaked through
-            if stripped.startswith("STEP ") and ":" in stripped:
-                continue
-            if stripped.startswith("Method:") or stripped.startswith("Path:"):
-                continue
-            if stripped.startswith("Required:") or stripped.startswith("Optional:"):
-                continue
-            cleaned_lines.append(line)
-
-        return "\n".join(cleaned_lines).strip()
-
-    def _fix_class_name(
-        self, code: str, expected_class_name: str, scenario_type: str
-    ) -> str:
-        """
-        Fix class name in generated code to match expected naming convention.
-
-        LLMs sometimes generate their own class names instead of using the template.
-        This post-processes the code to ensure the class name matches what __init__.py expects.
-        """
-        import re
-
-        # Build the expected full class name (e.g., GetStringFormatsSecurityWorkflow)
-        scenario_suffix = f"{scenario_type.capitalize()}Workflow"
-        expected_full_name = f"{expected_class_name}{scenario_suffix}"
-
-        # Find class definition that inherits from BaseWorkflow
-        # Matches: class SomeName(BaseWorkflow): or class SomeName(TaskSet, BaseWorkflow):
-        pattern = r"class\s+(\w+)\s*\([^)]*BaseWorkflow[^)]*\)\s*:"
-        match = re.search(pattern, code)
-
-        if match:
-            actual_class_name = match.group(1)
-            if actual_class_name != expected_full_name:
-                logger.debug(
-                    f"Fixing class name: {actual_class_name} -> {expected_full_name}"
-                )
-                # Replace the class name in definition only
-                # Note: We only fix the class definition, not docstrings/comments
-                # If LLM uses wrong name elsewhere, validation will fail and trigger retry
-                code = re.sub(
-                    rf"\bclass\s+{re.escape(actual_class_name)}\s*\(",
-                    f"class {expected_full_name}(",
-                    code,
-                )
-
-        return code
-
-    def _sanitize_unicode(self, code: str) -> str:
-        """
-        Remove non-ASCII characters that LLMs sometimes inject into code.
-
-        LLMs occasionally output random Unicode characters (Chinese, Arabic, emoji)
-        which corrupt variable names and cause ImportError/SyntaxError.
-        This strips any non-ASCII characters from the generated code.
-
-        Preserves ASCII printable characters (0x20-0x7E) and whitespace.
-        """
-        cleaned_lines = []
-        for line in code.split("\n"):
-            # Keep only ASCII characters (codes 0-127)
-            cleaned = "".join(c for c in line if ord(c) < 128)
-            cleaned_lines.append(cleaned)
-        return "\n".join(cleaned_lines)
-
-    def _fix_bytes_literals(self, code: str) -> str:
-        """
-        Fix bytes literals containing non-ASCII characters.
-
-        LLMs sometimes generate b'tëst' which is invalid Python (bytes can only
-        contain ASCII). This converts them to 'tëst'.encode('utf-8').
-
-        Uses improved regex patterns that handle:
-        - Escaped quotes: b'test\\'s data' or b"test\\"s data"
-        - Multiple bytes literals on same line
-        - Both single and double quoted strings
-        """
-        import re
-
-        def fix_single_quoted(match):
-            content = match.group(1)
-            # Check if content has non-ASCII
-            try:
-                content.encode("ascii")
-                return match.group(0)  # Valid ASCII, keep as-is
-            except UnicodeEncodeError:
-                # Has non-ASCII, convert to .encode() form
-                return f"'{content}'.encode('utf-8')"
-
-        def fix_double_quoted(match):
-            content = match.group(1)
-            # Check if content has non-ASCII
-            try:
-                content.encode("ascii")
-                return match.group(0)  # Valid ASCII, keep as-is
-            except UnicodeEncodeError:
-                # Has non-ASCII, convert to .encode() form
-                return f"\"{content}\".encode('utf-8')"
-
-        # Patterns that properly handle escaped quotes
-        # (?:[^'\\]|\\.)* matches: non-quote-non-backslash OR backslash+anything
-        single_quote_pattern = r"b'((?:[^'\\]|\\.)*)'"
-        double_quote_pattern = r'b"((?:[^"\\]|\\.)*)"'
-
-        # Apply fixes for both quote styles
-        code = re.sub(single_quote_pattern, fix_single_quoted, code)
-        code = re.sub(double_quote_pattern, fix_double_quoted, code)
-
-        return code
-
-    def _fix_regex_strings(self, code: str) -> str:
-        """
-        Convert strings with regex escape sequences to raw strings using tokenizer.
-
-        LLMs sometimes generate "\\d" or "\\+" which triggers SyntaxWarnings
-        in Python 3.12+. This converts them to raw strings: r"\\d", r"\\+".
-
-        Uses Python's tokenizer for robust string detection that handles:
-        - Escaped quotes within strings
-        - Multi-line strings
-        - Adjacent string literals
-        - Nested quotes
-
-        Converts: "\\d", "\\+", "\\s", etc. → r"\\d", r"\\+", r"\\s"
-        """
-        import tokenize
-        import io
-        import re
-
-        # Problematic escape sequences that trigger SyntaxWarnings
-        problematic_escapes = re.compile(r"\\[dDwWsS+*?^$.|()\\[\]{}]")
-
-        try:
-            tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
-        except tokenize.TokenizeError:
-            # If tokenization fails, return unchanged (validation will catch issues)
-            logger.debug(
-                "Tokenization failed in _fix_regex_strings, returning unchanged"
-            )
-            return code
-
-        # Find strings that need fixing and build replacement list
-        # Each item: (start_row, start_col, end_row, end_col, old_string, new_string)
-        replacements = []
-
-        for tok in tokens:
-            if tok.type != tokenize.STRING:
-                continue
-
-            string_val = tok.string
-
-            # Skip if already a raw string (r"..." or r'...')
-            if string_val.startswith(
-                ('r"', "r'", 'R"', "R'", 'br"', "br'", 'rb"', "rb'")
-            ):
-                continue
-
-            # Skip bytes literals (handled by _fix_bytes_literals)
-            if string_val.startswith(('b"', "b'", 'B"', "B'")):
-                continue
-
-            # Skip f-strings (can't be made raw easily due to {} handling)
-            if string_val.startswith(('f"', "f'", 'F"', "F'")):
-                continue
-
-            # Check if the string content has problematic escape sequences
-            # We need to check the actual string value, not the repr
-            if problematic_escapes.search(string_val):
-                # Determine the quote style
-                if string_val.startswith('"""') or string_val.startswith("'''"):
-                    quote = string_val[:3]
-                    content = string_val[3:-3]
-                    new_string = f"r{quote}{content}{quote}"
-                elif string_val.startswith('"'):
-                    content = string_val[1:-1]
-                    new_string = f'r"{content}"'
-                elif string_val.startswith("'"):
-                    content = string_val[1:-1]
-                    new_string = f"r'{content}'"
-                else:
-                    # Unknown format, skip
-                    continue
-
-                replacements.append(
-                    (
-                        tok.start[0],
-                        tok.start[1],
-                        tok.end[0],
-                        tok.end[1],
-                        string_val,
-                        new_string,
-                    )
-                )
-
-        # Apply replacements in reverse order to maintain positions
-        if not replacements:
-            return code
-
-        lines = code.split("\n")
-
-        # Sort by position (row, col) in reverse order
-        replacements.sort(key=lambda x: (x[0], x[1]), reverse=True)
-
-        for start_row, start_col, end_row, end_col, old, new in replacements:
-            # Tokenizer uses 1-indexed rows
-            start_row -= 1
-            end_row -= 1
-
-            if start_row == end_row:
-                # Single line replacement
-                line = lines[start_row]
-                lines[start_row] = line[:start_col] + new + line[end_col:]
-            else:
-                # Multi-line replacement (for triple-quoted strings)
-                # Join all affected lines, make replacement, then split back
-                first_part = lines[start_row][:start_col]
-                last_part = lines[end_row][end_col:]
-                lines[start_row] = first_part + new + last_part
-                # Remove the lines that were part of the multi-line string
-                del lines[start_row + 1 : end_row + 1]
-
-        return "\n".join(lines)
-
-    def _fix_missing_imports(self, code: str) -> str:
-        """
-        Add missing imports for commonly used functions that LLM forgets to import.
-
-        The LLM sometimes uses functions like get_task_weight() but forgets
-        to include the import statement. This post-processor adds them.
-        """
-        import re
-
-        # Map of function/symbol usage patterns to their required import statements
-        import_fixes = {
-            r"\bget_task_weight\s*\(": "from utils import get_task_weight",
-        }
-
-        lines = code.split("\n")
-
-        for pattern, import_stmt in import_fixes.items():
-            # Check if the symbol is used in the code
-            if re.search(pattern, code):
-                # Check if the import already exists
-                if import_stmt not in code:
-                    # Find the right place to insert (after existing imports)
-                    insert_idx = 0
-                    for i, line in enumerate(lines):
-                        stripped = line.strip()
-                        # Track the last import line
-                        if stripped.startswith("import ") or stripped.startswith(
-                            "from "
-                        ):
-                            insert_idx = i + 1
-                        # Stop at class definition
-                        elif stripped.startswith("class "):
-                            break
-
-                    # Insert the import
-                    if insert_idx > 0:
-                        lines.insert(insert_idx, import_stmt)
-                    else:
-                        # No imports found, insert at beginning
-                        lines.insert(0, import_stmt)
-
-        return "\n".join(lines)
-
-    def _fix_isoformat_calls(self, code: str) -> str:
-        """
-        Remove redundant .isoformat() calls on test_data_generator date methods.
-
-        LLM sometimes generates patterns like:
-            test_data_generator.random_date().isoformat()
-
-        But random_date(), random_datetime(), random_time() already return strings,
-        so .isoformat() causes AttributeError. This removes the redundant call.
-        """
-        import re
-
-        # Methods that return strings (not datetime objects)
-        date_methods = [
-            "random_date",
-            "random_datetime",
-            "random_time",
-            "random_date_between",
-            "random_future_date",
-            "random_past_date",
-        ]
-
-        # Pattern: test_data_generator.random_date(...).isoformat()
-        # Capture the method call and remove .isoformat()
-        for method in date_methods:
-            # Match method call with any arguments, followed by .isoformat()
-            pattern = rf"(test_data_generator\.{method}\([^)]*\))\.isoformat\(\)"
-            code = re.sub(pattern, r"\1", code)
-
-        return code
 
     def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
         """
@@ -4093,61 +3524,3 @@ Fix ALL the violations and output the complete corrected Python code:"""
             logger.warning(
                 f"Template context has invalid endpoint_expected_status: {expected_status}"
             )
-
-    def _validate_python_code(self, content: str) -> Tuple[bool, str]:
-        """Validate Python syntax and check for suspicious imports"""
-        # First check syntax
-        try:
-            compile(content, "<string>", "exec")
-        except SyntaxError as e:
-            return (
-                False,
-                f"Line {e.lineno}: {e.msg} - {e.text.strip() if e.text else ''}",
-            )
-
-        # Check for potentially problematic imports
-        warnings = self._check_imports(content)
-        if warnings:
-            # Log warnings but don't fail - LLM might have valid reason
-            for warning in warnings:
-                logger.warning(f"Suspicious import in generated code: {warning}")
-
-        return True, ""
-
-    def _check_imports(self, content: str) -> List[str]:
-        """Check for potentially problematic imports in generated code.
-
-        Returns list of warning messages for suspicious imports.
-        Does not fail validation - just logs warnings.
-
-        Uses dynamically extracted allowed imports from prompt templates,
-        ensuring validation stays in sync with what prompts actually allow.
-        """
-        import ast
-
-        warnings = []
-
-        try:
-            tree = ast.parse(content)
-        except SyntaxError:
-            # If AST parsing fails, syntax validation already caught it
-            return []
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    module_name = alias.name.split(".")[0]
-                    if module_name not in self._allowed_imports:
-                        warnings.append(
-                            f"import {alias.name} - module '{module_name}' not in allowed list"
-                        )
-
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    module_name = node.module.split(".")[0]
-                    if module_name not in self._allowed_imports:
-                        warnings.append(
-                            f"from {node.module} import ... - module '{module_name}' not in allowed list"
-                        )
-
-        return warnings

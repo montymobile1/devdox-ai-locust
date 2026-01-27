@@ -780,62 +780,63 @@ class TestPathMatchesSpec:
 
 
 class TestUnwrapNullableSchema:
-    """Tests for _unwrap_nullable_schema handling OpenAPI 3.0 and 3.1 nullable patterns."""
-
-    def _get_generator(self):
-        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-
-        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+    """Tests for unwrap_nullable_schema handling OpenAPI 3.0 and 3.1 nullable patterns."""
 
     def test_unwrap_31_string_nullable(self):
         """OpenAPI 3.1 anyOf with string + null unwraps to string schema."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {"anyOf": [{"type": "string", "maxLength": 50}, {"type": "null"}]}
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped == {"type": "string", "maxLength": 50}
         assert is_nullable is True
 
     def test_unwrap_31_integer_nullable(self):
         """OpenAPI 3.1 anyOf with integer + null unwraps to integer schema."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped == {"type": "integer", "minimum": 0}
         assert is_nullable is True
 
     def test_unwrap_31_ref_nullable(self):
         """OpenAPI 3.1 anyOf with object ref + null unwraps to the object schema."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {
             "anyOf": [
                 {"type": "object", "properties": {"street": {"type": "string"}}},
                 {"type": "null"},
             ]
         }
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped["type"] == "object"
         assert "street" in unwrapped["properties"]
         assert is_nullable is True
 
     def test_unwrap_30_nullable_flag(self):
         """OpenAPI 3.0 nullable: true is detected."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {"type": "string", "nullable": True, "format": "email"}
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped == schema  # Returns same schema, just flags nullable
         assert is_nullable is True
 
     def test_no_unwrap_plain_schema(self):
         """Non-nullable schemas are returned unchanged."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {"type": "string", "maxLength": 10}
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped == schema
         assert is_nullable is False
 
     def test_no_unwrap_discriminated_union(self):
         """Discriminated unions (multiple non-null variants) are NOT unwrapped."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {
             "oneOf": [
                 {"type": "object", "properties": {"pet_type": {"const": "dog"}}},
@@ -843,35 +844,38 @@ class TestUnwrapNullableSchema:
             ],
             "discriminator": {"propertyName": "pet_type"},
         }
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped == schema  # Not unwrapped
         assert is_nullable is False
 
     def test_unwrap_oneOf_nullable(self):
         """oneOf with null type also works (some specs use oneOf for nullable)."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {"oneOf": [{"type": "number", "minimum": 0.0}, {"type": "null"}]}
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped == {"type": "number", "minimum": 0.0}
         assert is_nullable is True
 
     def test_unwrap_enum_nullable(self):
         """Nullable enum schema is unwrapped to expose enum values."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
         schema = {
             "anyOf": [
                 {"type": "string", "enum": ["active", "inactive"]},
                 {"type": "null"},
             ]
         }
-        unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
+        unwrapped, is_nullable = unwrap_nullable_schema(schema)
         assert unwrapped["enum"] == ["active", "inactive"]
         assert is_nullable is True
 
     def test_unwrap_non_dict_returns_unchanged(self):
         """Non-dict input is returned unchanged."""
-        gen = self._get_generator()
-        result, is_nullable = gen._unwrap_nullable_schema("string")
+        from devdox_ai_locust.utils.schema_utils import unwrap_nullable_schema
+
+        result, is_nullable = unwrap_nullable_schema("string")
         assert result == "string"
         assert is_nullable is False
 
@@ -1359,36 +1363,33 @@ class TestAdditionalPropertiesHandling:
 
 
 class TestExtractAllProperties:
-    """Tests for _extract_all_properties shared helper."""
-
-    def _get_generator(self):
-        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-
-        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+    """Tests for extract_all_properties shared helper."""
 
     def test_direct_properties(self):
         """Direct properties are extracted correctly."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
         schema = {
             "type": "object",
             "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
             "required": ["name"],
         }
-        props, required = gen._extract_all_properties(schema)
+        props, required = extract_all_properties(schema)
         assert "name" in props
         assert "age" in props
         assert "name" in required
 
     def test_allof_merging(self):
         """allOf items are merged into combined properties."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
         schema = {
             "allOf": [
                 {"properties": {"id": {"type": "integer"}}, "required": ["id"]},
                 {"properties": {"name": {"type": "string"}}, "required": ["name"]},
             ]
         }
-        props, required = gen._extract_all_properties(schema)
+        props, required = extract_all_properties(schema)
         assert "id" in props
         assert "name" in props
         assert "id" in required
@@ -1396,14 +1397,15 @@ class TestExtractAllProperties:
 
     def test_allof_with_direct_properties(self):
         """allOf items are merged with direct properties (direct takes priority)."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
         schema = {
             "properties": {"status": {"type": "string", "enum": ["active"]}},
             "allOf": [
                 {"properties": {"id": {"type": "integer"}}},
             ],
         }
-        props, required = gen._extract_all_properties(schema)
+        props, required = extract_all_properties(schema)
         assert "id" in props
         assert "status" in props
         # Direct property should override allOf for same key
@@ -1411,7 +1413,8 @@ class TestExtractAllProperties:
 
     def test_oneof_discriminated_union(self):
         """oneOf variants are merged when no direct properties exist."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
         schema = {
             "oneOf": [
                 {
@@ -1425,26 +1428,28 @@ class TestExtractAllProperties:
             ],
             "discriminator": {"propertyName": "payment_type"},
         }
-        props, required = gen._extract_all_properties(schema)
+        props, required = extract_all_properties(schema)
         assert "card_number" in props
         assert "account_number" in props
 
     def test_oneof_not_merged_when_direct_properties_exist(self):
         """oneOf variants are NOT merged when direct properties already exist."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
         schema = {
             "properties": {"type": {"type": "string"}},
             "oneOf": [
                 {"properties": {"extra_field": {"type": "string"}}},
             ],
         }
-        props, required = gen._extract_all_properties(schema)
+        props, required = extract_all_properties(schema)
         assert "type" in props
         assert "extra_field" not in props  # Not merged because direct props exist
 
     def test_nested_allof_in_variant(self):
         """Variant with internal allOf has its properties merged."""
-        gen = self._get_generator()
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
         schema = {
             "oneOf": [
                 {
@@ -1456,64 +1461,67 @@ class TestExtractAllProperties:
                 }
             ]
         }
-        props, required = gen._extract_all_properties(schema)
+        props, required = extract_all_properties(schema)
         assert "base_field" in props
         assert "variant_field" in props
 
     def test_empty_schema(self):
         """Empty schema returns empty properties."""
-        gen = self._get_generator()
-        props, required = gen._extract_all_properties({})
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
+        props, required = extract_all_properties({})
         assert props == {}
         assert required == []
 
     def test_non_dict_schema(self):
         """Non-dict input returns empty properties."""
-        gen = self._get_generator()
-        props, required = gen._extract_all_properties("not a dict")
+        from devdox_ai_locust.utils.schema_utils import extract_all_properties
+
+        props, required = extract_all_properties("not a dict")
         assert props == {}
         assert required == []
 
 
 class TestEscapeForPythonString:
-    """Tests for _escape_for_python_string shared helper."""
-
-    def _get_generator(self):
-        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-
-        return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
+    """Tests for escape_for_python_string shared helper."""
 
     def test_backslash_escaping(self):
         """Backslashes are doubled."""
-        gen = self._get_generator()
-        assert gen._escape_for_python_string("^\\d{3}$") == "^\\\\d{3}$"
+        from devdox_ai_locust.utils.schema_utils import escape_for_python_string
+
+        assert escape_for_python_string("^\\d{3}$") == "^\\\\d{3}$"
 
     def test_quote_escaping(self):
         """Double quotes are escaped."""
-        gen = self._get_generator()
-        assert gen._escape_for_python_string('say "hello"') == 'say \\"hello\\"'
+        from devdox_ai_locust.utils.schema_utils import escape_for_python_string
+
+        assert escape_for_python_string('say "hello"') == 'say \\"hello\\"'
 
     def test_newline_escaping(self):
         """Newlines are escaped."""
-        gen = self._get_generator()
-        assert gen._escape_for_python_string("line1\nline2") == "line1\\nline2"
+        from devdox_ai_locust.utils.schema_utils import escape_for_python_string
+
+        assert escape_for_python_string("line1\nline2") == "line1\\nline2"
 
     def test_tab_escaping(self):
         """Tabs are escaped."""
-        gen = self._get_generator()
-        assert gen._escape_for_python_string("a\tb") == "a\\tb"
+        from devdox_ai_locust.utils.schema_utils import escape_for_python_string
+
+        assert escape_for_python_string("a\tb") == "a\\tb"
 
     def test_combined_escaping(self):
         """Multiple special chars are all escaped correctly."""
-        gen = self._get_generator()
-        result = gen._escape_for_python_string('^\\d+"test"\\n')
+        from devdox_ai_locust.utils.schema_utils import escape_for_python_string
+
+        result = escape_for_python_string('^\\d+"test"\\n')
         assert "\\\\" in result
         assert '\\"' in result
 
     def test_non_string_input(self):
         """Non-string input is converted to string."""
-        gen = self._get_generator()
-        assert gen._escape_for_python_string(123) == "123"
+        from devdox_ai_locust.utils.schema_utils import escape_for_python_string
+
+        assert escape_for_python_string(123) == "123"
 
 
 class TestGetTypeInstruction:
@@ -2118,20 +2126,22 @@ class TestFifthSweepFixes:
 
     # Category 3: Pattern double-escaping fix
     def test_escape_for_raw_string_preserves_backslashes(self):
-        """_escape_for_raw_string should NOT escape backslashes for raw string literals."""
-        gen = self._get_generator()
+        """escape_for_raw_string should NOT escape backslashes for raw string literals."""
+        from devdox_ai_locust.utils.schema_utils import escape_for_raw_string
+
         pattern = r"^\d{5}(-\d{4})?$"  # Regex pattern
-        escaped = gen._escape_for_raw_string(pattern)
+        escaped = escape_for_raw_string(pattern)
         # Backslashes should NOT be doubled
         assert escaped == pattern
         assert "\\d" in escaped  # Single backslash preserved
         assert "\\\\d" not in escaped  # No double backslashes
 
     def test_escape_for_raw_string_escapes_quotes(self):
-        """_escape_for_raw_string should escape quotes."""
-        gen = self._get_generator()
+        """escape_for_raw_string should escape quotes."""
+        from devdox_ai_locust.utils.schema_utils import escape_for_raw_string
+
         pattern = 'test "quoted" value'
-        escaped = gen._escape_for_raw_string(pattern)
+        escaped = escape_for_raw_string(pattern)
         assert escaped == 'test \\"quoted\\" value'
 
     def test_get_type_instruction_uses_raw_string_for_pattern(self):
