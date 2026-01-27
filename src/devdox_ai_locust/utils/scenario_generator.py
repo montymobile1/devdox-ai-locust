@@ -501,7 +501,6 @@ class ScenarioWorkflowGenerator:
         from devdox_ai_locust.utils.generation_progress import (
             EndpointAnalysis,
             SchemaAnalysis,
-            SetupAnalysis,
             InjectionAnalysis,
         )
 
@@ -510,57 +509,22 @@ class ScenarioWorkflowGenerator:
         ) or self._generate_operation_id(endpoint)
 
         responses_defined = self._extract_expected_status_codes(endpoint)
-        source_of_truth = "spec" if responses_defined else "fallback"
-
-        # Get content type
-        content_type = "application/json"
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            ct = getattr(endpoint.request_body, "content_type", None)
-            if ct:
-                content_type = ct
-
-        # Analyze components
+        content_type = self._get_endpoint_content_type(endpoint)
         schema_analysis = self._analyze_schema_for_verbose(endpoint, SchemaAnalysis)
         injection_analysis = self._analyze_injection_for_verbose(
             endpoint, InjectionAnalysis
         )
-
-        # Setup analysis
-        setup_analysis = SetupAnalysis()
-        if all_endpoints:
-            setup_results = self._find_related_create_endpoints(endpoint, all_endpoints)
-            setup_analysis.setup_endpoints_found = len(setup_results)
-            if setup_results:
-                setup_analysis.needs_setup = True
-                setup_analysis.setup_endpoints = [
-                    f"{ep[0].method} {ep[0].path}" for ep in setup_results[:3]
-                ]
-
-        # Count positive fields
-        positive_fields = 0
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            schema = getattr(endpoint.request_body, "schema", {})
-            if schema:
-                properties, _ = extract_all_properties(schema)
-                positive_fields = len(properties)
-
-        # Negative scenarios
-        negative_scenarios = self._precompute_negative_scenarios(endpoint)
-        negative_types = self._parse_negative_scenario_types(negative_scenarios)
-
-        # Build warnings
-        warnings = []
-        if not responses_defined:
-            warnings.append("No responses defined in spec - using fallback codes")
-        if schema_analysis.discriminator and not schema_analysis.variants:
-            warnings.append("Discriminator without mapping - may generate invalid data")
+        setup_analysis = self._build_setup_analysis(endpoint, all_endpoints)
+        positive_fields = self._count_positive_fields(endpoint)
+        negative_types = self._get_negative_scenario_types(endpoint)
+        warnings = self._build_analysis_warnings(responses_defined, schema_analysis)
 
         return EndpointAnalysis(
             method=endpoint.method.upper(),
             path=endpoint.path,
             operation_id=operation_id,
             responses_defined=responses_defined,
-            source_of_truth=source_of_truth,
+            source_of_truth="spec" if responses_defined else "fallback",
             content_type=content_type,
             schema=schema_analysis,
             strings_with_pattern=schema_analysis.patterns_found,
@@ -573,6 +537,59 @@ class ScenarioWorkflowGenerator:
             negative_scenario_types=negative_types[:5],
             warnings=warnings,
         )
+
+    def _get_endpoint_content_type(self, endpoint: Any) -> str:
+        """Extract content type from endpoint request body."""
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            ct = getattr(endpoint.request_body, "content_type", None)
+            if ct:
+                return ct
+        return "application/json"
+
+    def _build_setup_analysis(
+        self, endpoint: Any, all_endpoints: Optional[List[Any]],
+    ) -> "SetupAnalysis":
+        """Build setup analysis for related create endpoints."""
+        from devdox_ai_locust.utils.generation_progress import SetupAnalysis
+
+        setup_analysis = SetupAnalysis()
+        if not all_endpoints:
+            return setup_analysis
+
+        setup_results = self._find_related_create_endpoints(endpoint, all_endpoints)
+        setup_analysis.setup_endpoints_found = len(setup_results)
+        if setup_results:
+            setup_analysis.needs_setup = True
+            setup_analysis.setup_endpoints = [
+                f"{ep[0].method} {ep[0].path}" for ep in setup_results[:3]
+            ]
+        return setup_analysis
+
+    def _count_positive_fields(self, endpoint: Any) -> int:
+        """Count the number of request body fields for positive scenarios."""
+        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
+            return 0
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not schema:
+            return 0
+        properties, _ = extract_all_properties(schema)
+        return len(properties)
+
+    def _get_negative_scenario_types(self, endpoint: Any) -> List[str]:
+        """Get list of negative scenario type names for an endpoint."""
+        negative_scenarios = self._precompute_negative_scenarios(endpoint)
+        return self._parse_negative_scenario_types(negative_scenarios)
+
+    def _build_analysis_warnings(
+        self, responses_defined: List[int], schema_analysis: Any,
+    ) -> List[str]:
+        """Build warning messages for endpoint analysis."""
+        warnings = []
+        if not responses_defined:
+            warnings.append("No responses defined in spec - using fallback codes")
+        if schema_analysis.discriminator and not schema_analysis.variants:
+            warnings.append("Discriminator without mapping - may generate invalid data")
+        return warnings
 
     def _build_orchestrator_endpoint_info(
         self, endpoint: Any, endpoint_info_cls: Any
@@ -759,56 +776,75 @@ class ScenarioWorkflowGenerator:
             db_type, endpoints_list, prompt
         )
 
-        # Call LLM with validation retry
-        max_validation_retries = 2
+        return await self._orchestrator_retry_loop(tag_name, class_name, prompt)
+
+    async def _orchestrator_retry_loop(
+        self, tag_name: str, class_name: str, prompt: str,
+    ) -> str:
+        """Execute LLM call with validation retry for orchestrator generation."""
+        max_retries = 2
         last_error = None
         last_code = None
         current_prompt = prompt
 
-        for attempt in range(max_validation_retries):
+        for attempt in range(max_retries):
             if attempt > 0 and last_error and last_code:
                 current_prompt = self._render_fix_prompt(last_code, last_error)
 
-            # Record and call LLM
-            await self._record_orchestrator_llm_call(tag_name, attempt)
-            content = await self._call_ai_service(
-                current_prompt, f"orchestrator_{tag_name}"
+            content = await self._orchestrator_single_attempt(
+                tag_name, class_name, current_prompt, attempt,
             )
-
-            # Record response
-            if self.debug_recorder and self.debug_recorder.enabled:
-                await self.debug_recorder.record_orchestrator_llm_response(
-                    tag=tag_name, response=content or "(empty response)"
-                )
-
-            # Validate and process
-            self._validate_orchestrator_response(content, tag_name)
-            content = self._apply_orchestrator_fixes(content, class_name)
             is_valid, error = self._code_processor.validate_python_code(content)
 
             if is_valid:
-                # Record success
-                await self._record_orchestrator_success(tag_name, content, attempt)
-                if attempt > 0:
-                    logger.info(
-                        f"Retry SUCCEEDED for orchestrator [{tag_name}] "
-                        f"on attempt {attempt + 1}/{max_validation_retries}"
-                    )
-                return content
+                return await self._finalize_orchestrator_success(
+                    tag_name, content, attempt, max_retries,
+                )
 
             last_error = error
             last_code = content
-
-            if attempt < max_validation_retries - 1:
-                logger.debug(
-                    f"Validation failed for orchestrator [{tag_name}], "
-                    f"attempt {attempt + 1}/{max_validation_retries}: {error}. Retrying..."
-                )
-                await asyncio.sleep(1)
+            self._log_orchestrator_retry(tag_name, attempt, max_retries, error)
 
         raise CodeValidationError(
             "orchestrator", last_error, last_code, endpoint_info=f"tag: {tag_name}"
         )
+
+    async def _orchestrator_single_attempt(
+        self, tag_name: str, class_name: str, prompt: str, attempt: int,
+    ) -> str:
+        """Execute a single orchestrator LLM call and process the response."""
+        await self._record_orchestrator_llm_call(tag_name, attempt)
+        content = await self._call_ai_service(prompt, f"orchestrator_{tag_name}")
+
+        if self.debug_recorder and self.debug_recorder.enabled:
+            await self.debug_recorder.record_orchestrator_llm_response(
+                tag=tag_name, response=content or "(empty response)"
+            )
+
+        self._validate_orchestrator_response(content, tag_name)
+        return self._apply_orchestrator_fixes(content, class_name)
+
+    async def _finalize_orchestrator_success(
+        self, tag_name: str, content: str, attempt: int, max_retries: int,
+    ) -> str:
+        """Record success and log retry info for orchestrator generation."""
+        await self._record_orchestrator_success(tag_name, content, attempt)
+        if attempt > 0:
+            logger.info(
+                f"Retry SUCCEEDED for orchestrator [{tag_name}] "
+                f"on attempt {attempt + 1}/{max_retries}"
+            )
+        return content
+
+    def _log_orchestrator_retry(
+        self, tag_name: str, attempt: int, max_retries: int, error: Optional[str],
+    ) -> None:
+        """Log orchestrator validation failure and sleep before retry."""
+        if attempt < max_retries - 1:
+            logger.debug(
+                f"Validation failed for orchestrator [{tag_name}], "
+                f"attempt {attempt + 1}/{max_retries}: {error}. Retrying..."
+            )
 
     def _format_endpoints_for_orchestrator(self, endpoints: List[Any]) -> str:
         """Format all endpoints in a tag for the orchestrator prompt."""
@@ -1426,6 +1462,190 @@ class ScenarioWorkflowGenerator:
                 ],
             )
 
+    def _prepare_scenario_precomputation(
+        self,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        auth_endpoints: Optional[List[Any]],
+        endpoint_info: str,
+        scenario_name: str,
+    ) -> Optional[Tuple[List[int], str, List[int]]]:
+        """Pre-compute status codes. Returns None if scenario should be skipped."""
+        has_auth = bool(auth_endpoints)
+        codes_with_desc = self._precompute_scenario_status_codes(
+            endpoint, scenario_type, has_auth
+        )
+        expected_codes = [code for code, _ in codes_with_desc]
+        status_info = self._format_status_codes_for_prompt(codes_with_desc)
+        all_codes = self._extract_expected_status_codes(endpoint)
+
+        skip = self._should_skip_scenario(
+            scenario_type, expected_codes, all_codes, endpoint_info, scenario_name
+        )
+        if skip:
+            self._skip_scenario(endpoint_info, scenario_name, skip)
+            return None
+
+        if not expected_codes:
+            logger.warning(
+                f"No expected status codes for {endpoint_info} "
+                f"{scenario_name} - using fallback"
+            )
+            expected_codes = self._get_fallback_status_codes(scenario_type)
+
+        return expected_codes, status_info, all_codes
+
+    def _skip_scenario(
+        self, endpoint_info: str, scenario_name: str, reason: str
+    ) -> None:
+        """Log and record a scenario skip."""
+        logger.info(
+            f"Skipping {scenario_name} workflow for [{endpoint_info}] - {reason}"
+        )
+        if self.progress:
+            self.progress.scenario_skipped(endpoint_info, scenario_name, reason)
+
+    async def _build_and_record_prompt(
+        self,
+        template: Any,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        endpoint_details: str,
+        auth_endpoints: Optional[List[Any]],
+        base_workflow_content: str,
+        test_data_content: str,
+        class_name: str,
+        operation_id: str,
+        expected_status_codes: List[int],
+        expected_status_info: str,
+        injection_points: str,
+        negative_scenarios: str,
+        positive_fields: str,
+        setup_endpoints_section: str,
+        custom_requirement: Optional[str],
+        db_type: str,
+        tag_name: str,
+        scenario_name: str,
+    ) -> str:
+        """Build template context, render prompt, and record debug info."""
+        context = self._build_scenario_template_context(
+            endpoint_details=endpoint_details,
+            auth_endpoints=auth_endpoints,
+            base_workflow_content=base_workflow_content,
+            test_data_content=test_data_content,
+            class_name=class_name,
+            operation_id=operation_id,
+            endpoint=endpoint,
+            expected_status_codes=expected_status_codes,
+            expected_status_info=expected_status_info,
+            injection_points=injection_points,
+            negative_scenarios=negative_scenarios,
+            positive_fields=positive_fields,
+            setup_endpoints_section=setup_endpoints_section,
+            custom_requirement=custom_requirement,
+            db_type=db_type,
+        )
+        self._validate_template_context(context, scenario_type)
+        prompt = self._render_scenario_template(template, context, scenario_type)
+
+        endpoint_dir_name = self.get_endpoint_dir_name(endpoint)
+        await self._record_pre_generation_debug(
+            tag_name=tag_name,
+            endpoint_dir_name=endpoint_dir_name,
+            endpoint=endpoint,
+            endpoint_details=endpoint_details,
+            scenario_name=scenario_name,
+            class_name=class_name,
+            operation_id=operation_id,
+            expected_status_codes=expected_status_codes,
+            setup_endpoints_section=setup_endpoints_section,
+            custom_requirement=custom_requirement,
+            db_type=db_type,
+            prompt=prompt,
+        )
+        return prompt
+
+    async def _record_llm_response_debug(
+        self,
+        tag_name: str,
+        endpoint_dir_name: str,
+        scenario_name: str,
+        content: Optional[str],
+    ) -> None:
+        """Record raw LLM response for debugging."""
+        if self.debug_recorder and self.debug_recorder.enabled:
+            await self.debug_recorder.record_llm_response(
+                tag=tag_name,
+                endpoint_dir_name=endpoint_dir_name,
+                scenario_type=scenario_name,
+                response=content or "(empty response)",
+            )
+
+    async def _extract_and_validate_code(
+        self,
+        content: str,
+        class_name: str,
+        scenario_type: ScenarioType,
+        tag_name: str,
+        endpoint_dir_name: str,
+        scenario_name: str,
+    ) -> Tuple[str, bool, Optional[str]]:
+        """Extract code, apply fixes, and validate syntax."""
+        extracted = self._code_processor.extract_code(content)
+        await self._record_code_extraction(
+            tag_name, endpoint_dir_name, scenario_name, extracted
+        )
+        fixed = self._apply_code_fixes(extracted, class_name, scenario_type.value)
+        await self._record_processed_code(
+            tag_name, endpoint_dir_name, scenario_name, fixed
+        )
+        is_valid, error = self._code_processor.validate_python_code(fixed)
+        await self._record_syntax_validation(
+            tag_name, endpoint_dir_name, scenario_name, is_valid, error
+        )
+        return fixed, is_valid, error
+
+    async def _handle_retry_or_fail(
+        self,
+        attempt: int,
+        max_retries: int,
+        error: str,
+        content: str,
+        last_is_semantic: bool,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        endpoint_info: str,
+        scenario_name: str,
+        tag_name: str,
+        endpoint_dir_name: str,
+        expected_status_codes: List[int],
+    ) -> None:
+        """Handle retry logging or final failure logging."""
+        if attempt < max_retries - 1:
+            await self._record_retry_debug(
+                tag_name, endpoint_dir_name, scenario_name, attempt,
+                error, content, last_is_semantic, expected_status_codes,
+                endpoint.path, endpoint.method.upper()
+            )
+            error_type = "Semantic" if last_is_semantic else "Syntax"
+            logger.debug(
+                f"{error_type} validation failed for {scenario_type.value} "
+                f"[{endpoint.method} {endpoint.path}], "
+                f"attempt {attempt + 1}/{max_retries}: {error}. Retrying..."
+            )
+            if self.progress:
+                self.progress.scenario_retry(
+                    endpoint_info, scenario_name,
+                    attempt + 1, max_retries, f"{error_type}: {error}",
+                )
+            await asyncio.sleep(1)
+        else:
+            logger.debug(
+                f"Retry FAILED for {scenario_type.value} "
+                f"[{endpoint.method} {endpoint.path}] after "
+                f"{max_retries} attempts. Final error: {error}"
+            )
+
     async def _generate_llm_scenario(
         self,
         scenario_type: ScenarioType,
@@ -1457,239 +1677,226 @@ class ScenarioWorkflowGenerator:
         endpoint_details = self._format_single_endpoint(endpoint, exclude_2xx=exclude_2xx)
         class_name = self._operation_to_class_name(endpoint)
 
-        # Pre-compute status codes
-        has_auth = bool(auth_endpoints)
-        codes_with_desc = self._precompute_scenario_status_codes(endpoint, scenario_type, has_auth)
-        expected_status_codes = [code for code, _ in codes_with_desc]
-        expected_status_info = self._format_status_codes_for_prompt(codes_with_desc)
-        all_status_codes = self._extract_expected_status_codes(endpoint)
-
-        # Check if should skip
-        skip_reason = self._should_skip_scenario(
-            scenario_type, expected_status_codes, all_status_codes, endpoint_info, scenario_name
+        # Pre-compute status codes (returns None if skip)
+        precomp = self._prepare_scenario_precomputation(
+            scenario_type, endpoint, auth_endpoints, endpoint_info, scenario_name
         )
-        if skip_reason:
-            logger.info(f"Skipping {scenario_name} workflow for [{endpoint_info}] - {skip_reason}")
-            if self.progress:
-                self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+        if precomp is None:
             return None
-
-        # Fallback status codes
-        if not expected_status_codes:
-            logger.warning(f"No expected status codes for {endpoint_info} {scenario_name} - using fallback")
-            expected_status_codes = self._get_fallback_status_codes(scenario_type)
+        expected_status_codes, expected_status_info, _ = precomp
 
         # Pre-compute scenario-specific data
         injection_points, negative_scenarios, positive_fields, skip_reason = (
-            self._precompute_scenario_specific_data(scenario_type, endpoint, endpoint_info, scenario_name)
+            self._precompute_scenario_specific_data(
+                scenario_type, endpoint, endpoint_info, scenario_name
+            )
         )
         if skip_reason:
-            logger.info(f"Skipping {scenario_name} workflow for [{endpoint_info}] - {skip_reason}")
-            if self.progress:
-                self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+            self._skip_scenario(endpoint_info, scenario_name, skip_reason)
             return None
 
-        # Find setup endpoints
-        setup_endpoints_section, setup_count = self._find_setup_endpoints(endpoint, all_endpoints)
-
-        # Log pre-computation results
+        # Find setup endpoints and log
+        setup_section, setup_count = self._find_setup_endpoints(endpoint, all_endpoints)
         self._log_precomputation_results(
             endpoint_info, scenario_name, expected_status_codes,
             setup_count, positive_fields, negative_scenarios, injection_points
         )
 
-        # Build and render template
-        template_context = self._build_scenario_template_context(
-            endpoint_details=endpoint_details,
-            auth_endpoints=auth_endpoints,
-            base_workflow_content=base_workflow_content,
-            test_data_content=test_data_content,
-            class_name=class_name,
-            operation_id=operation_id,
-            endpoint=endpoint,
-            expected_status_codes=expected_status_codes,
-            expected_status_info=expected_status_info,
-            injection_points=injection_points,
-            negative_scenarios=negative_scenarios,
-            positive_fields=positive_fields,
-            setup_endpoints_section=setup_endpoints_section,
-            custom_requirement=custom_requirement,
-            db_type=db_type,
-        )
-        self._validate_template_context(template_context, scenario_type)
-        prompt = self._render_scenario_template(template, template_context, scenario_type)
-
-        # Record debug info
-        endpoint_dir_name = self.get_endpoint_dir_name(endpoint)
-        await self._record_pre_generation_debug(
-            tag_name=tag_name,
-            endpoint_dir_name=endpoint_dir_name,
-            endpoint=endpoint,
-            endpoint_details=endpoint_details,
-            scenario_name=scenario_name,
-            class_name=class_name,
-            operation_id=operation_id,
-            expected_status_codes=expected_status_codes,
-            setup_endpoints_section=setup_endpoints_section,
-            custom_requirement=custom_requirement,
-            db_type=db_type,
-            prompt=prompt,
+        # Build prompt and record debug
+        prompt = await self._build_and_record_prompt(
+            template, scenario_type, endpoint, endpoint_details,
+            auth_endpoints, base_workflow_content, test_data_content,
+            class_name, operation_id, expected_status_codes,
+            expected_status_info, injection_points, negative_scenarios,
+            positive_fields, setup_section, custom_requirement,
+            db_type, tag_name, scenario_name,
         )
 
-        # Call LLM with validation retry (error-aware on retry)
-        max_validation_retries = 2
+        # Run LLM with retry loop
+        return await self._run_llm_retry_loop(
+            scenario_type, endpoint, endpoint_info, scenario_name,
+            class_name, tag_name, all_endpoints, expected_status_codes,
+            prompt,
+        )
+
+    async def _run_llm_retry_loop(
+        self,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        endpoint_info: str,
+        scenario_name: str,
+        class_name: str,
+        tag_name: str,
+        all_endpoints: Optional[List[Any]],
+        expected_status_codes: List[int],
+        prompt: str,
+    ) -> str:
+        """Execute the LLM call with validation retry loop."""
+        max_retries = 2
         last_error = None
         last_code = None
         last_is_semantic = False
-        current_prompt = prompt  # Start with the original prompt
-        all_errors: List[str] = []  # Track all errors for debug recording
+        current_prompt = prompt
+        endpoint_dir_name = self.get_endpoint_dir_name(endpoint)
 
-        for attempt in range(max_validation_retries):
-            # On retry, use error-aware fix prompt instead of original
+        for attempt in range(max_retries):
             if attempt > 0 and last_error and last_code:
-                if last_is_semantic:
-                    current_prompt = self._render_semantic_fix_prompt(
-                        last_code,
-                        last_error,
-                        endpoint_expected_status=expected_status_codes,
-                        endpoint_path=endpoint.path,
-                        endpoint_method=endpoint.method.upper(),
-                    )
-                else:
-                    current_prompt = self._render_fix_prompt(last_code, last_error)
-
-            # Record LLM request
-            await self._record_llm_request(
-                tag_name, endpoint_dir_name, scenario_name, attempt
-            )
-
-            if self.progress:
-                attempt_label = (
-                    f"attempt {attempt + 1}/{max_validation_retries}"
-                    if attempt > 0
-                    else "calling LLM"
-                )
-                self.progress.scenario_detail(
-                    endpoint_info, scenario_name, attempt_label
+                current_prompt = self._prepare_retry_prompt(
+                    last_code, last_error, last_is_semantic,
+                    expected_status_codes, endpoint.path, endpoint.method.upper(),
                 )
 
-            content = await self._call_ai_service(current_prompt, scenario_type.value)
-
-            # Record raw LLM response
-            if self.debug_recorder and self.debug_recorder.enabled:
-                await self.debug_recorder.record_llm_response(
-                    tag=tag_name,
-                    endpoint_dir_name=endpoint_dir_name,
-                    scenario_type=scenario_name,
-                    response=content or "(empty response)",
-                )
-
-            self._validate_llm_response(content, scenario_type, endpoint)
-
-            # Extract and process code
-            extracted = self._code_processor.extract_code(content)
-
-            # Record and process code
-            await self._record_code_extraction(
-                tag_name, endpoint_dir_name, scenario_name, extracted
+            raw = await self._fetch_llm_response(
+                tag_name, endpoint_dir_name, scenario_name, scenario_type,
+                endpoint_info, current_prompt, attempt, max_retries,
             )
-            content = self._apply_code_fixes(extracted, class_name, scenario_type.value)
+            self._validate_llm_response(raw, scenario_type, endpoint)
 
-            # Record and validate
-            await self._record_processed_code(
-                tag_name, endpoint_dir_name, scenario_name, content
-            )
-            is_valid, error = self._code_processor.validate_python_code(content)
-            await self._record_syntax_validation(
-                tag_name, endpoint_dir_name, scenario_name, is_valid, error
+            content, is_valid, error = await self._extract_and_validate_code(
+                raw, class_name, scenario_type,
+                tag_name, endpoint_dir_name, scenario_name,
             )
 
             if not is_valid:
-                if self.progress:
-                    self.progress.scenario_detail(
-                        endpoint_info, scenario_name, f"syntax FAILED: {error[:120]}"
-                    )
-
-            if is_valid:
-                # Syntax OK - now run semantic validation
-                all_paths, request_schema = self._get_semantic_validation_context(
-                    endpoint, all_endpoints
-                )
-                semantic_result = self._code_validator.validate(
-                    code=content,
-                    scenario_type=scenario_type.value,
-                    endpoint_path=endpoint.path,
-                    all_endpoint_paths=all_paths,
-                    request_body_schema=request_schema,
-                )
-
-                if semantic_result.is_valid:
-                    # Both syntax and semantic validation passed
-                    await self._record_validation_success(
-                        tag_name, endpoint_dir_name, scenario_name, content, attempt
-                    )
-                    if attempt > 0:
-                        logger.info(
-                            f"Retry SUCCEEDED for {scenario_type.value} "
-                            f"[{endpoint.method} {endpoint.path}] on attempt "
-                            f"{attempt + 1}/{max_validation_retries}"
-                        )
-                    if self.progress:
-                        self.progress.scenario_done(endpoint_info, scenario_name)
-                    return content
-                else:
-                    # Semantic validation failed - use semantic fix prompt on retry
-                    error = semantic_result.error_message
-                    is_semantic_error = True
-                    self._log_semantic_failure(
-                        scenario_type, endpoint, semantic_result.violations,
-                        endpoint_info, scenario_name
-                    )
-            else:
+                self._report_syntax_failure(endpoint_info, scenario_name, error)
                 is_semantic_error = False
+            else:
+                result = self._check_and_finalize_scenario(
+                    content, scenario_type, endpoint, all_endpoints,
+                    tag_name, endpoint_dir_name, scenario_name,
+                    endpoint_info, attempt, max_retries,
+                )
+                if isinstance(result, str):
+                    return result
+                error, is_semantic_error = result
 
-            # Save for error reporting and fix prompt on retry
             last_error = error
             last_code = content
             last_is_semantic = is_semantic_error if is_valid else False
-            all_errors.append(f"Attempt {attempt + 1}: {error}")
 
-            if attempt < max_validation_retries - 1:
-                # Record retry attempt
-                await self._record_retry_debug(
-                    tag_name, endpoint_dir_name, scenario_name, attempt,
-                    error, content, last_is_semantic, expected_status_codes,
-                    endpoint.path, endpoint.method.upper()
-                )
-                error_type = "Semantic" if last_is_semantic else "Syntax"
-                logger.debug(
-                    f"{error_type} validation failed for {scenario_type.value} "
-                    f"[{endpoint.method} {endpoint.path}], attempt {attempt + 1}/{max_validation_retries}: "
-                    f"{error}. Retrying..."
-                )
-                if self.progress:
-                    self.progress.scenario_retry(
-                        endpoint_info,
-                        scenario_name,
-                        attempt + 1,
-                        max_validation_retries,
-                        f"{error_type}: {error}",
-                    )
-                await asyncio.sleep(1)
-            else:
-                logger.debug(
-                    f"Retry FAILED for {scenario_type.value} "
-                    f"[{endpoint.method} {endpoint.path}] after {max_validation_retries} attempts. "
-                    f"Final error: {error}"
-                )
+            await self._handle_retry_or_fail(
+                attempt, max_retries, error, content, last_is_semantic,
+                scenario_type, endpoint, endpoint_info, scenario_name,
+                tag_name, endpoint_dir_name, expected_status_codes,
+            )
 
-        # All retries exhausted
         raise CodeValidationError(
-            scenario_type.value,
-            last_error,
-            last_code,
+            scenario_type.value, last_error, last_code,
             endpoint_info=f"{endpoint.method} {endpoint.path}",
         )
+
+    async def _fetch_llm_response(
+        self,
+        tag_name: str,
+        endpoint_dir_name: str,
+        scenario_name: str,
+        scenario_type: ScenarioType,
+        endpoint_info: str,
+        prompt: str,
+        attempt: int,
+        max_retries: int,
+    ) -> str:
+        """Record, call LLM, and validate the raw response."""
+        await self._record_llm_request(
+            tag_name, endpoint_dir_name, scenario_name, attempt
+        )
+        if self.progress:
+            label = (
+                f"attempt {attempt + 1}/{max_retries}"
+                if attempt > 0 else "calling LLM"
+            )
+            self.progress.scenario_detail(endpoint_info, scenario_name, label)
+
+        raw = await self._call_ai_service(prompt, scenario_type.value)
+        await self._record_llm_response_debug(
+            tag_name, endpoint_dir_name, scenario_name, raw
+        )
+        return raw
+
+    def _report_syntax_failure(
+        self, endpoint_info: str, scenario_name: str, error: Optional[str],
+    ) -> None:
+        """Report syntax validation failure via progress."""
+        if self.progress:
+            self.progress.scenario_detail(
+                endpoint_info, scenario_name,
+                f"syntax FAILED: {error[:120] if error else 'unknown'}"
+            )
+
+    async def _check_and_finalize_scenario(
+        self,
+        content: str,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        all_endpoints: Optional[List[Any]],
+        tag_name: str,
+        endpoint_dir_name: str,
+        scenario_name: str,
+        endpoint_info: str,
+        attempt: int,
+        max_retries: int,
+    ) -> "str | Tuple[Optional[str], bool]":
+        """Run semantic check; return code string on success or (error, is_semantic) on failure."""
+        result = self._run_semantic_check(
+            content, scenario_type, endpoint, all_endpoints
+        )
+        if result is None:
+            return await self._finalize_scenario_success(
+                tag_name, endpoint_dir_name, scenario_name,
+                content, endpoint_info, scenario_type, endpoint,
+                attempt, max_retries,
+            )
+        self._log_semantic_failure(
+            scenario_type, endpoint, result.violations,
+            endpoint_info, scenario_name,
+        )
+        return (result.error_message, True)
+
+    async def _finalize_scenario_success(
+        self,
+        tag_name: str,
+        endpoint_dir_name: str,
+        scenario_name: str,
+        content: str,
+        endpoint_info: str,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        attempt: int,
+        max_retries: int,
+    ) -> str:
+        """Record success, log retry info, and return validated content."""
+        await self._record_validation_success(
+            tag_name, endpoint_dir_name, scenario_name, content, attempt,
+        )
+        if attempt > 0:
+            logger.info(
+                f"Retry SUCCEEDED for {scenario_type.value} "
+                f"[{endpoint.method} {endpoint.path}] on attempt "
+                f"{attempt + 1}/{max_retries}"
+            )
+        if self.progress:
+            self.progress.scenario_done(endpoint_info, scenario_name)
+        return content
+
+    def _run_semantic_check(
+        self,
+        content: str,
+        scenario_type: ScenarioType,
+        endpoint: Any,
+        all_endpoints: Optional[List[Any]],
+    ) -> Optional[Any]:
+        """Run semantic validation. Returns None if valid, result if failed."""
+        all_paths, request_schema = self._get_semantic_validation_context(
+            endpoint, all_endpoints
+        )
+        result = self._code_validator.validate(
+            code=content,
+            scenario_type=scenario_type.value,
+            endpoint_path=endpoint.path,
+            all_endpoint_paths=all_paths,
+            request_body_schema=request_schema,
+        )
+        return None if result.is_valid else result
 
     def _get_type_instruction(
         self,
@@ -2994,60 +3201,72 @@ Do NOT invent or call POST endpoints that are not documented here.
         return "\n".join(lines)
 
     def _precompute_injection_points(self, endpoint: Any) -> Optional[str]:
-        """
-        Pre-compute valid security injection points for an endpoint.
-
-        Scans the endpoint's request body and query parameters for string fields
-        that can receive injection payloads. If no valid injection points exist,
-        returns None (caller should skip security generation).
+        """Pre-compute valid security injection points for an endpoint.
 
         Returns:
             Formatted string listing injection points, or None if no valid targets.
         """
-        body_fields: List[str] = []
-        query_params: List[str] = []
+        body_fields = self._scan_body_string_fields(endpoint)
+        query_params = self._scan_query_string_params(endpoint)
 
-        # Scan request body for string fields (handles allOf, oneOf, $ref)
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            schema = getattr(endpoint.request_body, "schema", {})
-            if schema and isinstance(schema, dict):
-                properties, _ = extract_all_properties(schema)
-                for field_name, field_schema in properties.items():
-                    if isinstance(field_schema, dict):
-                        unwrapped_fs, _ = unwrap_nullable_schema(field_schema)
-                        field_type = unwrapped_fs.get("type", "")
-                        if field_type == "string":
-                            body_fields.append(field_name)
-
-        # Scan parameters for string query params
-        if hasattr(endpoint, "parameters") and endpoint.parameters:
-            for param in endpoint.parameters:
-                param_location = getattr(param, "location", None)
-                if param_location is None:
-                    param_location = getattr(param, "in_", "query")
-                if hasattr(param_location, "value"):
-                    param_location = param_location.value
-
-                if param_location == "query":
-                    param_type = getattr(param, "type", None) or "string"
-                    if param_type == "string" or "string" in str(param_type):
-                        query_params.append(getattr(param, "name", "unknown"))
-
-        # No valid injection points - skip security generation
         if not body_fields and not query_params:
             return None
 
-        # Format for prompt
+        return self._format_injection_points(body_fields, query_params)
+
+    def _scan_body_string_fields(self, endpoint: Any) -> List[str]:
+        """Scan request body for string fields suitable for injection."""
+        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
+            return []
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not (schema and isinstance(schema, dict)):
+            return []
+
+        fields = []
+        properties, _ = extract_all_properties(schema)
+        for field_name, field_schema in properties.items():
+            if isinstance(field_schema, dict):
+                unwrapped_fs, _ = unwrap_nullable_schema(field_schema)
+                if unwrapped_fs.get("type", "") == "string":
+                    fields.append(field_name)
+        return fields
+
+    def _scan_query_string_params(self, endpoint: Any) -> List[str]:
+        """Scan endpoint parameters for string query params."""
+        if not (hasattr(endpoint, "parameters") and endpoint.parameters):
+            return []
+
+        params = []
+        for param in endpoint.parameters:
+            location = self._get_param_location(param)
+            if location == "query":
+                param_type = getattr(param, "type", None) or "string"
+                if param_type == "string" or "string" in str(param_type):
+                    params.append(getattr(param, "name", "unknown"))
+        return params
+
+    @staticmethod
+    def _get_param_location(param: Any) -> str:
+        """Extract the location string from a parameter object."""
+        location = getattr(param, "location", None)
+        if location is None:
+            location = getattr(param, "in_", "query")
+        if hasattr(location, "value"):
+            location = location.value
+        return location
+
+    @staticmethod
+    def _format_injection_points(
+        body_fields: List[str], query_params: List[str],
+    ) -> str:
+        """Format injection points into a prompt-ready string."""
         lines = []
         if body_fields:
             lines.append("Request body string fields (inject payloads here):")
-            for f in body_fields:
-                lines.append(f"  - {f}")
+            lines.extend(f"  - {f}" for f in body_fields)
         if query_params:
             lines.append("Query parameters (inject payloads here):")
-            for p in query_params:
-                lines.append(f"  - {p}")
-
+            lines.extend(f"  - {p}" for p in query_params)
         return "\n".join(lines)
 
     def _extract_endpoint_params(
@@ -3110,64 +3329,68 @@ Do NOT invent or call POST endpoints that are not documented here.
         Returns:
             Tuple of (required, typed, enum, pattern, numeric) field lists
         """
+        empty_result = ([], [], [], [], [])
+
+        properties, required_list = self._get_body_properties(endpoint)
+        if properties is None:
+            return empty_result
+
         required_fields: List[str] = []
         typed_fields: List[Tuple[str, str]] = []
         enum_fields: List[Tuple[str, List[Any]]] = []
         pattern_fields: List[Tuple[str, str]] = []
         numeric_fields: List[Tuple[str, Optional[float], Optional[float]]] = []
 
-        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
-            return (
-                required_fields,
-                typed_fields,
-                enum_fields,
-                pattern_fields,
-                numeric_fields,
-            )
-
-        schema = getattr(endpoint.request_body, "schema", {})
-        if not (schema and isinstance(schema, dict)):
-            return (
-                required_fields,
-                typed_fields,
-                enum_fields,
-                pattern_fields,
-                numeric_fields,
-            )
-
-        properties, required_list = extract_all_properties(schema)
-
         for field_name, field_schema in properties.items():
             if not isinstance(field_schema, dict):
                 continue
+            self._categorize_field(
+                field_name, field_schema, required_list,
+                required_fields, typed_fields, enum_fields,
+                pattern_fields, numeric_fields,
+            )
 
-            unwrapped_fs, _ = unwrap_nullable_schema(field_schema)
-            field_type = unwrapped_fs.get("type", "")
+        return (required_fields, typed_fields, enum_fields, pattern_fields, numeric_fields)
 
-            if field_name in required_list:
-                required_fields.append(field_name)
+    def _get_body_properties(
+        self, endpoint: Any,
+    ) -> Tuple[Optional[Dict], List[str]]:
+        """Extract properties and required list from endpoint body schema."""
+        if not (hasattr(endpoint, "request_body") and endpoint.request_body):
+            return None, []
+        schema = getattr(endpoint.request_body, "schema", {})
+        if not (schema and isinstance(schema, dict)):
+            return None, []
+        properties, required_list = extract_all_properties(schema)
+        return properties, required_list
 
-            if field_type in ("integer", "number", "boolean", "array"):
-                typed_fields.append((field_name, field_type))
+    def _categorize_field(
+        self,
+        field_name: str,
+        field_schema: dict,
+        required_list: List[str],
+        required_fields: List[str],
+        typed_fields: List[Tuple[str, str]],
+        enum_fields: List[Tuple[str, List[Any]]],
+        pattern_fields: List[Tuple[str, str]],
+        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]],
+    ) -> None:
+        """Categorize a single field into the appropriate category lists."""
+        unwrapped_fs, _ = unwrap_nullable_schema(field_schema)
+        field_type = unwrapped_fs.get("type", "")
 
-            if unwrapped_fs.get("enum"):
-                enum_fields.append((field_name, unwrapped_fs["enum"]))
-
-            if unwrapped_fs.get("pattern"):
-                pattern_fields.append((field_name, unwrapped_fs["pattern"]))
-
-            if field_type in ("integer", "number"):
-                self._add_numeric_field_if_constrained(
-                    field_name, unwrapped_fs, numeric_fields
-                )
-
-        return (
-            required_fields,
-            typed_fields,
-            enum_fields,
-            pattern_fields,
-            numeric_fields,
-        )
+        if field_name in required_list:
+            required_fields.append(field_name)
+        if field_type in ("integer", "number", "boolean", "array"):
+            typed_fields.append((field_name, field_type))
+        if unwrapped_fs.get("enum"):
+            enum_fields.append((field_name, unwrapped_fs["enum"]))
+        if unwrapped_fs.get("pattern"):
+            pattern_fields.append((field_name, unwrapped_fs["pattern"]))
+        if field_type in ("integer", "number"):
+            self._add_numeric_field_if_constrained(
+                field_name, unwrapped_fs, numeric_fields
+            )
 
     def _add_numeric_field_if_constrained(
         self,
@@ -3646,22 +3869,9 @@ Fix ALL the violations and output the complete corrected Python code:"""
     }
 
     def _extract_allowed_imports_from_templates(self) -> set:
-        """
-        Extract allowed imports dynamically from prompt templates.
-
-        Parses the '=== ALLOWED IMPORTS ===' section from workflow templates
-        to build the allowed imports set. This ensures the validation stays
-        in sync with what the prompts actually allow.
-
-        Returns:
-            Set of allowed module names
-        """
-        import ast
-        import re
-
+        """Extract allowed imports dynamically from prompt templates."""
         allowed = set(self._BASE_ALLOWED_IMPORTS)
 
-        # Templates that define allowed imports
         template_files = [
             "workflow_positive.j2",
             "workflow_negative.j2",
@@ -3669,59 +3879,66 @@ Fix ALL the violations and output the complete corrected Python code:"""
         ]
 
         for template_file in template_files:
-            try:
-                template_path = self.prompt_dir / template_file
-                if not template_path.exists():
-                    continue
-
-                content = template_path.read_text(encoding="utf-8")
-
-                # Find the ALLOWED IMPORTS section
-                # Pattern: === ALLOWED IMPORTS ... === followed by ```python ... ```
-                match = re.search(
-                    r"===\s*ALLOWED IMPORTS[^=]*===.*?```python\s*(.*?)```",
-                    content,
-                    re.DOTALL | re.IGNORECASE,
-                )
-
-                if not match:
-                    continue
-
-                imports_code = match.group(1)
-
-                # Parse the imports code block
-                try:
-                    tree = ast.parse(imports_code)
-                except SyntaxError:
-                    # Template might have Jinja syntax, try cleaning it
-                    # Remove Jinja tags like {% if db_type == "mongo" %}
-                    cleaned = re.sub(r"\{%.*?%\}", "", imports_code)
-                    cleaned = re.sub(r"\{\{.*?\}\}", "", cleaned)
-                    try:
-                        tree = ast.parse(cleaned)
-                    except SyntaxError:
-                        continue
-
-                # Extract module names from imports
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        for alias in node.names:
-                            # Add both the full path and the root module
-                            allowed.add(alias.name)
-                            allowed.add(alias.name.split(".")[0])
-
-                    elif isinstance(node, ast.ImportFrom):
-                        if node.module:
-                            # Add both the full path and the root module
-                            allowed.add(node.module)
-                            allowed.add(node.module.split(".")[0])
-
-            except Exception as e:
-                logger.debug(f"Could not parse imports from {template_file}: {e}")
-                continue
+            self._extract_imports_from_template(template_file, allowed)
 
         logger.debug(f"Extracted allowed imports from templates: {allowed}")
         return allowed
+
+    def _extract_imports_from_template(
+        self, template_file: str, allowed: set,
+    ) -> None:
+        """Extract imports from a single template file into the allowed set."""
+        import re
+
+        try:
+            template_path = self.prompt_dir / template_file
+            if not template_path.exists():
+                return
+
+            content = template_path.read_text(encoding="utf-8")
+            match = re.search(
+                r"===\s*ALLOWED IMPORTS[^=]*===.*?```python\s*(.*?)```",
+                content,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if not match:
+                return
+
+            tree = self._parse_imports_code(match.group(1))
+            if tree:
+                self._collect_import_names(tree, allowed)
+
+        except Exception as e:
+            logger.debug(f"Could not parse imports from {template_file}: {e}")
+
+    def _parse_imports_code(self, imports_code: str) -> Any:
+        """Parse Python import code, cleaning Jinja syntax if needed."""
+        import ast
+        import re
+
+        try:
+            return ast.parse(imports_code)
+        except SyntaxError:
+            cleaned = re.sub(r"\{%.*?%\}", "", imports_code)
+            cleaned = re.sub(r"\{\{.*?\}\}", "", cleaned)
+            try:
+                return ast.parse(cleaned)
+            except SyntaxError:
+                return None
+
+    @staticmethod
+    def _collect_import_names(tree: Any, allowed: set) -> None:
+        """Collect module names from an AST into the allowed set."""
+        import ast
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    allowed.add(alias.name)
+                    allowed.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                allowed.add(node.module)
+                allowed.add(node.module.split(".")[0])
 
     def _validate_template_context(
         self, context: Dict[str, Any], scenario_type: ScenarioType
