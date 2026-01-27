@@ -14,13 +14,14 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional
 from rich.console import Console
 
 
 @dataclass
 class FailureInfo:
     """Detailed information about a failure."""
+
     endpoint: str
     scenario: str
     error: str
@@ -32,6 +33,7 @@ class FailureInfo:
 @dataclass
 class SchemaAnalysis:
     """Analysis of endpoint schema."""
+
     schema_type: str = "object"  # object, discriminated_union, array, primitive
     discriminator: Optional[str] = None
     variants: List[str] = field(default_factory=list)
@@ -46,6 +48,7 @@ class SchemaAnalysis:
 @dataclass
 class SetupAnalysis:
     """Analysis of setup requirements."""
+
     needs_setup: bool = False
     parent_resources: List[str] = field(default_factory=list)
     setup_endpoints_found: int = 0
@@ -55,15 +58,19 @@ class SetupAnalysis:
 @dataclass
 class InjectionAnalysis:
     """Analysis of security injection points."""
+
     total_injectable: int = 0
     high_risk_fields: List[str] = field(default_factory=list)
     skipped_fields: List[str] = field(default_factory=list)
-    injection_locations: List[str] = field(default_factory=list)  # body, query, path, header
+    injection_locations: List[str] = field(
+        default_factory=list
+    )  # body, query, path, header
 
 
 @dataclass
 class ScenarioResult:
     """Result of generating a scenario."""
+
     scenario_type: str  # positive, negative, security
     status: str  # success, failed, skipped
     skip_reason: Optional[str] = None
@@ -82,6 +89,7 @@ class ScenarioResult:
 @dataclass
 class EndpointAnalysis:
     """Complete analysis for an endpoint."""
+
     method: str
     path: str
     operation_id: str = ""
@@ -120,6 +128,7 @@ class EndpointAnalysis:
 @dataclass
 class OrchestratorEndpointInfo:
     """Information about an endpoint in the orchestrator."""
+
     method: str
     path: str
     operation_id: str = ""
@@ -131,6 +140,7 @@ class OrchestratorEndpointInfo:
 @dataclass
 class OrchestratorAnalysis:
     """Complete analysis for an orchestrator."""
+
     tag_name: str
     class_name: str = ""
 
@@ -151,7 +161,9 @@ class OrchestratorAnalysis:
     auth_tests_possible: bool = False
 
     # Orchestration Capabilities
-    state_dependent_tests: List[str] = field(default_factory=list)  # 409, double-delete, etc.
+    state_dependent_tests: List[str] = field(
+        default_factory=list
+    )  # 409, double-delete, etc.
     concurrent_tests_possible: bool = False
     resource_limit_tests: bool = False
 
@@ -175,8 +187,14 @@ class GenerationProgress:
     Verbose mode shows detailed analysis for each endpoint.
     """
 
-    def __init__(self, total: int, num_workers: int, console: Optional[Console] = None,
-                 output_dir: Optional[Path] = None, verbose: bool = False):
+    def __init__(
+        self,
+        total: int,
+        num_workers: int,
+        console: Optional[Console] = None,
+        output_dir: Optional[Path] = None,
+        verbose: bool = False,
+    ):
         self.total = total
         self.num_workers = num_workers
         self.console = console or Console()
@@ -234,7 +252,9 @@ class GenerationProgress:
 
         # Show detailed failure summary
         if self._failures:
-            self.console.print(f"\n[bold red]═══ FAILURES ({len(self._failures)}) ═══[/bold red]\n")
+            self.console.print(
+                f"\n[bold red]═══ FAILURES ({len(self._failures)}) ═══[/bold red]\n"
+            )
 
             for i, failure in enumerate(self._failures, 1):
                 self.console.print(f"[bold red]{i}. {failure.endpoint}[/bold red]")
@@ -243,8 +263,10 @@ class GenerationProgress:
 
                 # Show code context if available
                 if failure.code_snippet and failure.line_number:
-                    self.console.print(f"   [dim]Code context (line {failure.line_number}):[/dim]")
-                    lines = failure.code_snippet.split('\n')
+                    self.console.print(
+                        f"   [dim]Code context (line {failure.line_number}):[/dim]"
+                    )
+                    lines = failure.code_snippet.split("\n")
                     start = max(0, failure.line_number - 3)
                     end = min(len(lines), failure.line_number + 2)
 
@@ -288,12 +310,16 @@ class GenerationProgress:
         # Don't print anything - reduces noise
         pass
 
-    def set_endpoint_analysis(self, endpoint_info: str, analysis: EndpointAnalysis) -> None:
+    def set_endpoint_analysis(
+        self, endpoint_info: str, analysis: EndpointAnalysis
+    ) -> None:
         """Set the analysis data for an endpoint (verbose mode)."""
         # Store by endpoint_info key to avoid race conditions with parallel processing
         self._endpoint_analyses[endpoint_info] = analysis
 
-    def record_scenario_result(self, endpoint_info: str, scenario: str, result: ScenarioResult) -> None:
+    def record_scenario_result(
+        self, endpoint_info: str, scenario: str, result: ScenarioResult
+    ) -> None:
         """Record the result of a scenario generation."""
         # Look up by endpoint_info to handle parallel processing correctly
         analysis = self._endpoint_analyses.get(endpoint_info)
@@ -310,7 +336,9 @@ class GenerationProgress:
         # Don't print individual scenario success - too noisy
         pass
 
-    def scenario_skipped(self, endpoint_info: str, scenario: str, reason: str = "") -> None:
+    def scenario_skipped(
+        self, endpoint_info: str, scenario: str, reason: str = ""
+    ) -> None:
         """Called when a scenario is skipped."""
         self.skipped += 1
         # Record in analysis if available - look up by endpoint_info for thread safety
@@ -326,7 +354,14 @@ class GenerationProgress:
         """Called to add detail about a scenario."""
         pass
 
-    def scenario_retry(self, endpoint_info: str, scenario: str, attempt: int, max_attempts: int, error: str) -> None:
+    def scenario_retry(
+        self,
+        endpoint_info: str,
+        scenario: str,
+        attempt: int,
+        max_attempts: int,
+        error: str,
+    ) -> None:
         """Called when a scenario is being retried."""
         # Print retry warnings - these are important
         if attempt >= max_attempts - 1:
@@ -337,18 +372,26 @@ class GenerationProgress:
             )
             self.console.print(f"    {short_error}", style="dim")
 
-    def scenario_failed(self, endpoint_info: str, scenario: str, error: str,
-                        line_number: Optional[int] = None, code: Optional[str] = None,
-                        saved_path: Optional[str] = None) -> None:
+    def scenario_failed(
+        self,
+        endpoint_info: str,
+        scenario: str,
+        error: str,
+        line_number: Optional[int] = None,
+        code: Optional[str] = None,
+        saved_path: Optional[str] = None,
+    ) -> None:
         """Called when a scenario fails with detailed context."""
-        self._failures.append(FailureInfo(
-            endpoint=endpoint_info,
-            scenario=scenario,
-            error=error,
-            line_number=line_number,
-            code_snippet=code,
-            saved_path=saved_path,
-        ))
+        self._failures.append(
+            FailureInfo(
+                endpoint=endpoint_info,
+                scenario=scenario,
+                error=error,
+                line_number=line_number,
+                code_snippet=code,
+                saved_path=saved_path,
+            )
+        )
 
     def endpoint_done(self, endpoint_info: str, scenarios_generated: int = 0) -> None:
         """Called when an endpoint finishes processing."""
@@ -368,7 +411,9 @@ class GenerationProgress:
             del self._endpoint_analyses[endpoint_info]
         self._check_milestone()
 
-    def _print_verbose_endpoint(self, endpoint_info: str, analysis: EndpointAnalysis) -> None:
+    def _print_verbose_endpoint(
+        self, endpoint_info: str, analysis: EndpointAnalysis
+    ) -> None:
         """Print detailed verbose output for an endpoint."""
         c = self.console
 
@@ -376,23 +421,29 @@ class GenerationProgress:
         c.print(f"\n[bold]→ {analysis.method} {analysis.path}[/bold]")
 
         # OpenAPI Analysis
-        c.print(f"  [dim]│[/dim]")
-        c.print(f"  [dim]│[/dim] [cyan]── OpenAPI Analysis ──[/cyan]")
-        responses_str = ", ".join(str(r) for r in analysis.responses_defined) if analysis.responses_defined else "none"
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── OpenAPI Analysis ──[/cyan]")
+        responses_str = (
+            ", ".join(str(r) for r in analysis.responses_defined)
+            if analysis.responses_defined
+            else "none"
+        )
         c.print(f"  [dim]│[/dim] responses_defined: {responses_str}")
         c.print(f"  [dim]│[/dim] source_of_truth: {analysis.source_of_truth}")
         c.print(f"  [dim]│[/dim] content_type: {analysis.content_type}")
 
         # Schema Analysis
         schema = analysis.schema
-        c.print(f"  [dim]│[/dim]")
-        c.print(f"  [dim]│[/dim] [cyan]── Schema Analysis ──[/cyan]")
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Schema Analysis ──[/cyan]")
         c.print(f"  [dim]│[/dim] schema_type: {schema.schema_type}")
         if schema.discriminator:
             c.print(f"  [dim]│[/dim] discriminator: {schema.discriminator}")
             if schema.variants:
                 c.print(f"  [dim]│[/dim] variants: {', '.join(schema.variants)}")
-        c.print(f"  [dim]│[/dim] total_fields: {schema.total_fields}, required: {schema.required_fields}")
+        c.print(
+            f"  [dim]│[/dim] total_fields: {schema.total_fields}, required: {schema.required_fields}"
+        )
         if schema.patterns_found or schema.enums_found or schema.formats_found:
             constraints = []
             if schema.patterns_found:
@@ -406,45 +457,60 @@ class GenerationProgress:
         # Setup Analysis (only if relevant)
         setup = analysis.setup
         if setup.needs_setup or setup.setup_endpoints_found > 0:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [cyan]── Setup Analysis ──[/cyan]")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [cyan]── Setup Analysis ──[/cyan]")
             c.print(f"  [dim]│[/dim] needs_setup: {setup.needs_setup}")
             if setup.parent_resources:
-                c.print(f"  [dim]│[/dim] parent_resources: {', '.join(setup.parent_resources)}")
-            c.print(f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}")
+                c.print(
+                    f"  [dim]│[/dim] parent_resources: {', '.join(setup.parent_resources)}"
+                )
+            c.print(
+                f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}"
+            )
 
         # Injection Analysis (only if has injectable fields)
         inj = analysis.injection
         if inj.total_injectable > 0:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [cyan]── Injection Analysis ──[/cyan]")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [cyan]── Injection Analysis ──[/cyan]")
             c.print(f"  [dim]│[/dim] injectable_fields: {inj.total_injectable}")
             if inj.high_risk_fields:
-                c.print(f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}")
+                c.print(
+                    f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}"
+                )
             if inj.injection_locations:
-                c.print(f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}")
+                c.print(
+                    f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}"
+                )
 
         # Pre-computation
-        if analysis.positive_fields_precomputed > 0 or analysis.negative_scenarios_precomputed > 0:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [cyan]── Pre-computed ──[/cyan]")
+        if (
+            analysis.positive_fields_precomputed > 0
+            or analysis.negative_scenarios_precomputed > 0
+        ):
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [cyan]── Pre-computed ──[/cyan]")
             if analysis.positive_fields_precomputed > 0:
-                c.print(f"  [dim]│[/dim] positive_fields: {analysis.positive_fields_precomputed} generators ready")
+                c.print(
+                    f"  [dim]│[/dim] positive_fields: {analysis.positive_fields_precomputed} generators ready"
+                )
             if analysis.negative_scenarios_precomputed > 0:
-                c.print(f"  [dim]│[/dim] negative_scenarios: {analysis.negative_scenarios_precomputed} identified")
+                c.print(
+                    f"  [dim]│[/dim] negative_scenarios: {analysis.negative_scenarios_precomputed} identified"
+                )
                 if analysis.negative_scenario_types:
                     for scenario_type in analysis.negative_scenario_types[:5]:
                         c.print(f"  [dim]│[/dim]   • {scenario_type}")
 
         # Warnings
         if analysis.warnings:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
             for warning in analysis.warnings[:3]:
                 c.print(f"  [dim]│[/dim]   • {warning}")
 
         # Scenario Results
-        c.print(f"  [dim]│[/dim]")
+        c.print("  [dim]│[/dim]")
         for scenario_name in ["positive", "negative", "security"]:
             result = analysis.scenarios.get(scenario_name)
             if result:
@@ -492,14 +558,15 @@ class GenerationProgress:
         saved_path = None
 
         # Try to get details from CodeValidationError
-        if hasattr(error, 'code'):
+        if hasattr(error, "code"):
             code_snippet = error.code
-        if hasattr(error, 'error'):
+        if hasattr(error, "error"):
             error_str = error.error
 
         # Parse line number from error message
         import re
-        line_match = re.search(r'line\s*(\d+)', error_str, re.IGNORECASE)
+
+        line_match = re.search(r"line\s*(\d+)", error_str, re.IGNORECASE)
         if line_match:
             line_number = int(line_match.group(1))
 
@@ -508,26 +575,32 @@ class GenerationProgress:
         self.console.print(f"    [red]Error:[/red] {error_str}")
 
         # Print full traceback
-        tb_str = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
-        self.console.print(f"    [dim]Traceback:[/dim]")
-        for line in tb_str.split('\n'):
+        tb_str = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        self.console.print("    [dim]Traceback:[/dim]")
+        for line in tb_str.split("\n"):
             if line.strip():
                 self.console.print(f"    [dim]{line}[/dim]")
 
         if line_number and code_snippet:
-            lines = code_snippet.split('\n')
+            lines = code_snippet.split("\n")
             if 0 < line_number <= len(lines):
-                self.console.print(f"    [dim]Line {line_number}:[/dim] {lines[line_number-1].strip()}")
+                self.console.print(
+                    f"    [dim]Line {line_number}:[/dim] {lines[line_number-1].strip()}"
+                )
 
         # Store for summary
-        self._failures.append(FailureInfo(
-            endpoint=endpoint_info,
-            scenario="generation",
-            error=error_str,
-            line_number=line_number,
-            code_snippet=code_snippet,
-            saved_path=saved_path,
-        ))
+        self._failures.append(
+            FailureInfo(
+                endpoint=endpoint_info,
+                scenario="generation",
+                error=error_str,
+                line_number=line_number,
+                code_snippet=code_snippet,
+                saved_path=saved_path,
+            )
+        )
 
         self._check_milestone()
 
@@ -542,7 +615,9 @@ class GenerationProgress:
     # Orchestrator Progress Methods
     # =========================================================================
 
-    def set_orchestrator_analysis(self, tag_name: str, analysis: OrchestratorAnalysis) -> None:
+    def set_orchestrator_analysis(
+        self, tag_name: str, analysis: OrchestratorAnalysis
+    ) -> None:
         """Set the analysis data for an orchestrator (verbose mode)."""
         self._orchestrator_analyses[tag_name] = analysis
 
@@ -554,7 +629,9 @@ class GenerationProgress:
         if self.verbose and analysis:
             self._print_verbose_orchestrator(tag_name, analysis)
         else:
-            self.console.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py")
+            self.console.print(
+                f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py"
+            )
 
         # Clean up
         if tag_name in self._orchestrator_analyses:
@@ -565,13 +642,17 @@ class GenerationProgress:
         self.orchestrator_failed += 1
 
         error_str = str(error)
-        self.console.print(f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py failed")
+        self.console.print(
+            f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py failed"
+        )
         self.console.print(f"    [red]Error:[/red] {error_str}")
 
         # Print full traceback
-        tb_str = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
-        self.console.print(f"    [dim]Traceback:[/dim]")
-        for line in tb_str.split('\n'):
+        tb_str = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        self.console.print("    [dim]Traceback:[/dim]")
+        for line in tb_str.split("\n"):
             if line.strip():
                 self.console.print(f"    [dim]{line}[/dim]")
 
@@ -582,9 +663,13 @@ class GenerationProgress:
     def orchestrator_skipped(self, tag_name: str, reason: str = "") -> None:
         """Called when an orchestrator is skipped."""
         self.orchestrator_skipped += 1
-        self.console.print(f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py skipped ({reason})")
+        self.console.print(
+            f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py skipped ({reason})"
+        )
 
-    def _print_verbose_orchestrator(self, tag_name: str, analysis: OrchestratorAnalysis) -> None:
+    def _print_verbose_orchestrator(
+        self, tag_name: str, analysis: OrchestratorAnalysis
+    ) -> None:
         """Print detailed verbose output for an orchestrator."""
         c = self.console
 
@@ -592,15 +677,17 @@ class GenerationProgress:
         c.print(f"\n[bold]→ Orchestrator: {tag_name}[/bold]")
 
         # Basic Info
-        c.print(f"  [dim]│[/dim]")
-        c.print(f"  [dim]│[/dim] [cyan]── Orchestrator Info ──[/cyan]")
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Orchestrator Info ──[/cyan]")
         c.print(f"  [dim]│[/dim] class_name: {analysis.class_name}")
-        c.print(f"  [dim]│[/dim] endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)")
+        c.print(
+            f"  [dim]│[/dim] endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)"
+        )
 
         # Endpoint Composition
         if analysis.endpoints:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [cyan]── Endpoint Composition ──[/cyan]")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [cyan]── Endpoint Composition ──[/cyan]")
             for ep in analysis.endpoints[:5]:  # Show first 5
                 scenarios = []
                 if ep.has_positive:
@@ -615,8 +702,8 @@ class GenerationProgress:
                 c.print(f"  [dim]│[/dim]   ... and {len(analysis.endpoints) - 5} more")
 
         # CRUD Detection
-        c.print(f"  [dim]│[/dim]")
-        c.print(f"  [dim]│[/dim] [cyan]── CRUD Detection ──[/cyan]")
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── CRUD Detection ──[/cyan]")
         crud_ops = []
         if analysis.has_create:
             crud_ops.append("Create")
@@ -628,44 +715,56 @@ class GenerationProgress:
             crud_ops.append("Delete")
         crud_str = ", ".join(crud_ops) if crud_ops else "none"
         c.print(f"  [dim]│[/dim] operations: {crud_str}")
-        c.print(f"  [dim]│[/dim] crud_lifecycle_possible: {analysis.crud_lifecycle_possible}")
+        c.print(
+            f"  [dim]│[/dim] crud_lifecycle_possible: {analysis.crud_lifecycle_possible}"
+        )
 
         # Auth Detection
         if analysis.auth_endpoints_found > 0 or analysis.auth_tests_possible:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
-            c.print(f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}")
-            c.print(f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
+            c.print(
+                f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}"
+            )
+            c.print(
+                f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}"
+            )
 
         # Orchestration Capabilities
-        c.print(f"  [dim]│[/dim]")
-        c.print(f"  [dim]│[/dim] [cyan]── Orchestration Capabilities ──[/cyan]")
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Orchestration Capabilities ──[/cyan]")
         if analysis.state_dependent_tests:
-            c.print(f"  [dim]│[/dim] state_dependent_tests: {', '.join(analysis.state_dependent_tests)}")
+            c.print(
+                f"  [dim]│[/dim] state_dependent_tests: {', '.join(analysis.state_dependent_tests)}"
+            )
         else:
-            c.print(f"  [dim]│[/dim] state_dependent_tests: none identified")
-        c.print(f"  [dim]│[/dim] concurrent_tests_possible: {analysis.concurrent_tests_possible}")
+            c.print("  [dim]│[/dim] state_dependent_tests: none identified")
+        c.print(
+            f"  [dim]│[/dim] concurrent_tests_possible: {analysis.concurrent_tests_possible}"
+        )
         c.print(f"  [dim]│[/dim] resource_limit_tests: {analysis.resource_limit_tests}")
 
         # Generation Stats
         if analysis.time_seconds > 0 or analysis.prompt_tokens > 0:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [cyan]── Generation Stats ──[/cyan]")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [cyan]── Generation Stats ──[/cyan]")
             if analysis.time_seconds > 0:
                 c.print(f"  [dim]│[/dim] time: {analysis.time_seconds:.1f}s")
             if analysis.prompt_tokens > 0 or analysis.completion_tokens > 0:
-                c.print(f"  [dim]│[/dim] tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion")
+                c.print(
+                    f"  [dim]│[/dim] tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion"
+                )
             if analysis.retries > 0:
                 c.print(f"  [dim]│[/dim] [yellow]retries: {analysis.retries}[/yellow]")
 
         # Warnings
         if analysis.warnings:
-            c.print(f"  [dim]│[/dim]")
-            c.print(f"  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
+            c.print("  [dim]│[/dim]")
+            c.print("  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
             for warning in analysis.warnings[:3]:
                 c.print(f"  [dim]│[/dim]   • {warning}")
 
-        c.print(f"  [dim]│[/dim]")
+        c.print("  [dim]│[/dim]")
         c.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py generated")
         c.print()  # Blank line after orchestrator
 

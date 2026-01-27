@@ -2,9 +2,6 @@
 Tests for the PatchGenerator diagnostic module.
 """
 
-import pytest
-from pathlib import Path
-
 from devdox_ai_locust.utils.patch_generator import PatchGenerator
 
 
@@ -45,6 +42,7 @@ class TestPatchGeneratorSession:
 
         # Verify the timestamp format is in the path (YYYYMMDD_HHMMSS)
         import re
+
         timestamp_pattern = r"\d{8}_\d{6}"
         assert re.search(timestamp_pattern, str(session_dir)) is not None
 
@@ -125,7 +123,9 @@ class TestPatchGeneratorPreLLM:
         pg = PatchGenerator(temp_dir)
         pg.start_session()
 
-        base_files = {"locustfile.py": "# Main locust file\nfrom locust import HttpUser"}
+        base_files = {
+            "locustfile.py": "# Main locust file\nfrom locust import HttpUser"
+        }
         directory_files = []
 
         patch_path = pg.save_pre_llm_patch(base_files, directory_files)
@@ -155,9 +155,7 @@ class TestPatchGeneratorPreLLM:
         pg.start_session()
 
         base_files = {"locustfile.py": "# main"}
-        directory_files = [
-            {"users_workflow.py": "# users workflow content"}
-        ]
+        directory_files = [{"users_workflow.py": "# users workflow content"}]
 
         patch_path = pg.save_pre_llm_patch(base_files, directory_files)
         content = patch_path.read_text()
@@ -184,9 +182,7 @@ class TestPatchGeneratorPostLLM:
         pre_files = {"locustfile.py": "# original"}
         post_files = {"locustfile.py": "# enhanced"}
 
-        patch_path = pg.save_post_llm_patch(
-            pre_files, post_files, [], []
-        )
+        patch_path = pg.save_post_llm_patch(pre_files, post_files, [], [])
 
         assert patch_path is not None
         assert patch_path.exists()
@@ -200,9 +196,7 @@ class TestPatchGeneratorPostLLM:
         pre_files = {"locustfile.py": "# original\n"}
         post_files = {"locustfile.py": "# enhanced by LLM\n"}
 
-        patch_path = pg.save_post_llm_patch(
-            pre_files, post_files, [], []
-        )
+        patch_path = pg.save_post_llm_patch(pre_files, post_files, [], [])
         content = patch_path.read_text()
 
         assert "POST_LLM" in content
@@ -217,9 +211,7 @@ class TestPatchGeneratorPostLLM:
         pre_files = {"unchanged.py": "same content"}
         post_files = {"unchanged.py": "same content"}
 
-        patch_path = pg.save_post_llm_patch(
-            pre_files, post_files, [], []
-        )
+        patch_path = pg.save_post_llm_patch(pre_files, post_files, [], [])
         content = patch_path.read_text()
 
         # Unchanged file should not appear in diff body
@@ -234,9 +226,7 @@ class TestPatchGeneratorPostLLM:
         pre_files = {}
         post_files = {"new_file.py": "# new content"}
 
-        patch_path = pg.save_post_llm_patch(
-            pre_files, post_files, [], []
-        )
+        patch_path = pg.save_post_llm_patch(pre_files, post_files, [], [])
         content = patch_path.read_text()
 
         assert "new_file.py" in content
@@ -249,9 +239,7 @@ class TestPatchGeneratorPostLLM:
         pre_workflows = [{"users_workflow.py": "# original"}]
         post_workflows = [{"users_workflow.py": "# enhanced"}]
 
-        patch_path = pg.save_post_llm_patch(
-            {}, {}, pre_workflows, post_workflows
-        )
+        patch_path = pg.save_post_llm_patch({}, {}, pre_workflows, post_workflows)
         content = patch_path.read_text()
 
         assert "workflows/users_workflow.py" in content
@@ -309,10 +297,7 @@ class TestPatchGeneratorHelpers:
         pg = PatchGenerator(temp_dir)
 
         patch = pg._create_file_patch(
-            "test.py",
-            "old content\n",
-            "new content\n",
-            "test"
+            "test.py", "old content\n", "new content\n", "test"
         )
 
         assert "-old content" in patch
@@ -350,12 +335,13 @@ class TestPatchGeneratorIntegration:
             "locustfile.py": "from locust import HttpUser, task, between\nimport random\n\nclass APIUser(HttpUser):\n    wait_time = between(1, 3)\n    \n    @task\n    def test_users(self):\n        self.client.get('/users')\n"
         }
         enhanced_directory = [
-            {"users_workflow.py": "# Enhanced Users workflow\nclass UsersWorkflow:\n    def create_user(self):\n        pass\n"}
+            {
+                "users_workflow.py": "# Enhanced Users workflow\nclass UsersWorkflow:\n    def create_user(self):\n        pass\n"
+            }
         ]
 
         post_patch = pg.save_post_llm_patch(
-            base_files, enhanced_files,
-            directory_files, enhanced_directory
+            base_files, enhanced_files, directory_files, enhanced_directory
         )
         assert post_patch.exists()
 

@@ -3,7 +3,6 @@ import sys
 import asyncio
 import aiofiles
 import logging
-import traceback
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Union, List, Dict, Any, TextIO
@@ -142,7 +141,11 @@ def _display_configuration(
     table.add_row("Run Time", run_time)
     table.add_row("LLM Timeout", f"{timeout}s")
     if custom_requirement:
-        req_display = custom_requirement[:80] + "..." if len(custom_requirement) > 80 else custom_requirement
+        req_display = (
+            custom_requirement[:80] + "..."
+            if len(custom_requirement) > 80
+            else custom_requirement
+        )
         table.add_row("Custom Req", req_display)
     if dry_run:
         table.add_row("Mode", "[yellow]DRY RUN[/yellow]")
@@ -232,7 +235,7 @@ async def _process_api_schema(
     api_schema = None
 
     # Fetch API schema
-    source_type = 'URL' if swagger_url.startswith(('http://', 'https://')) else 'file'
+    source_type = "URL" if swagger_url.startswith(("http://", "https://")) else "file"
     console.print(f"→ Fetching API schema from {source_type}...")
     try:
         async with asyncio.timeout(schema_timeout):
@@ -243,8 +246,12 @@ async def _process_api_schema(
                 sys.exit(1)
 
     except asyncio.TimeoutError:
-        console.print(f"[red]✗[/red] Timeout while fetching API schema (exceeded {schema_timeout}s)")
-        console.print("[dim]Hint: Use --schema-timeout to increase the timeout for large schemas[/dim]")
+        console.print(
+            f"[red]✗[/red] Timeout while fetching API schema (exceeded {schema_timeout}s)"
+        )
+        console.print(
+            "[dim]Hint: Use --schema-timeout to increase the timeout for large schemas[/dim]"
+        )
         sys.exit(1)
     except Exception as e:
         console.print(f"[red]✗[/red] Error fetching API schema: {e}")
@@ -265,7 +272,7 @@ async def _process_api_schema(
         endpoints = parser.parse_endpoints()
         api_info = parser.get_schema_info()
 
-        api_title = api_info.get('title', 'API')
+        api_title = api_info.get("title", "API")
         console.print(
             f"[green]✓[/green] Loaded [bold]{api_title}[/bold] — {len(endpoints)} endpoints"
         )
@@ -361,7 +368,7 @@ async def _generate_scenario_based_tests(
     # Get generation metrics
     time_estimate = scenario_gen.estimate_time(num_endpoints)
 
-    console.print(f"\n[bold]→ Generation Plan[/bold]")
+    console.print("\n[bold]→ Generation Plan[/bold]")
     console.print(f"  Model: [cyan]{ai_config.model}[/cyan]")
     console.print(f"  Concurrency: {scenario_gen.current_concurrency} workers")
     console.print(f"  Endpoints: {num_endpoints} across {num_tags} tags")
@@ -397,9 +404,11 @@ async def _generate_scenario_based_tests(
     # TODO: Auth endpoint detection is overly broad - matches any path containing
     # "auth", "login", "token", or "session" as substrings (e.g. "/authorization-codes",
     # "/reset-session-timer"). Consider using OpenAPI security schemes instead.
-    auth_endpoints = [ep for ep in endpoints if any(
-        kw in ep.path.lower() for kw in ["auth", "login", "token", "session"]
-    )]
+    auth_endpoints = [
+        ep
+        for ep in endpoints
+        if any(kw in ep.path.lower() for kw in ["auth", "login", "token", "session"])
+    ]
 
     created_files: List[Dict[str, Any]] = []
     failed_endpoints: List[Dict[str, Any]] = []  # Track failures
@@ -408,6 +417,7 @@ async def _generate_scenario_based_tests(
     # Clean previous workflow files to prevent stale/broken files from prior runs
     if workflows_dir.exists():
         import shutil
+
         shutil.rmtree(workflows_dir)
         logger.info("Cleaned previous workflow files")
     workflows_dir.mkdir(parents=True, exist_ok=True)
@@ -419,9 +429,16 @@ async def _generate_scenario_based_tests(
     # Helper to sanitize directory names
     def sanitize_dir_name(name: str) -> str:
         import re
-        name = name.lower().replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
-        name = re.sub(r'[^a-z0-9_]', '', name)
-        name = re.sub(r'_+', '_', name).strip('_')
+
+        name = (
+            name.lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+            .replace(".", "_")
+            .replace("/", "_")
+        )
+        name = re.sub(r"[^a-z0-9_]", "", name)
+        name = re.sub(r"_+", "_", name).strip("_")
         return name or "unnamed"
 
     # Helper to convert to PascalCase class name
@@ -442,8 +459,7 @@ async def _generate_scenario_based_tests(
         task_method = template_gen._generate_task_method(endpoint)
         # Indent task method for class body (4 spaces)
         indented_task = "\n".join(
-            f"    {line}" if line.strip() else line
-            for line in task_method.split("\n")
+            f"    {line}" if line.strip() else line for line in task_method.split("\n")
         )
 
         return f'''"""
@@ -472,12 +488,14 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     try:
         for endpoint in endpoints:
             for scenario_type in scenario_types:
-                pre_llm_templates[(id(endpoint), scenario_type)] = generate_pre_llm_workflow(
-                    endpoint, scenario_type
+                pre_llm_templates[(id(endpoint), scenario_type)] = (
+                    generate_pre_llm_workflow(endpoint, scenario_type)
                 )
     except Exception as e:
-        console.print(f"[bold red]CRITICAL ERROR: Failed to generate base templates[/bold red]")
-        console.print(f"[red]This indicates a bug or corrupted installation.[/red]")
+        console.print(
+            "[bold red]CRITICAL ERROR: Failed to generate base templates[/bold red]"
+        )
+        console.print("[red]This indicates a bug or corrupted installation.[/red]")
         console.print(f"[red]Error: {e}[/red]")
         logger.error(f"Pre-LLM template generation failed: {e}", exc_info=True)
         sys.exit(1)
@@ -495,6 +513,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 
     # Live progress display
     from devdox_ai_locust.utils.generation_progress import GenerationProgress
+
     num_workers = scenario_gen.current_concurrency
     progress = GenerationProgress(
         total=num_endpoints,
@@ -537,15 +556,17 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                 if content:
                     filename = scenario_gen.SCENARIO_FILES[scenario_type]
                     file_path = endpoint_dir / filename
-                    async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                    async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
                         await f.write(content)
-                    local_files.append({
-                        "path": str(file_path),
-                        "size": len(content),
-                        "tag": tag_name,
-                        "operation_id": operation_id,
-                        "scenario": scenario_type.value,
-                    })
+                    local_files.append(
+                        {
+                            "path": str(file_path),
+                            "size": len(content),
+                            "tag": tag_name,
+                            "operation_id": operation_id,
+                            "scenario": scenario_type.value,
+                        }
+                    )
 
             # Update progress (success)
             async with file_write_lock:
@@ -559,20 +580,22 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         except Exception as e:
             # Save failed code to failures directory for debugging
             saved_failure_path = None
-            if hasattr(e, 'code') and e.code:
+            if hasattr(e, "code") and e.code:
                 failures_dir = workflows_dir / ".failures"
                 failures_dir.mkdir(parents=True, exist_ok=True)
-                failure_filename = f"{operation_id}_{getattr(e, 'scenario_type', 'unknown')}.py"
+                failure_filename = (
+                    f"{operation_id}_{getattr(e, 'scenario_type', 'unknown')}.py"
+                )
                 failure_path = failures_dir / failure_filename
                 try:
-                    async with aiofiles.open(failure_path, 'w', encoding='utf-8') as f:
+                    async with aiofiles.open(failure_path, "w", encoding="utf-8") as f:
                         # Add error info as comment at top
-                        error_header = f'''# FAILED CODE - {endpoint_info}
+                        error_header = f"""# FAILED CODE - {endpoint_info}
 # Error: {getattr(e, 'error', str(e))}
 # Scenario: {getattr(e, 'scenario_type', 'unknown')}
 # ─────────────────────────────────────────────────────────
 
-'''
+"""
                         await f.write(error_header + e.code)
                     saved_failure_path = str(failure_path)
                     logger.debug(f"Saved failed code to {failure_path}")
@@ -582,39 +605,46 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             # Use pre-generated pre-LLM templates as fallback
             fallback_files = []
             for scenario_type in ["positive", "negative", "security"]:
-                fallback_content = pre_llm_templates.get((id(endpoint), scenario_type), "")
+                fallback_content = pre_llm_templates.get(
+                    (id(endpoint), scenario_type), ""
+                )
                 if not fallback_content:
-                    fallback_content = generate_pre_llm_workflow(endpoint, scenario_type)
+                    fallback_content = generate_pre_llm_workflow(
+                        endpoint, scenario_type
+                    )
                 filename = f"{scenario_type}_workflow.py"
                 file_path = endpoint_dir / filename
                 try:
-                    async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                    async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
                         await f.write(fallback_content)
-                    fallback_files.append({
-                        "path": str(file_path),
-                        "size": len(fallback_content),
-                        "tag": tag_name,
-                        "operation_id": operation_id,
-                        "scenario": scenario_type,
-                        "fallback": True,
-                    })
+                    fallback_files.append(
+                        {
+                            "path": str(file_path),
+                            "size": len(fallback_content),
+                            "tag": tag_name,
+                            "operation_id": operation_id,
+                            "scenario": scenario_type,
+                            "fallback": True,
+                        }
+                    )
                 except Exception as write_error:
-                    logger.error(f"Failed to write fallback file {file_path}: {write_error}")
+                    logger.error(
+                        f"Failed to write fallback file {file_path}: {write_error}"
+                    )
 
             async with file_write_lock:
                 failed_count += 1
-                failed_endpoints.append({
-                    "endpoint": endpoint_info,
-                    "operation_id": operation_id,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "saved_code": saved_failure_path,
-                })
+                failed_endpoints.append(
+                    {
+                        "endpoint": endpoint_info,
+                        "operation_id": operation_id,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "saved_code": saved_failure_path,
+                    }
+                )
                 created_files.extend(fallback_files)
 
-            # Pass detailed error info to progress
-            error_code = getattr(e, 'code', None)
-            error_msg = getattr(e, 'error', str(e))
             progress.endpoint_failed(endpoint_info, e)
             return fallback_files
 
@@ -654,52 +684,66 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             # Save orchestrator file (ensure directory exists as safety net)
             tag_dir.mkdir(parents=True, exist_ok=True)
             orchestrator_path = tag_dir / "orchestrator_workflow.py"
-            async with aiofiles.open(orchestrator_path, 'w', encoding='utf-8') as f:
+            async with aiofiles.open(orchestrator_path, "w", encoding="utf-8") as f:
                 await f.write(orchestrator_code)
-            orchestrator_files.append({
-                "path": str(orchestrator_path),
-                "size": len(orchestrator_code),
-                "tag": tag_name,
-            })
+            orchestrator_files.append(
+                {
+                    "path": str(orchestrator_path),
+                    "size": len(orchestrator_code),
+                    "tag": tag_name,
+                }
+            )
             progress.orchestrator_done(tag_dir_name)
 
         except Exception as e:
-            orchestrator_failures.append({
-                "tag": tag_name,
-                "error": str(e),
-            })
+            orchestrator_failures.append(
+                {
+                    "tag": tag_name,
+                    "error": str(e),
+                }
+            )
             progress.orchestrator_failed(tag_dir_name, e)
 
     created_files.extend(orchestrator_files)
 
     if orchestrator_failures:
-        console.print(f"[yellow]⚠[/yellow] Orchestrators: {len(orchestrator_files)}/{num_tags} succeeded")
+        console.print(
+            f"[yellow]⚠[/yellow] Orchestrators: {len(orchestrator_files)}/{num_tags} succeeded"
+        )
     else:
         console.print(f"[green]✓[/green] All {num_tags} orchestrators generated")
 
     # Show summary
     rate_info = scenario_gen.get_rate_limit_info()
-    console.print(f"\n[dim]Final rate limit: {rate_info.requests_per_minute} RPM, "
-                  f"Concurrency used: {scenario_gen.current_concurrency}[/dim]")
+    console.print(
+        f"\n[dim]Final rate limit: {rate_info.requests_per_minute} RPM, "
+        f"Concurrency used: {scenario_gen.current_concurrency}[/dim]"
+    )
 
     # Report results
     if failed_endpoints:
-        console.print(f"\n[bold yellow]⚠ Generation completed with {failed_count} failures[/bold yellow]")
-        console.print(f"   [green]✓ Succeeded:[/green] {completed_count}/{num_endpoints}")
+        console.print(
+            f"\n[bold yellow]⚠ Generation completed with {failed_count} failures[/bold yellow]"
+        )
+        console.print(
+            f"   [green]✓ Succeeded:[/green] {completed_count}/{num_endpoints}"
+        )
         console.print(f"   [red]✗ Failed:[/red] {failed_count}/{num_endpoints}")
 
         # Show failure details
-        console.print(f"\n[bold red]Failed Endpoints:[/bold red]")
+        console.print("\n[bold red]Failed Endpoints:[/bold red]")
         for failure in failed_endpoints[:10]:  # Show first 10
             console.print(f"   • {failure.get('endpoint', 'unknown')}")
-            error_msg = failure.get('error', 'Unknown error') or 'Unknown error'
-            error_type = failure.get('error_type', 'Error')
+            error_msg = failure.get("error", "Unknown error") or "Unknown error"
+            error_type = failure.get("error_type", "Error")
             console.print(f"     [dim]{error_type}: {error_msg[:200]}[/dim]")
 
         if len(failed_endpoints) > 10:
             console.print(f"   ... and {len(failed_endpoints) - 10} more failures")
     else:
-        console.print(f"\n[bold green]✓ All {num_endpoints} endpoints generated successfully[/bold green]")
+        console.print(
+            f"\n[bold green]✓ All {num_endpoints} endpoints generated successfully[/bold green]"
+        )
 
     # Generate __init__.py files for each tag directory to enable imports
     console.print("→ Creating workflow __init__.py files...")
@@ -709,7 +753,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     for tag_name in grouped_endpoints.keys():
         tag_dir_name = sanitize_dir_name(tag_name)
         tag_imports.append(f"from .{tag_dir_name} import *")
-    workflows_init.write_text("\n".join(tag_imports) + "\n", encoding='utf-8')
+    workflows_init.write_text("\n".join(tag_imports) + "\n", encoding="utf-8")
 
     # Create __init__.py for each tag directory
     # Only import workflows that actually exist (handles partial failures gracefully)
@@ -737,7 +781,7 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
                     f"from .orchestrator_workflow import {orchestrator_class}"
                 )
             tag_init = tag_dir / "__init__.py"
-            tag_init.write_text("\n".join(init_lines) + "\n", encoding='utf-8')
+            tag_init.write_text("\n".join(init_lines) + "\n", encoding="utf-8")
     console.print("[green]✓[/green] Workflow __init__.py files created")
 
     # Write base files
@@ -748,11 +792,13 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             file_path = workflows_dir / filename
         else:
             file_path = output_dir / filename
-        file_path.write_text(content, encoding='utf-8')
-        created_files.append({
-            "path": str(file_path),
-            "size": len(content),
-        })
+        file_path.write_text(content, encoding="utf-8")
+        created_files.append(
+            {
+                "path": str(file_path),
+                "size": len(content),
+            }
+        )
     console.print(f"[green]✓[/green] Base files created ({len(base_files)} files)")
 
     return created_files
@@ -923,23 +969,27 @@ async def _async_generate(
         debug_recorder = DebugRecorder(output_dir, enabled=debug)
 
         if debug:
-            console.print("[blue]🔍 Debug mode enabled[/blue] - recording intermediate states")
+            console.print(
+                "[blue]🔍 Debug mode enabled[/blue] - recording intermediate states"
+            )
             # Record CLI args
-            debug_recorder.record_cli_args({
-                "swagger_url": swagger_url,
-                "output": str(output_dir),
-                "users": users,
-                "spawn_rate": spawn_rate,
-                "run_time": run_time,
-                "host": host,
-                "auth": auth,
-                "db_type": db_type,
-                "dry_run": dry_run,
-                "custom_requirement": custom_requirement,
-                "timeout": timeout,
-                "schema_timeout": schema_timeout,
-                "max_llm_workers": max_llm_workers,
-            })
+            debug_recorder.record_cli_args(
+                {
+                    "swagger_url": swagger_url,
+                    "output": str(output_dir),
+                    "users": users,
+                    "spawn_rate": spawn_rate,
+                    "run_time": run_time,
+                    "host": host,
+                    "auth": auth,
+                    "db_type": db_type,
+                    "dry_run": dry_run,
+                    "custom_requirement": custom_requirement,
+                    "timeout": timeout,
+                    "schema_timeout": schema_timeout,
+                    "max_llm_workers": max_llm_workers,
+                }
+            )
 
         # Display configuration
         _display_configuration(
@@ -965,14 +1015,16 @@ async def _async_generate(
         if debug:
             debug_recorder.record_openapi_raw(raw_schema)
             debug_recorder.record_openapi_parsed(endpoints, api_info)
-            debug_recorder.record_resolved_config({
-                "api_info": api_info,
-                "host": host,
-                "auth": auth,
-                "db_type": db_type,
-                "timeout": timeout,
-                "custom_requirement": custom_requirement,
-            })
+            debug_recorder.record_resolved_config(
+                {
+                    "api_info": api_info,
+                    "host": host,
+                    "auth": auth,
+                    "db_type": db_type,
+                    "timeout": timeout,
+                    "custom_requirement": custom_requirement,
+                }
+            )
 
         created_files = await _generate_and_create_tests(
             api_key,
@@ -992,7 +1044,9 @@ async def _async_generate(
         # Finalize debug recording
         if debug:
             await debug_recorder.finalize()
-            console.print(f"[blue]🔍 Debug info saved to:[/blue] {debug_recorder.debug_root}")
+            console.print(
+                f"[blue]🔍 Debug info saved to:[/blue] {debug_recorder.debug_root}"
+            )
 
         # Show results
         _show_results(
@@ -1088,7 +1142,9 @@ def run(
         return_code = process.wait()
 
         if return_code != 0:
-            console.print(f"[red]Test execution failed with exit code {return_code}[/red]")
+            console.print(
+                f"[red]Test execution failed with exit code {return_code}[/red]"
+            )
             sys.exit(return_code)
 
     except FileNotFoundError:

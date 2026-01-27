@@ -8,6 +8,7 @@ file states at two stages:
 
 This helps diagnose whether bugs originate from templates or LLM enhancements.
 """
+
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -69,11 +70,13 @@ class PatchGenerator:
             file_name: Name of the file being enhanced.
             prompt: The full prompt sent to the LLM.
         """
-        self.prompts.append({
-            "file": file_name,
-            "prompt": prompt,
-            "timestamp": datetime.now().isoformat()
-        })
+        self.prompts.append(
+            {
+                "file": file_name,
+                "prompt": prompt,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
     def save_prompts_log(self) -> Optional[Path]:
         """
@@ -99,7 +102,7 @@ class PatchGenerator:
             content_lines.append(f"File: {entry['file']}")
             content_lines.append(f"Timestamp: {entry['timestamp']}")
             content_lines.append(f"{'=' * 80}")
-            content_lines.append(entry['prompt'])
+            content_lines.append(entry["prompt"])
             content_lines.append("")
             content_lines.append("")
 
@@ -108,9 +111,7 @@ class PatchGenerator:
         return prompts_path
 
     def save_pre_llm_patch(
-        self,
-        base_files: Dict[str, str],
-        directory_files: List[Dict[str, Any]]
+        self, base_files: Dict[str, str], directory_files: List[Dict[str, Any]]
     ) -> Optional[Path]:
         """
         Save patch representing template-generated files (pre-LLM).
@@ -143,7 +144,7 @@ class PatchGenerator:
         pre_files: Dict[str, str],
         post_files: Dict[str, str],
         pre_directory_files: List[Dict[str, Any]],
-        post_directory_files: List[Dict[str, Any]]
+        post_directory_files: List[Dict[str, Any]],
     ) -> Optional[Path]:
         """
         Save patch showing changes made by LLM (post-LLM vs pre-LLM).
@@ -165,9 +166,11 @@ class PatchGenerator:
             return None
 
         patch_content = self._generate_diff_patch(
-            pre_files, post_files,
-            pre_directory_files, post_directory_files,
-            label="post_llm"
+            pre_files,
+            post_files,
+            pre_directory_files,
+            post_directory_files,
+            label="post_llm",
         )
 
         patch_path = self.session_dir / "post_llm.patch"
@@ -179,7 +182,7 @@ class PatchGenerator:
         self,
         base_files: Dict[str, str],
         directory_files: List[Dict[str, Any]],
-        label: str
+        label: str,
     ) -> str:
         """
         Generate a patch showing file creation (from nothing to content).
@@ -218,7 +221,7 @@ class PatchGenerator:
         post_files: Dict[str, str],
         pre_directory_files: List[Dict[str, Any]],
         post_directory_files: List[Dict[str, Any]],
-        label: str
+        label: str,
     ) -> str:
         """
         Generate a patch showing differences between pre and post LLM.
@@ -289,11 +292,7 @@ class PatchGenerator:
         return result
 
     def _create_file_patch(
-        self,
-        filename: str,
-        old_content: str,
-        new_content: str,
-        label: str
+        self, filename: str, old_content: str, new_content: str, label: str
     ) -> str:
         """
         Create a unified diff patch for a single file.
@@ -311,17 +310,17 @@ class PatchGenerator:
         new_lines = new_content.splitlines(keepends=True)
 
         # Ensure lines end with newline for proper diff formatting
-        if old_lines and not old_lines[-1].endswith('\n'):
-            old_lines[-1] += '\n'
-        if new_lines and not new_lines[-1].endswith('\n'):
-            new_lines[-1] += '\n'
+        if old_lines and not old_lines[-1].endswith("\n"):
+            old_lines[-1] += "\n"
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
 
         diff = difflib.unified_diff(
             old_lines,
             new_lines,
             fromfile=f"a/{filename}",
             tofile=f"b/{filename}",
-            lineterm=""
+            lineterm="",
         )
 
         return "".join(diff)

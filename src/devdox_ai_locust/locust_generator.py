@@ -113,14 +113,17 @@ class LocustTestGenerator:
     def _sanitize_identifier(self, name: str) -> str:
         """Sanitize string to be a valid Python identifier"""
         import re
+
         # Replace common separators with underscores
-        name = name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
+        name = (
+            name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
+        )
         # Remove any remaining non-alphanumeric chars (except underscore)
-        name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+        name = re.sub(r"[^a-zA-Z0-9_]", "", name)
         # Remove consecutive underscores
-        name = re.sub(r'_+', '_', name)
+        name = re.sub(r"_+", "_", name)
         # Remove leading/trailing underscores
-        name = name.strip('_')
+        name = name.strip("_")
         # Ensure doesn't start with a number
         if name and name[0].isdigit():
             name = f"n{name}"
@@ -186,7 +189,9 @@ class LocustTestGenerator:
                 "locustfile.py": self._generate_main_locustfile(
                     endpoints, api_info, list(grouped_enpoint.keys())
                 ),
-                "base_workflow.py": self.generate_base_common_file(api_info, total_endpoints=len(endpoints)),
+                "base_workflow.py": self.generate_base_common_file(
+                    api_info, total_endpoints=len(endpoints)
+                ),
                 "test_data.py": self._generate_test_data_file(db_type),
                 "config.py": self._generate_config_file(api_info),
                 "utils.py": self._generate_utils_file(),
@@ -253,7 +258,11 @@ class LocustTestGenerator:
 
             total_ep_count = sum(len(v) for v in endpoints.values())
             workflows.append(
-                {"base_workflow.py": self.generate_base_common_file(api_info, total_endpoints=total_ep_count)}
+                {
+                    "base_workflow.py": self.generate_base_common_file(
+                        api_info, total_endpoints=total_ep_count
+                    )
+                }
             )
 
             return workflows
@@ -264,11 +273,18 @@ class LocustTestGenerator:
             return []
 
     def _build_endpoint_template(
-        self, api_info: Dict[str, Any], task_methods_content: str, group: str, class_name: str
+        self,
+        api_info: Dict[str, Any],
+        task_methods_content: str,
+        group: str,
+        class_name: str,
     ) -> str:
         template = self.jinja_env.get_template("endpoint_template.py.j2")
         return template.render(
-            api_info=api_info, group=group, class_name=class_name, task_methods_content=task_methods_content
+            api_info=api_info,
+            group=group,
+            class_name=class_name,
+            task_methods_content=task_methods_content,
         )
 
     def _generate_main_locustfile(
@@ -356,9 +372,7 @@ class LocustTestGenerator:
     ) -> str:
         # Import all workflows from the workflows package (uses __init__.py exports)
         import_group_tasks = "from workflows import *  # Imports all workflow classes\n"
-        # Tasks will be empty since workflows are imported via __init__.py
-        # The actual task classes are defined in the per-endpoint workflow files
-        tasks = []
+        # Tasks are loaded dynamically from workflow imports
         tasks_str = "[]  # Tasks are loaded dynamically from workflow imports"
         template = self.jinja_env.get_template("locust.py.j2")
 
@@ -438,7 +452,9 @@ def {method_name}(self):
             return task_method
 
         except Exception as e:
-            logger.error(f"Failed to generate task method for {endpoint.method} {endpoint.path}: {e}")
+            logger.error(
+                f"Failed to generate task method for {endpoint.method} {endpoint.path}: {e}"
+            )
             return ""
 
     def _generate_method_name(self, endpoint: Endpoint) -> str:
@@ -483,10 +499,14 @@ def {method_name}(self):
         code_lines = []
         for param in path_params:
             if param.type.startswith("integer"):
-                code_lines.append(f"{param.name} = test_data_generator.generate_integer()")
+                code_lines.append(
+                    f"{param.name} = test_data_generator.generate_integer()"
+                )
             elif param.type == "string":
                 if "id" in param.name.lower():
-                    code_lines.append(f"{param.name} = test_data_generator.generate_id()")
+                    code_lines.append(
+                        f"{param.name} = test_data_generator.generate_id()"
+                    )
                 else:
                     code_lines.append(
                         f"{param.name} = test_data_generator.generate_string()"
@@ -530,12 +550,16 @@ def {method_name}(self):
     def _generate_integer_param(self, param: Parameter) -> str:
         """Generate integer parameter line"""
         default = param.default if param.default is not None else "None"
-        return f'"{param.name}": test_data_generator.generate_integer(default={default}),'
+        return (
+            f'"{param.name}": test_data_generator.generate_integer(default={default}),'
+        )
 
     def _generate_string_param(self, param: Parameter) -> str:
         """Generate string parameter line"""
         default = f'"{param.default}"' if param.default else "None"
-        return f'"{param.name}": test_data_generator.generate_string(default={default}),'
+        return (
+            f'"{param.name}": test_data_generator.generate_string(default={default}),'
+        )
 
     def _generate_boolean_param(self, param: Parameter) -> str:
         """Generate boolean parameter line"""
@@ -790,6 +814,8 @@ def {method_name}(self):
             logger.error(f"Error generating README: {e}")
             return ""
 
-    def generate_base_common_file(self, api_info: Dict[str, Any], total_endpoints: int = 0) -> str:
+    def generate_base_common_file(
+        self, api_info: Dict[str, Any], total_endpoints: int = 0
+    ) -> str:
         template = self.jinja_env.get_template("base_workflow.py.j2")
         return template.render(api_info=api_info, total_endpoints=total_endpoints)

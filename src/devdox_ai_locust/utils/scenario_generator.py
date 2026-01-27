@@ -24,10 +24,7 @@ if TYPE_CHECKING:
     from devdox_ai_locust.utils.generation_progress import (
         GenerationProgress,
         EndpointAnalysis,
-        SchemaAnalysis,
-        SetupAnalysis,
-        InjectionAnalysis,
-        ScenarioResult,
+        OrchestratorAnalysis,
     )
 
 logger = logging.getLogger(__name__)
@@ -35,12 +32,16 @@ logger = logging.getLogger(__name__)
 
 class ScenarioGenerationError(Exception):
     """Raised when scenario generation fails"""
+
     pass
 
 
 class CodeValidationError(ScenarioGenerationError):
     """Raised when generated code fails syntax validation"""
-    def __init__(self, scenario_type: str, error: str, code: str, endpoint_info: str = ""):
+
+    def __init__(
+        self, scenario_type: str, error: str, code: str, endpoint_info: str = ""
+    ):
         self.scenario_type = scenario_type
         self.error = error
         self.code = code
@@ -54,19 +55,22 @@ class CodeValidationError(ScenarioGenerationError):
 
 class AIServiceError(ScenarioGenerationError):
     """Raised when AI service fails after all retries"""
+
     pass
 
 
 class ScenarioType(Enum):
     """Types of test scenarios (all LLM-generated)"""
-    POSITIVE = "positive"      # Happy path + state-dependent tests
-    NEGATIVE = "negative"      # Validation errors + edge cases + error handling
-    SECURITY = "security"      # Injection attacks + auth bypass
+
+    POSITIVE = "positive"  # Happy path + state-dependent tests
+    NEGATIVE = "negative"  # Validation errors + edge cases + error handling
+    SECURITY = "security"  # Injection attacks + auth bypass
 
 
 @dataclass
 class RateLimitInfo:
     """Rate limit information from API response"""
+
     requests_per_second: int
     requests_per_minute: int
     remaining: int
@@ -109,6 +113,7 @@ class RateLimitInfo:
 @dataclass
 class TimeEstimate:
     """Time estimate for generation"""
+
     total_calls: int
     rpm: int
     estimated_minutes: float
@@ -203,7 +208,9 @@ class ScenarioWorkflowGenerator:
         new_concurrency = max(2, optimal)  # Never go below 2
 
         if new_concurrency != self._current_concurrency:
-            logger.info(f"Adjusting concurrency: {self._current_concurrency} → {new_concurrency} (based on {rpm} RPM)")
+            logger.info(
+                f"Adjusting concurrency: {self._current_concurrency} → {new_concurrency} (based on {rpm} RPM)"
+            )
             self._current_concurrency = new_concurrency
             self._api_semaphore = asyncio.Semaphore(new_concurrency)
 
@@ -294,8 +301,12 @@ class ScenarioWorkflowGenerator:
         results: Dict[str, Dict[ScenarioType, str]] = {}
 
         # Create tasks for all endpoints
-        async def process_endpoint(endpoint: Any) -> Tuple[str, Dict[ScenarioType, str]]:
-            operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        async def process_endpoint(
+            endpoint: Any,
+        ) -> Tuple[str, Dict[ScenarioType, str]]:
+            operation_id = getattr(
+                endpoint, "operation_id", ""
+            ) or self._generate_operation_id(endpoint)
             scenarios = await self.generate_endpoint_workflows(
                 endpoint=endpoint,
                 base_workflow_content=base_workflow_content,
@@ -383,7 +394,10 @@ class ScenarioWorkflowGenerator:
                 errors.append((scenario_type, result))
                 # Record failure in verbose mode
                 if self.progress and self.progress.verbose:
-                    from devdox_ai_locust.utils.generation_progress import ScenarioResult
+                    from devdox_ai_locust.utils.generation_progress import (
+                        ScenarioResult,
+                    )
+
                     self.progress.record_scenario_result(
                         endpoint_info,
                         scenario_type.value,
@@ -391,20 +405,23 @@ class ScenarioWorkflowGenerator:
                             scenario_type=scenario_type.value,
                             status="failed",
                             skip_reason=str(result)[:100],
-                        )
+                        ),
                     )
             elif result is not None:
                 results[scenario_type] = result
                 # Record success in verbose mode
                 if self.progress and self.progress.verbose:
-                    from devdox_ai_locust.utils.generation_progress import ScenarioResult
+                    from devdox_ai_locust.utils.generation_progress import (
+                        ScenarioResult,
+                    )
+
                     self.progress.record_scenario_result(
                         endpoint_info,
                         scenario_type.value,
                         ScenarioResult(
                             scenario_type=scenario_type.value,
                             status="success",
-                        )
+                        ),
                     )
 
         # If there are errors but also successes, return partial results
@@ -441,8 +458,9 @@ class ScenarioWorkflowGenerator:
             InjectionAnalysis,
         )
 
-        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
-        endpoint_info = f"{endpoint.method} {endpoint.path}"
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
 
         # Extract responses from spec
         responses_defined = self._extract_expected_status_codes(endpoint)
@@ -471,7 +489,9 @@ class ScenarioWorkflowGenerator:
                 discriminator = schema.get("discriminator", {})
                 if one_of and discriminator:
                     schema_analysis.schema_type = "discriminated_union"
-                    schema_analysis.discriminator = discriminator.get("propertyName", "")
+                    schema_analysis.discriminator = discriminator.get(
+                        "propertyName", ""
+                    )
                     mapping = discriminator.get("mapping", {})
                     schema_analysis.variants = list(mapping.keys()) if mapping else []
 
@@ -519,10 +539,15 @@ class ScenarioWorkflowGenerator:
                 injection_analysis.injection_locations.append("body")
             if hasattr(endpoint, "parameters") and endpoint.parameters:
                 for param in endpoint.parameters:
-                    loc = getattr(param, "location", None) or getattr(param, "in_", "query")
+                    loc = getattr(param, "location", None) or getattr(
+                        param, "in_", "query"
+                    )
                     if hasattr(loc, "value"):
                         loc = loc.value
-                    if loc == "query" and "query" not in injection_analysis.injection_locations:
+                    if (
+                        loc == "query"
+                        and "query" not in injection_analysis.injection_locations
+                    ):
                         injection_analysis.injection_locations.append("query")
 
         # Pre-computed fields
@@ -592,7 +617,9 @@ class ScenarioWorkflowGenerator:
         # Build endpoint info list
         endpoints_info = []
         for ep in tag_endpoints:
-            operation_id = getattr(ep, "operation_id", "") or self._generate_operation_id(ep)
+            operation_id = getattr(
+                ep, "operation_id", ""
+            ) or self._generate_operation_id(ep)
             ep_info = OrchestratorEndpointInfo(
                 method=ep.method.upper(),
                 path=ep.path,
@@ -639,7 +666,9 @@ class ScenarioWorkflowGenerator:
         if not has_create:
             warnings.append("No POST endpoint - create operations not possible")
         if not crud_lifecycle_possible:
-            warnings.append("Full CRUD lifecycle not possible - missing some operations")
+            warnings.append(
+                "Full CRUD lifecycle not possible - missing some operations"
+            )
         if len(tag_endpoints) < 2:
             warnings.append("Only one endpoint - limited orchestration possibilities")
 
@@ -722,7 +751,9 @@ class ScenarioWorkflowGenerator:
         prompt = template.render(
             tag_name=tag_name,
             endpoints_list=endpoints_list,
-            auth_endpoints=self._format_endpoints_list(auth_endpoints) if auth_endpoints else "",
+            auth_endpoints=(
+                self._format_endpoints_list(auth_endpoints) if auth_endpoints else ""
+            ),
             base_workflow=base_workflow_content,
             test_data_content=test_data_content,
             class_name=class_name,
@@ -773,7 +804,9 @@ class ScenarioWorkflowGenerator:
                     },
                 )
 
-            content = await self._call_ai_service(current_prompt, f"orchestrator_{tag_name}")
+            content = await self._call_ai_service(
+                current_prompt, f"orchestrator_{tag_name}"
+            )
 
             # Record LLM response
             if self.debug_recorder and self.debug_recorder.enabled:
@@ -783,11 +816,15 @@ class ScenarioWorkflowGenerator:
                 )
 
             if not content:
-                raise AIServiceError(f"AI service returned empty response for orchestrator [{tag_name}]")
+                raise AIServiceError(
+                    f"AI service returned empty response for orchestrator [{tag_name}]"
+                )
 
             # Detect HTML error page
-            if content.strip().startswith('<') and '<html' in content.lower():
-                raise AIServiceError(f"API returned HTML error page for orchestrator [{tag_name}]")
+            if content.strip().startswith("<") and "<html" in content.lower():
+                raise AIServiceError(
+                    f"API returned HTML error page for orchestrator [{tag_name}]"
+                )
 
             # Extract and clean code
             extracted = self._extract_code(content)
@@ -830,10 +867,7 @@ class ScenarioWorkflowGenerator:
                 await asyncio.sleep(1)
 
         raise CodeValidationError(
-            "orchestrator",
-            last_error,
-            last_code,
-            endpoint_info=f"tag: {tag_name}"
+            "orchestrator", last_error, last_code, endpoint_info=f"tag: {tag_name}"
         )
 
     def _format_endpoints_for_orchestrator(self, endpoints: List[Any]) -> str:
@@ -853,14 +887,20 @@ class ScenarioWorkflowGenerator:
             if eps:
                 lines.append(f"\n{method} endpoints:")
                 for ep in eps:
-                    operation_id = getattr(ep, "operation_id", "") or self._generate_operation_id(ep)
+                    operation_id = getattr(
+                        ep, "operation_id", ""
+                    ) or self._generate_operation_id(ep)
                     summary = getattr(ep, "summary", "") or "No summary"
                     lines.append(f"  - {ep.path}")
                     lines.append(f"    Operation ID: {operation_id}")
                     lines.append(f"    Summary: {summary}")
 
                     # Include request body schema for POST/PUT/PATCH
-                    if method in ["POST", "PUT", "PATCH"] and hasattr(ep, "request_body") and ep.request_body:
+                    if (
+                        method in ["POST", "PUT", "PATCH"]
+                        and hasattr(ep, "request_body")
+                        and ep.request_body
+                    ):
                         rb = ep.request_body
                         schema = getattr(rb, "schema", {})
                         if schema and isinstance(schema, dict):
@@ -872,10 +912,16 @@ class ScenarioWorkflowGenerator:
                     if hasattr(ep, "responses") and ep.responses:
                         for response in ep.responses:
                             if str(response.status_code).startswith("2"):
-                                resp_schema = response.schema if response.schema else None
+                                resp_schema = (
+                                    response.schema if response.schema else None
+                                )
                                 if resp_schema:
-                                    lines.append(f"    Response ({response.status_code}) Schema:")
-                                    schema_lines = self._format_response_schema(resp_schema, indent=3)
+                                    lines.append(
+                                        f"    Response ({response.status_code}) Schema:"
+                                    )
+                                    schema_lines = self._format_response_schema(
+                                        resp_schema, indent=3
+                                    )
                                     lines.extend(schema_lines)
                                 break
 
@@ -894,22 +940,24 @@ class ScenarioWorkflowGenerator:
         expected_full_name = f"{expected_class_name}Orchestrator"
 
         # Find class definition that inherits from BaseWorkflow and SequentialTaskSet
-        pattern = r'class\s+(\w+)\s*\([^)]*(?:BaseWorkflow|SequentialTaskSet)[^)]*\)\s*:'
+        pattern = (
+            r"class\s+(\w+)\s*\([^)]*(?:BaseWorkflow|SequentialTaskSet)[^)]*\)\s*:"
+        )
         match = re.search(pattern, code)
 
         if match:
             actual_class_name = match.group(1)
             if actual_class_name != expected_full_name:
-                logger.debug(f"Fixing orchestrator class name: {actual_class_name} -> {expected_full_name}")
-                code = re.sub(
-                    rf'\bclass\s+{re.escape(actual_class_name)}\s*\(',
-                    f'class {expected_full_name}(',
-                    code
+                logger.debug(
+                    f"Fixing orchestrator class name: {actual_class_name} -> {expected_full_name}"
                 )
                 code = re.sub(
-                    rf'\b{re.escape(actual_class_name)}\b',
-                    expected_full_name,
-                    code
+                    rf"\bclass\s+{re.escape(actual_class_name)}\s*\(",
+                    f"class {expected_full_name}(",
+                    code,
+                )
+                code = re.sub(
+                    rf"\b{re.escape(actual_class_name)}\b", expected_full_name, code
                 )
 
         return code
@@ -943,7 +991,9 @@ class ScenarioWorkflowGenerator:
         Returns:
             Generated Python code, or None if generation was skipped
         """
-        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
         scenario_name = scenario_type.value
         endpoint_info = f"{endpoint.method} {endpoint.path}"
 
@@ -960,7 +1010,9 @@ class ScenarioWorkflowGenerator:
         # Format single endpoint with full details
         # For negative/security tests: exclude 2xx responses so the LLM doesn't copy success codes
         exclude_2xx = scenario_type in (ScenarioType.NEGATIVE, ScenarioType.SECURITY)
-        endpoint_details = self._format_single_endpoint(endpoint, exclude_2xx=exclude_2xx)
+        endpoint_details = self._format_single_endpoint(
+            endpoint, exclude_2xx=exclude_2xx
+        )
 
         # Build class name from operation_id
         class_name = self._operation_to_class_name(endpoint)
@@ -968,7 +1020,9 @@ class ScenarioWorkflowGenerator:
         # Pre-compute exact status codes + descriptions for this scenario type
         # Handles spec vs fallback transparently - the template just gets the codes
         has_auth = bool(auth_endpoints)
-        codes_with_desc = self._precompute_scenario_status_codes(endpoint, scenario_type, has_auth)
+        codes_with_desc = self._precompute_scenario_status_codes(
+            endpoint, scenario_type, has_auth
+        )
         expected_status_codes = [code for code, _ in codes_with_desc]
         expected_status_info = self._format_status_codes_for_prompt(codes_with_desc)
 
@@ -977,24 +1031,42 @@ class ScenarioWorkflowGenerator:
 
         # Skip positive generation if spec defines responses but no 2xx codes
         # (e.g., response-test endpoints that intentionally return 4xx/5xx)
-        if scenario_type == ScenarioType.POSITIVE and all_status_codes and not expected_status_codes:
+        if (
+            scenario_type == ScenarioType.POSITIVE
+            and all_status_codes
+            and not expected_status_codes
+        ):
             skip_reason = f"spec defines no 2xx codes (defined: {all_status_codes})"
-            logger.info(f"Skipping positive workflow for [{endpoint_info}] - {skip_reason}")
+            logger.info(
+                f"Skipping positive workflow for [{endpoint_info}] - {skip_reason}"
+            )
             if self.progress:
-                self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+                self.progress.scenario_skipped(
+                    endpoint_info, scenario_name, skip_reason
+                )
             return None
 
         # Skip negative generation if spec defines responses but no 4xx codes
-        if scenario_type == ScenarioType.NEGATIVE and all_status_codes and not expected_status_codes:
+        if (
+            scenario_type == ScenarioType.NEGATIVE
+            and all_status_codes
+            and not expected_status_codes
+        ):
             skip_reason = f"spec defines no 4xx codes (defined: {all_status_codes})"
-            logger.info(f"Skipping negative workflow for [{endpoint_info}] - {skip_reason}")
+            logger.info(
+                f"Skipping negative workflow for [{endpoint_info}] - {skip_reason}"
+            )
             if self.progress:
-                self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+                self.progress.scenario_skipped(
+                    endpoint_info, scenario_name, skip_reason
+                )
             return None
 
         # Ensure expected_status_codes is never empty - use sensible defaults as last resort
         if not expected_status_codes:
-            logger.warning(f"No expected status codes for {endpoint_info} {scenario_name} - using fallback")
+            logger.warning(
+                f"No expected status codes for {endpoint_info} {scenario_name} - using fallback"
+            )
             if scenario_type == ScenarioType.POSITIVE:
                 expected_status_codes = [200]
             elif scenario_type == ScenarioType.NEGATIVE:
@@ -1007,10 +1079,16 @@ class ScenarioWorkflowGenerator:
         if scenario_type == ScenarioType.SECURITY:
             injection_points_result = self._precompute_injection_points(endpoint)
             if injection_points_result is None:
-                skip_reason = "no valid injection points (no body string fields or query params)"
-                logger.info(f"Skipping security workflow for [{endpoint_info}] - {skip_reason}")
+                skip_reason = (
+                    "no valid injection points (no body string fields or query params)"
+                )
+                logger.info(
+                    f"Skipping security workflow for [{endpoint_info}] - {skip_reason}"
+                )
                 if self.progress:
-                    self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+                    self.progress.scenario_skipped(
+                        endpoint_info, scenario_name, skip_reason
+                    )
                 return None
             injection_points = injection_points_result
 
@@ -1020,9 +1098,13 @@ class ScenarioWorkflowGenerator:
             negative_scenarios = self._precompute_negative_scenarios(endpoint)
             if not negative_scenarios:
                 skip_reason = "no testable scenarios (no path params, body fields, or query params)"
-                logger.info(f"Skipping negative workflow for [{endpoint_info}] - {skip_reason}")
+                logger.info(
+                    f"Skipping negative workflow for [{endpoint_info}] - {skip_reason}"
+                )
                 if self.progress:
-                    self.progress.scenario_skipped(endpoint_info, scenario_name, skip_reason)
+                    self.progress.scenario_skipped(
+                        endpoint_info, scenario_name, skip_reason
+                    )
                 return None
 
         # Pre-compute positive field details - skip if nothing to test
@@ -1039,9 +1121,13 @@ class ScenarioWorkflowGenerator:
             seg.startswith("{") for seg in endpoint.path.split("/") if seg
         )
         if all_endpoints and (endpoint.method.upper() != "POST" or has_path_params):
-            related_create_endpoints = self._find_related_create_endpoints(endpoint, all_endpoints)
+            related_create_endpoints = self._find_related_create_endpoints(
+                endpoint, all_endpoints
+            )
             setup_count = len(related_create_endpoints)
-            setup_endpoints_section = self._format_related_create_endpoints(related_create_endpoints)
+            setup_endpoints_section = self._format_related_create_endpoints(
+                related_create_endpoints
+            )
 
         # Log pre-computation results
         if self.progress:
@@ -1054,12 +1140,16 @@ class ScenarioWorkflowGenerator:
                 detail_parts.append("scenarios pre-computed")
             if injection_points:
                 detail_parts.append("injection points found")
-            self.progress.scenario_detail(endpoint_info, scenario_name, ", ".join(detail_parts))
+            self.progress.scenario_detail(
+                endpoint_info, scenario_name, ", ".join(detail_parts)
+            )
 
         # Build context dict for template rendering
         template_context = {
             "endpoint": endpoint_details,
-            "auth_endpoints": self._format_endpoints_list(auth_endpoints) if auth_endpoints else "",
+            "auth_endpoints": (
+                self._format_endpoints_list(auth_endpoints) if auth_endpoints else ""
+            ),
             "base_workflow": base_workflow_content,
             "test_data_content": test_data_content,
             "class_name": class_name,
@@ -1137,7 +1227,8 @@ class ScenarioWorkflowGenerator:
             if attempt > 0 and last_error and last_code:
                 if last_is_semantic:
                     current_prompt = self._render_semantic_fix_prompt(
-                        last_code, last_error,
+                        last_code,
+                        last_error,
                         endpoint_expected_status=expected_status_codes,
                         endpoint_path=endpoint.path,
                         endpoint_method=endpoint.method.upper(),
@@ -1163,8 +1254,14 @@ class ScenarioWorkflowGenerator:
                 )
 
             if self.progress:
-                attempt_label = f"attempt {attempt + 1}/{max_validation_retries}" if attempt > 0 else "calling LLM"
-                self.progress.scenario_detail(endpoint_info, scenario_name, attempt_label)
+                attempt_label = (
+                    f"attempt {attempt + 1}/{max_validation_retries}"
+                    if attempt > 0
+                    else "calling LLM"
+                )
+                self.progress.scenario_detail(
+                    endpoint_info, scenario_name, attempt_label
+                )
 
             content = await self._call_ai_service(current_prompt, scenario_type.value)
 
@@ -1178,10 +1275,12 @@ class ScenarioWorkflowGenerator:
                 )
 
             if not content:
-                raise AIServiceError(f"AI service returned empty response for {scenario_type.value} [{endpoint.method} {endpoint.path}]")
+                raise AIServiceError(
+                    f"AI service returned empty response for {scenario_type.value} [{endpoint.method} {endpoint.path}]"
+                )
 
             # Detect if API returned HTML error page instead of code
-            if content.strip().startswith('<') and '<html' in content.lower():
+            if content.strip().startswith("<") and "<html" in content.lower():
                 raise AIServiceError(
                     f"API returned HTML error page instead of code for {scenario_type.value} "
                     f"[{endpoint.method} {endpoint.path}]. "
@@ -1205,7 +1304,9 @@ class ScenarioWorkflowGenerator:
 
             # Fix class name to match expected naming convention
             # LLMs sometimes ignore the template and generate their own class names
-            after_class_fix = self._fix_class_name(sanitized, class_name, scenario_type.value)
+            after_class_fix = self._fix_class_name(
+                sanitized, class_name, scenario_type.value
+            )
 
             # Fix bytes literals with unicode (b'tëst' → 'tëst'.encode('utf-8'))
             after_bytes_fix = self._fix_bytes_literals(after_class_fix)
@@ -1240,19 +1341,24 @@ class ScenarioWorkflowGenerator:
                     scenario_type=scenario_name,
                     is_valid=is_valid,
                     error=error if not is_valid else None,
-                    checks=[{"check": "python_syntax", "passed": is_valid, "error": error}],
+                    checks=[
+                        {"check": "python_syntax", "passed": is_valid, "error": error}
+                    ],
                 )
 
             if not is_valid:
                 if self.progress:
-                    self.progress.scenario_detail(endpoint_info, scenario_name, f"syntax FAILED: {error[:120]}")
+                    self.progress.scenario_detail(
+                        endpoint_info, scenario_name, f"syntax FAILED: {error[:120]}"
+                    )
 
             if is_valid:
                 # Syntax OK - now run semantic validation
                 all_endpoint_paths = []
                 if all_endpoints:
                     all_endpoint_paths = [
-                        getattr(ep, "path", "") for ep in all_endpoints
+                        getattr(ep, "path", "")
+                        for ep in all_endpoints
                         if getattr(ep, "path", "")
                     ]
 
@@ -1308,10 +1414,13 @@ class ScenarioWorkflowGenerator:
                     )
                     if self.progress:
                         violations_summary = "; ".join(
-                            f"[{v.rule}] {v.message[:80]}" for v in semantic_result.violations[:3]
+                            f"[{v.rule}] {v.message[:80]}"
+                            for v in semantic_result.violations[:3]
                         )
                         self.progress.scenario_detail(
-                            endpoint_info, scenario_name, f"semantic FAILED: {violations_summary}"
+                            endpoint_info,
+                            scenario_name,
+                            f"semantic FAILED: {violations_summary}",
                         )
             else:
                 is_semantic_error = False
@@ -1327,7 +1436,8 @@ class ScenarioWorkflowGenerator:
                 if self.debug_recorder and self.debug_recorder.enabled:
                     fix_prompt = (
                         self._render_semantic_fix_prompt(
-                            content, error,
+                            content,
+                            error,
                             endpoint_expected_status=expected_status_codes,
                             endpoint_path=endpoint.path,
                             endpoint_method=endpoint.method.upper(),
@@ -1355,8 +1465,11 @@ class ScenarioWorkflowGenerator:
                 )
                 if self.progress:
                     self.progress.scenario_retry(
-                        endpoint_info, scenario_name, attempt + 1, max_validation_retries,
-                        f"{error_type}: {error}"
+                        endpoint_info,
+                        scenario_name,
+                        attempt + 1,
+                        max_validation_retries,
+                        f"{error_type}: {error}",
                     )
                 await asyncio.sleep(1)
             else:
@@ -1371,7 +1484,7 @@ class ScenarioWorkflowGenerator:
             scenario_type.value,
             last_error,
             last_code,
-            endpoint_info=f"{endpoint.method} {endpoint.path}"
+            endpoint_info=f"{endpoint.method} {endpoint.path}",
         )
 
     @staticmethod
@@ -1397,8 +1510,12 @@ class ScenarioWorkflowGenerator:
         # OpenAPI 3.1: anyOf with exactly one null type variant
         any_of = schema.get("anyOf") or schema.get("oneOf")
         if any_of and isinstance(any_of, list):
-            null_variants = [v for v in any_of if isinstance(v, dict) and v.get("type") == "null"]
-            real_variants = [v for v in any_of if isinstance(v, dict) and v.get("type") != "null"]
+            null_variants = [
+                v for v in any_of if isinstance(v, dict) and v.get("type") == "null"
+            ]
+            real_variants = [
+                v for v in any_of if isinstance(v, dict) and v.get("type") != "null"
+            ]
             if len(null_variants) >= 1 and len(real_variants) == 1:
                 return real_variants[0], True
 
@@ -1473,8 +1590,7 @@ class ScenarioWorkflowGenerator:
         if not isinstance(value, str):
             return str(value)
         return (
-            value
-            .replace("\\", "\\\\")
+            value.replace("\\", "\\\\")
             .replace('"', '\\"')
             .replace("\n", "\\n")
             .replace("\r", "\\r")
@@ -1565,7 +1681,6 @@ class ScenarioWorkflowGenerator:
 
         # Type-based generators
         if field_type == "string":
-            min_length = field_schema.get("minLength", 0)
             max_length = field_schema.get("maxLength", 50)
 
             # Infer generator from field name (generic patterns, not hardcoded)
@@ -1583,15 +1698,26 @@ class ScenarioWorkflowGenerator:
                 if "color" in field_name_lower or "colour" in field_name_lower:
                     return "test_data_generator.random_hex_color()"
                 # Date/time fields by name (when format isn't specified)
-                if any(kw in field_name_lower for kw in ["created_at", "updated_at", "modified_at", "timestamp"]):
+                if any(
+                    kw in field_name_lower
+                    for kw in ["created_at", "updated_at", "modified_at", "timestamp"]
+                ):
                     return "test_data_generator.random_datetime()"
-                if any(kw in field_name_lower for kw in ["birth_date", "start_date", "end_date", "date"]) and "time" not in field_name_lower:
+                if (
+                    any(
+                        kw in field_name_lower
+                        for kw in ["birth_date", "start_date", "end_date", "date"]
+                    )
+                    and "time" not in field_name_lower
+                ):
                     return "test_data_generator.random_date()"
                 # Email fields by name
                 if "email" in field_name_lower:
                     return "test_data_generator.generate_email()"
                 # URL fields by name
-                if any(kw in field_name_lower for kw in ["url", "uri", "website", "link"]):
+                if any(
+                    kw in field_name_lower for kw in ["url", "uri", "website", "link"]
+                ):
                     return "test_data_generator.random_uri()"
                 # Phone fields by name
                 if "phone" in field_name_lower:
@@ -1606,20 +1732,33 @@ class ScenarioWorkflowGenerator:
                     return "test_data_generator.random_hostname()"
 
             # Default string generation with length constraints
-            length = max_length if isinstance(max_length, int) and max_length <= 50 else 10
+            length = (
+                max_length if isinstance(max_length, int) and max_length <= 50 else 10
+            )
             if not isinstance(length, int):
                 length = 10
             return f"test_data_generator.generate_string(length={length})"
 
         if field_type == "integer":
             # RGB/color detection: field names containing "rgb", "color" imply 0-255 range
-            if field_name_lower and any(kw in field_name_lower for kw in ["rgb", "color", "colour", "red", "green", "blue", "alpha"]):
+            if field_name_lower and any(
+                kw in field_name_lower
+                for kw in ["rgb", "color", "colour", "red", "green", "blue", "alpha"]
+            ):
                 return "test_data_generator.generate_integer(min_val=0, max_val=255)"
 
             exclusive_min = field_schema.get("exclusiveMinimum")
             exclusive_max = field_schema.get("exclusiveMaximum")
-            min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 1)
-            max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000)
+            min_val = (
+                exclusive_min
+                if exclusive_min is not None
+                else field_schema.get("minimum", 1)
+            )
+            max_val = (
+                exclusive_max
+                if exclusive_max is not None
+                else field_schema.get("maximum", 1000)
+            )
             exclusive = exclusive_min is not None or exclusive_max is not None
             multiple_of = field_schema.get("multipleOf")
             parts = [f"min_val={min_val}", f"max_val={max_val}"]
@@ -1632,8 +1771,16 @@ class ScenarioWorkflowGenerator:
         if field_type == "number":
             exclusive_min = field_schema.get("exclusiveMinimum")
             exclusive_max = field_schema.get("exclusiveMaximum")
-            min_val = exclusive_min if exclusive_min is not None else field_schema.get("minimum", 0.0)
-            max_val = exclusive_max if exclusive_max is not None else field_schema.get("maximum", 1000.0)
+            min_val = (
+                exclusive_min
+                if exclusive_min is not None
+                else field_schema.get("minimum", 0.0)
+            )
+            max_val = (
+                exclusive_max
+                if exclusive_max is not None
+                else field_schema.get("maximum", 1000.0)
+            )
             exclusive = exclusive_min is not None or exclusive_max is not None
             if exclusive:
                 return f"test_data_generator.generate_float(min_val={min_val}, max_val={max_val}, exclusive=True)"
@@ -1645,7 +1792,9 @@ class ScenarioWorkflowGenerator:
         if field_type == "object":
             sub_props = field_schema.get("properties", {})
             if sub_props:
-                return self._precompute_object_instruction(field_schema, _object_ancestors)
+                return self._precompute_object_instruction(
+                    field_schema, _object_ancestors
+                )
             add_props = field_schema.get("additionalProperties")
             if add_props and isinstance(add_props, dict):
                 val_type = add_props.get("type", "string")
@@ -1657,17 +1806,29 @@ class ScenarioWorkflowGenerator:
                     val_gen = "test_data_generator.generate_boolean()"
                 else:
                     val_gen = "test_data_generator.generate_string()"
-                return '{f"key_{i}": ' + val_gen + ' for i in range(3)}'
+                return '{f"key_{i}": ' + val_gen + " for i in range(3)}"
             if add_props:
                 return '{"key1": "value1", "key2": "value2"}'
             return "{}"
 
         if field_type == "array":
-            items_type = field_items.get("type", "string") if isinstance(field_items, dict) else "string"
-            items_enum = field_items.get("enum") if isinstance(field_items, dict) else None
-            items_ref = field_items.get("$ref") if isinstance(field_items, dict) else None
+            items_type = (
+                field_items.get("type", "string")
+                if isinstance(field_items, dict)
+                else "string"
+            )
+            items_enum = (
+                field_items.get("enum") if isinstance(field_items, dict) else None
+            )
+            items_ref = (
+                field_items.get("$ref") if isinstance(field_items, dict) else None
+            )
             # Check for oneOf/anyOf discriminated union in array items
-            items_one_of = field_items.get("oneOf") or field_items.get("anyOf") if isinstance(field_items, dict) else None
+            items_one_of = (
+                field_items.get("oneOf") or field_items.get("anyOf")
+                if isinstance(field_items, dict)
+                else None
+            )
             # Respect minItems/maxItems constraints - use minItems as array length to ensure validity
             min_items = field_schema.get("minItems", 1)
             max_items = field_schema.get("maxItems")
@@ -1678,27 +1839,41 @@ class ScenarioWorkflowGenerator:
             if items_enum:
                 return f"[random.choice({items_enum}) for _ in range({array_len})]"
             # Handle oneOf/anyOf in array items (discriminated union like Dog|Cat|Bird)
-            if items_one_of and isinstance(items_one_of, list) and len(items_one_of) > 0:
+            if (
+                items_one_of
+                and isinstance(items_one_of, list)
+                and len(items_one_of) > 0
+            ):
                 # Use the first variant to generate sample objects
                 first_variant = items_one_of[0]
                 if isinstance(first_variant, dict):
                     # Extract properties from the first variant (handles allOf etc.)
                     variant_props, _ = self._extract_all_properties(first_variant)
                     if variant_props:
-                        obj_instr = self._precompute_object_instruction(first_variant, _object_ancestors)
+                        obj_instr = self._precompute_object_instruction(
+                            first_variant, _object_ancestors
+                        )
                         return f"[{obj_instr} for _ in range({array_len})]"
                 return "[{}]"
             if items_type == "object" or items_ref:
-                items_props = field_items.get("properties", {}) if isinstance(field_items, dict) else {}
+                items_props = (
+                    field_items.get("properties", {})
+                    if isinstance(field_items, dict)
+                    else {}
+                )
                 if items_props:
-                    obj_instr = self._precompute_object_instruction(field_items, _object_ancestors)
+                    obj_instr = self._precompute_object_instruction(
+                        field_items, _object_ancestors
+                    )
                     return f"[{obj_instr} for _ in range({array_len})]"
                 return "[{}]"
             if items_type == "string":
                 return f"[test_data_generator.generate_string() for _ in range({array_len})]"
             if items_type == "integer":
                 # RGB/color detection: field names containing "rgb", "color" imply 0-255 range
-                if field_name_lower and any(kw in field_name_lower for kw in ["rgb", "color", "colour"]):
+                if field_name_lower and any(
+                    kw in field_name_lower for kw in ["rgb", "color", "colour"]
+                ):
                     return f"[test_data_generator.generate_integer(min_val=0, max_val=255) for _ in range({array_len})]"
                 return f"[test_data_generator.generate_integer() for _ in range({array_len})]"
             if items_type == "number":
@@ -1707,8 +1882,16 @@ class ScenarioWorkflowGenerator:
                 return f"[test_data_generator.generate_boolean() for _ in range({array_len})]"
             if items_type == "array":
                 # Nested array - check inner items type
-                inner_items = field_items.get("items", {}) if isinstance(field_items, dict) else {}
-                inner_type = inner_items.get("type", "string") if isinstance(inner_items, dict) else "string"
+                inner_items = (
+                    field_items.get("items", {})
+                    if isinstance(field_items, dict)
+                    else {}
+                )
+                inner_type = (
+                    inner_items.get("type", "string")
+                    if isinstance(inner_items, dict)
+                    else "string"
+                )
                 if inner_type == "integer":
                     return f"[[test_data_generator.generate_integer() for _ in range(2)] for _ in range({array_len})]"
                 elif inner_type == "number":
@@ -1717,7 +1900,9 @@ class ScenarioWorkflowGenerator:
                     return f"[[test_data_generator.generate_boolean() for _ in range(2)] for _ in range({array_len})]"
                 else:
                     return f"[[test_data_generator.generate_string() for _ in range(2)] for _ in range({array_len})]"
-            return f"[test_data_generator.generate_string() for _ in range({array_len})]"
+            return (
+                f"[test_data_generator.generate_string() for _ in range({array_len})]"
+            )
 
         # Fallback for unknown types
         return "test_data_generator.generate_string(length=10)"
@@ -1732,7 +1917,9 @@ class ScenarioWorkflowGenerator:
         lines = []
 
         # Basic info
-        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
         summary = getattr(endpoint, "summary", "") or "No summary"
         description = getattr(endpoint, "description", "") or ""
 
@@ -1778,7 +1965,9 @@ class ScenarioWorkflowGenerator:
                 if param_format:
                     type_str = f"{param_type} [{param_format}]"
 
-                lines.append(f"  - {param_name} [{param_in}]: {type_str} {required_str}")
+                lines.append(
+                    f"  - {param_name} [{param_in}]: {type_str} {required_str}"
+                )
                 if param_enum:
                     # Standardized format for enum values
                     lines.append(f"      allowed values: {param_enum}")
@@ -1805,7 +1994,9 @@ class ScenarioWorkflowGenerator:
             if has_cookie_params:
                 lines.append("")
                 lines.append("  *** COOKIE VALUES MUST BE STRINGS ***")
-                lines.append("  When passing cookies, ALL values must be strings, not integers or other types.")
+                lines.append(
+                    "  When passing cookies, ALL values must be strings, not integers or other types."
+                )
                 lines.append("  WRONG: cookies={'session_id': 123}")
                 lines.append("  CORRECT: cookies={'session_id': '123'}")
 
@@ -1834,9 +2025,15 @@ class ScenarioWorkflowGenerator:
             if content_type in ["multipart/form-data", "application/octet-stream"]:
                 lines.append("")
                 lines.append("  *** FILE UPLOAD ENDPOINT ***")
-                lines.append("  This endpoint requires multipart/form-data file upload.")
-                lines.append("  DO NOT use json= parameter. Use files= with actual file data:")
-                lines.append("  Example: files={'file': ('test.txt', b'file content', 'text/plain')}")
+                lines.append(
+                    "  This endpoint requires multipart/form-data file upload."
+                )
+                lines.append(
+                    "  DO NOT use json= parameter. Use files= with actual file data:"
+                )
+                lines.append(
+                    "  Example: files={'file': ('test.txt', b'file content', 'text/plain')}"
+                )
                 lines.append("")
 
             # Format full schema with all details
@@ -1857,13 +2054,27 @@ class ScenarioWorkflowGenerator:
                                 continue
                         except (ValueError, TypeError):
                             pass
-                    desc = getattr(response, "description", "") if hasattr(response, "description") else str(response)
-                    lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+                    desc = (
+                        getattr(response, "description", "")
+                        if hasattr(response, "description")
+                        else str(response)
+                    )
+                    lines.append(
+                        f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}"
+                    )
                     # Add response schema if available
-                    resp_schema = getattr(response, "schema", None) if hasattr(response, "schema") else None
+                    resp_schema = (
+                        getattr(response, "schema", None)
+                        if hasattr(response, "schema")
+                        else None
+                    )
                     if resp_schema and isinstance(resp_schema, dict):
-                        lines.append(f"    Response Schema (use these EXACT field names when accessing response):")
-                        schema_lines = self._format_response_schema(resp_schema, indent=3)
+                        lines.append(
+                            "    Response Schema (use these EXACT field names when accessing response):"
+                        )
+                        schema_lines = self._format_response_schema(
+                            resp_schema, indent=3
+                        )
                         lines.extend(schema_lines)
             elif isinstance(responses, list):
                 for response in responses:
@@ -1876,12 +2087,18 @@ class ScenarioWorkflowGenerator:
                         except (ValueError, TypeError):
                             pass
                     desc = getattr(response, "description", "")
-                    lines.append(f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}")
+                    lines.append(
+                        f"  - {status_code}: {desc[:50] if len(str(desc)) > 50 else desc}"
+                    )
                     # Add response schema if available
                     resp_schema = getattr(response, "schema", None)
                     if resp_schema and isinstance(resp_schema, dict):
-                        lines.append(f"    Response Schema (use these EXACT field names when accessing response):")
-                        schema_lines = self._format_response_schema(resp_schema, indent=3)
+                        lines.append(
+                            "    Response Schema (use these EXACT field names when accessing response):"
+                        )
+                        schema_lines = self._format_response_schema(
+                            resp_schema, indent=3
+                        )
                         lines.extend(schema_lines)
 
         return "\n".join(lines)
@@ -1910,16 +2127,22 @@ class ScenarioWorkflowGenerator:
             if discriminator:
                 prop_name = discriminator.get("propertyName", "type")
                 lines.append(f"{prefix}Schema: DISCRIMINATED UNION")
-                lines.append(f"{prefix}  *** DISCRIMINATOR FIELD: {prop_name} (REQUIRED) ***")
-                lines.append(f"{prefix}  You MUST include '{prop_name}' to specify which variant to use.")
+                lines.append(
+                    f"{prefix}  *** DISCRIMINATOR FIELD: {prop_name} (REQUIRED) ***"
+                )
+                lines.append(
+                    f"{prefix}  You MUST include '{prop_name}' to specify which variant to use."
+                )
                 lines.append(f"{prefix}")
 
                 # Get mapping if available
                 mapping = discriminator.get("mapping", {})
                 if mapping:
-                    lines.append(f"{prefix}  Valid '{prop_name}' values and their schemas:")
+                    lines.append(
+                        f"{prefix}  Valid '{prop_name}' values and their schemas:"
+                    )
                     for disc_value, ref in mapping.items():
-                        lines.append(f"{prefix}    - {prop_name}=\"{disc_value}\":")
+                        lines.append(f'{prefix}    - {prop_name}="{disc_value}":')
                         # Try to resolve the reference and show fields
                         variant_schema = self._resolve_ref_in_union(ref, one_of)
                         if variant_schema:
@@ -1929,12 +2152,20 @@ class ScenarioWorkflowGenerator:
                                 if vp_name == prop_name:
                                     continue  # Skip discriminator field, already shown
                                 # Unwrap nullable schema for proper type detection
-                                unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
+                                unwrapped_vp, _ = self._unwrap_nullable_schema(
+                                    vp_schema
+                                )
                                 vp_type = unwrapped_vp.get("type", "any")
-                                req_marker = " (REQUIRED)" if vp_name in variant_required else ""
+                                req_marker = (
+                                    " (REQUIRED)" if vp_name in variant_required else ""
+                                )
                                 # Get the pre-computed generator instruction
-                                generator = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
-                                lines.append(f"{prefix}        {vp_name}: {vp_type}{req_marker}")
+                                generator = self._get_type_instruction(
+                                    unwrapped_vp, field_name=vp_name
+                                )
+                                lines.append(
+                                    f"{prefix}        {vp_name}: {vp_type}{req_marker}"
+                                )
                                 lines.append(f"{prefix}            USE: {generator}")
                         lines.append(f"{prefix}")
             else:
@@ -1951,14 +2182,17 @@ class ScenarioWorkflowGenerator:
                         if variant_props:
                             lines.append(f"{prefix}  Option {i}:")
                             for vp_name, vp_schema in variant_props.items():
-                                unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
+                                unwrapped_vp, _ = self._unwrap_nullable_schema(
+                                    vp_schema
+                                )
                                 vp_type = unwrapped_vp.get("type", "any")
-                                generator = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
+                                generator = self._get_type_instruction(
+                                    unwrapped_vp, field_name=vp_name
+                                )
                                 lines.append(f"{prefix}    - {vp_name}: {vp_type}")
                                 lines.append(f"{prefix}        USE: {generator}")
             return lines
 
-        schema_type = schema.get("type", "object")
         required_fields = schema.get("required", [])
         properties = schema.get("properties", {})
 
@@ -1968,7 +2202,9 @@ class ScenarioWorkflowGenerator:
                 lines.append(f"{prefix}  Required fields: {required_fields}")
             else:
                 lines.append(f"{prefix}  Required fields: none")
-            lines.append(f"{prefix}  Properties (use these EXACT field names in your code):")
+            lines.append(
+                f"{prefix}  Properties (use these EXACT field names in your code):"
+            )
 
             for prop_name, prop_schema in properties.items():
                 is_required = prop_name in required_fields
@@ -1976,7 +2212,11 @@ class ScenarioWorkflowGenerator:
                 # Unwrap nullable pattern (OpenAPI 3.1 anyOf/3.0 nullable)
                 unwrapped, is_nullable = self._unwrap_nullable_schema(prop_schema)
                 nullable_marker = ", nullable" if is_nullable else ""
-                req_marker = f" (REQUIRED{nullable_marker})" if is_required else f" (optional{nullable_marker})"
+                req_marker = (
+                    f" (REQUIRED{nullable_marker})"
+                    if is_required
+                    else f" (optional{nullable_marker})"
+                )
 
                 prop_type = unwrapped.get("type", "any")
                 prop_format = unwrapped.get("format")
@@ -1993,7 +2233,9 @@ class ScenarioWorkflowGenerator:
                 lines.append(f"{prefix}        USE: {generator}")
 
                 # Add description (check both original and unwrapped)
-                desc_text = prop_schema.get("description") or unwrapped.get("description")
+                desc_text = prop_schema.get("description") or unwrapped.get(
+                    "description"
+                )
                 if desc_text:
                     lines.append(f"{prefix}        description: {desc_text[:80]}")
 
@@ -2018,7 +2260,9 @@ class ScenarioWorkflowGenerator:
                     constraints.append(f"multipleOf={unwrapped['multipleOf']}")
 
                 if constraints:
-                    lines.append(f"{prefix}        constraints: {', '.join(constraints)}")
+                    lines.append(
+                        f"{prefix}        constraints: {', '.join(constraints)}"
+                    )
 
                 # Add enum values from unwrapped schema
                 if unwrapped.get("enum"):
@@ -2039,16 +2283,22 @@ class ScenarioWorkflowGenerator:
                     add_props = unwrapped["additionalProperties"]
                     if isinstance(add_props, dict):
                         val_type = add_props.get("type", "any")
-                        lines.append(f"{prefix}        map type: string keys → {val_type} values")
+                        lines.append(
+                            f"{prefix}        map type: string keys → {val_type} values"
+                        )
                     else:
-                        lines.append(f"{prefix}        map type: string keys → any values")
+                        lines.append(
+                            f"{prefix}        map type: string keys → any values"
+                        )
 
                 # Handle arrays
                 if prop_type == "array" and unwrapped.get("items"):
                     items = unwrapped["items"]
                     items_unwrapped, _ = self._unwrap_nullable_schema(items)
                     # Check for oneOf/anyOf in array items (discriminated union)
-                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get(
+                        "anyOf"
+                    )
                     if items_one_of and isinstance(items_one_of, list):
                         # Array items are a union type
                         variant_names = []
@@ -2061,23 +2311,35 @@ class ScenarioWorkflowGenerator:
                                     variant_names.append(ref_name)
                                 elif "properties" in variant:
                                     # Look for discriminator field to identify variant
-                                    for p_name, p_schema in variant.get("properties", {}).items():
+                                    for p_name, p_schema in variant.get(
+                                        "properties", {}
+                                    ).items():
                                         if p_schema.get("const"):
                                             variant_names.append(p_schema["const"])
                                             break
                                 # Keep track of first variant with properties for showing schema
                                 if first_variant_with_props is None:
-                                    variant_props, _ = self._extract_all_properties(variant)
+                                    variant_props, _ = self._extract_all_properties(
+                                        variant
+                                    )
                                     if variant_props:
                                         first_variant_with_props = variant
                         if variant_names:
-                            lines.append(f"{prefix}        array items type: oneOf ({' | '.join(variant_names)})")
+                            lines.append(
+                                f"{prefix}        array items type: oneOf ({' | '.join(variant_names)})"
+                            )
                         else:
-                            lines.append(f"{prefix}        array items type: oneOf (union of {len(items_one_of)} variants)")
+                            lines.append(
+                                f"{prefix}        array items type: oneOf (union of {len(items_one_of)} variants)"
+                            )
                         # Show first variant's schema so LLM knows what properties to include
                         if first_variant_with_props:
-                            lines.append(f"{prefix}        first variant schema (use this structure):")
-                            nested_lines = self._format_schema(first_variant_with_props, indent + 3)
+                            lines.append(
+                                f"{prefix}        first variant schema (use this structure):"
+                            )
+                            nested_lines = self._format_schema(
+                                first_variant_with_props, indent + 3
+                            )
                             lines.extend(nested_lines)
                     else:
                         items_type = items_unwrapped.get("type", "any")
@@ -2091,7 +2353,9 @@ class ScenarioWorkflowGenerator:
                             array_constraints.append(f"minItems={min_items}")
                         if max_items is not None:
                             array_constraints.append(f"maxItems={max_items}")
-                        lines.append(f"{prefix}        array constraints: {', '.join(array_constraints)}")
+                        lines.append(
+                            f"{prefix}        array constraints: {', '.join(array_constraints)}"
+                        )
                     if items_unwrapped.get("properties"):
                         lines.append(f"{prefix}        array item properties:")
                         nested_lines = self._format_schema(items_unwrapped, indent + 3)
@@ -2155,7 +2419,9 @@ class ScenarioWorkflowGenerator:
                 ref_name = ref.split("/")[-1].lower() if ref else ""
                 # Check if any property const value matches
                 for prop_name, prop_schema in variant_props.items():
-                    if prop_schema.get("const", "").lower().replace("_", "").replace("-", "") == ref_name.lower().replace("_", "").replace("-", ""):
+                    if prop_schema.get("const", "").lower().replace("_", "").replace(
+                        "-", ""
+                    ) == ref_name.lower().replace("_", "").replace("-", ""):
                         return variant
 
         return None
@@ -2201,14 +2467,18 @@ class ScenarioWorkflowGenerator:
                     items = unwrapped["items"]
                     items_unwrapped, _ = self._unwrap_nullable_schema(items)
                     # Check for oneOf/anyOf in array items
-                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get("anyOf")
+                    items_one_of = items_unwrapped.get("oneOf") or items_unwrapped.get(
+                        "anyOf"
+                    )
                     if items_one_of and isinstance(items_one_of, list):
                         lines.append(f"{prefix}    (array of oneOf variants)")
                     else:
                         items_type = items_unwrapped.get("type", "any")
                         lines.append(f"{prefix}    (array of {items_type})")
                     if items_unwrapped.get("properties"):
-                        for item_name, item_schema in items_unwrapped["properties"].items():
+                        for item_name, item_schema in items_unwrapped[
+                            "properties"
+                        ].items():
                             i_unwrapped, _ = self._unwrap_nullable_schema(item_schema)
                             item_type = i_unwrapped.get("type", "any")
                             lines.append(f"{prefix}    - {item_name}: {item_type}")
@@ -2277,7 +2547,10 @@ class ScenarioWorkflowGenerator:
         for endpoint in all_endpoints:
             if endpoint.method.upper() != "POST":
                 continue
-            if endpoint.path == target_endpoint.path and endpoint.method == target_endpoint.method:
+            if (
+                endpoint.path == target_endpoint.path
+                and endpoint.method == target_endpoint.method
+            ):
                 continue
 
             score = 0.0
@@ -2297,7 +2570,9 @@ class ScenarioWorkflowGenerator:
             # Only consider endpoints in the same namespace
             if score == 0:
                 candidate_prefix = self._get_static_prefix(candidate_path)
-                common_prefix_len = self._common_prefix_length(target_prefix, candidate_prefix)
+                common_prefix_len = self._common_prefix_length(
+                    target_prefix, candidate_prefix
+                )
                 # Require at least 3 segments in common (e.g., /api/v1/comprehensive)
                 # to avoid matching /api/v1/users with /api/v1/comprehensive/nested/users
                 if common_prefix_len >= 3:
@@ -2415,15 +2690,23 @@ Do NOT invent or call POST endpoints that are not documented here.
         lines = []
         lines.append("=== SETUP ENDPOINTS (for creating test data) ===")
         lines.append("")
-        lines.append("These POST endpoints can be used to create resources before testing.")
+        lines.append(
+            "These POST endpoints can be used to create resources before testing."
+        )
         lines.append("They are ranked by relevance to the endpoint you are testing.")
-        lines.append("Use ONLY these endpoints for setup - do NOT invent endpoints that don't exist.")
-        lines.append("**CRITICAL: Use the expected_status shown for EACH setup endpoint.**")
+        lines.append(
+            "Use ONLY these endpoints for setup - do NOT invent endpoints that don't exist."
+        )
+        lines.append(
+            "**CRITICAL: Use the expected_status shown for EACH setup endpoint.**"
+        )
         lines.append("")
 
         # Edge case 3: Pass all ranked endpoints with guidance
         for i, (endpoint, score, reason) in enumerate(related_endpoints, 1):
-            operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+            operation_id = getattr(
+                endpoint, "operation_id", ""
+            ) or self._generate_operation_id(endpoint)
             summary = getattr(endpoint, "summary", "") or "No summary"
             description = getattr(endpoint, "description", "") or ""
 
@@ -2439,7 +2722,9 @@ Do NOT invent or call POST endpoints that are not documented here.
             lines.append(f"--- Rank #{i} (relevance: {score:.0f}) ---")
             lines.append(f"POST {endpoint.path}")
             lines.append(f"Operation ID: {operation_id}")
-            lines.append(f"**expected_status={setup_status_codes}**  <-- USE THIS for this setup call")
+            lines.append(
+                f"**expected_status={setup_status_codes}**  <-- USE THIS for this setup call"
+            )
             lines.append(f"Why relevant: {reason}")
             lines.append(f"Summary: {summary}")
             if description:
@@ -2459,22 +2744,31 @@ Do NOT invent or call POST endpoints that are not documented here.
         # Add explicit example showing correct usage
         lines.append("=== SETUP CALL PATTERN ===")
         lines.append("```python")
-        lines.append("# Use the expected_status from the setup endpoint above, NOT from the main endpoint")
+        lines.append(
+            "# Use the expected_status from the setup endpoint above, NOT from the main endpoint"
+        )
         if related_endpoints:
             first_endpoint = related_endpoints[0][0]
             first_codes = self._extract_expected_status_codes(first_endpoint)
-            first_filtered = self._filter_status_codes_for_scenario(first_codes, ScenarioType.POSITIVE, method="POST")
+            first_filtered = self._filter_status_codes_for_scenario(
+                first_codes, ScenarioType.POSITIVE, method="POST"
+            )
             if not first_filtered:
                 first_filtered = [200, 201]
-            lines.append(f'result = self.make_request("POST", "{first_endpoint.path}", expected_status={first_filtered}, json=data)')
+            lines.append(
+                f'result = self.make_request("POST", "{first_endpoint.path}", expected_status={first_filtered}, json=data)'
+            )
         lines.append("```")
         lines.append("")
 
         return "\n".join(lines)
 
     def _filter_status_codes_for_scenario(
-        self, status_codes: List[int], scenario_type: ScenarioType,
-        method: str = "GET", exclude_auth: bool = False,
+        self,
+        status_codes: List[int],
+        scenario_type: ScenarioType,
+        method: str = "GET",
+        exclude_auth: bool = False,
     ) -> List[int]:
         """
         Filter status codes based on scenario type.
@@ -2517,7 +2811,10 @@ Do NOT invent or call POST endpoints that are not documented here.
         return sorted(status_codes)
 
     def _get_fallback_codes(
-        self, method: str, scenario_type: ScenarioType, exclude_auth: bool = False,
+        self,
+        method: str,
+        scenario_type: ScenarioType,
+        exclude_auth: bool = False,
     ) -> List[int]:
         """
         Get fallback status codes from FallbackHttpResponseRegistry when
@@ -2604,7 +2901,9 @@ Do NOT invent or call POST endpoints that are not documented here.
         # Sort for consistency
         return sorted(status_codes)
 
-    def _extract_status_codes_with_descriptions(self, endpoint: Any) -> List[Tuple[int, str]]:
+    def _extract_status_codes_with_descriptions(
+        self, endpoint: Any
+    ) -> List[Tuple[int, str]]:
         """
         Extract status codes with their descriptions from the OpenAPI spec responses.
 
@@ -2711,14 +3010,34 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Filter fallback by scenario type
         if scenario_type == ScenarioType.POSITIVE:
-            result = sorted([(c, d) for c, d in fallback_codes if 200 <= c < 300], key=lambda x: x[0])
+            result = sorted(
+                [(c, d) for c, d in fallback_codes if 200 <= c < 300],
+                key=lambda x: x[0],
+            )
             return result if result else [(200, "OK")]
         elif scenario_type == ScenarioType.NEGATIVE:
-            result = sorted([(c, d) for c, d in fallback_codes if 400 <= c < 500], key=lambda x: x[0])
-            return result if result else [(400, "Bad Request"), (422, "Unprocessable Entity")]
+            result = sorted(
+                [(c, d) for c, d in fallback_codes if 400 <= c < 500],
+                key=lambda x: x[0],
+            )
+            return (
+                result
+                if result
+                else [(400, "Bad Request"), (422, "Unprocessable Entity")]
+            )
         elif scenario_type == ScenarioType.SECURITY:
-            result = sorted([(c, d) for c, d in fallback_codes if c < 500], key=lambda x: x[0])
-            return result if result else [(400, "Bad Request"), (403, "Forbidden"), (422, "Unprocessable Entity")]
+            result = sorted(
+                [(c, d) for c, d in fallback_codes if c < 500], key=lambda x: x[0]
+            )
+            return (
+                result
+                if result
+                else [
+                    (400, "Bad Request"),
+                    (403, "Forbidden"),
+                    (422, "Unprocessable Entity"),
+                ]
+            )
 
         return sorted(fallback_codes, key=lambda x: x[0])
 
@@ -2835,13 +3154,15 @@ Do NOT invent or call POST endpoints that are not documented here.
         # Parameter-test endpoints accept any value and echo it back - no resource lookup
         if path_params and not is_parameter_test_endpoint:
             for name, ptype in path_params:
-                if ptype.lower() in ("integer", "number") or ptype.lower().startswith("array[int"):
+                if ptype.lower() in ("integer", "number") or ptype.lower().startswith(
+                    "array[int"
+                ):
                     scenarios.append(
                         f"NON_EXISTENT_ID: Test {{{name}}} with value 999999999 (integer path param)"
                     )
                 else:
                     scenarios.append(
-                        f"NON_EXISTENT_ID: Test {{{name}}} with value \"nonexistent-id-12345\" (string path param)"
+                        f'NON_EXISTENT_ID: Test {{{name}}} with value "nonexistent-id-12345" (string path param)'
                     )
 
         # Check request body fields
@@ -2889,10 +3210,21 @@ Do NOT invent or call POST endpoints that are not documented here.
                         maximum = unwrapped_fs.get("maximum")
                         exclusive_min = unwrapped_fs.get("exclusiveMinimum")
                         exclusive_max = unwrapped_fs.get("exclusiveMaximum")
-                        if minimum is not None or maximum is not None or exclusive_min is not None or exclusive_max is not None:
-                            effective_min = exclusive_min if exclusive_min is not None else minimum
-                            effective_max = exclusive_max if exclusive_max is not None else maximum
-                            numeric_fields.append((field_name, effective_min, effective_max))
+                        if (
+                            minimum is not None
+                            or maximum is not None
+                            or exclusive_min is not None
+                            or exclusive_max is not None
+                        ):
+                            effective_min = (
+                                exclusive_min if exclusive_min is not None else minimum
+                            )
+                            effective_max = (
+                                exclusive_max if exclusive_max is not None else maximum
+                            )
+                            numeric_fields.append(
+                                (field_name, effective_min, effective_max)
+                            )
 
         if required_fields:
             scenarios.append(
@@ -2913,24 +3245,24 @@ Do NOT invent or call POST endpoints that are not documented here.
         if enum_fields:
             for name, values in enum_fields:
                 scenarios.append(
-                    f"INVALID_ENUM: Field \"{name}\" allows only {values}, send \"INVALID_VALUE_XYZ\""
+                    f'INVALID_ENUM: Field "{name}" allows only {values}, send "INVALID_VALUE_XYZ"'
                 )
 
         if pattern_fields:
             for name, pattern in pattern_fields:
                 scenarios.append(
-                    f"INVALID_PATTERN: Field \"{name}\" must match pattern {pattern}, send \"!!!invalid!!!\""
+                    f'INVALID_PATTERN: Field "{name}" must match pattern {pattern}, send "!!!invalid!!!"'
                 )
 
         if numeric_fields:
             for name, min_val, max_val in numeric_fields:
                 if min_val is not None and isinstance(min_val, (int, float)):
                     scenarios.append(
-                        f"BOUNDARY: Field \"{name}\" has min={min_val}, send {min_val - 1}"
+                        f'BOUNDARY: Field "{name}" has min={min_val}, send {min_val - 1}'
                     )
                 if max_val is not None and isinstance(max_val, (int, float)):
                     scenarios.append(
-                        f"BOUNDARY: Field \"{name}\" has max={max_val}, send {max_val + 1}"
+                        f'BOUNDARY: Field "{name}" has max={max_val}, send {max_val + 1}'
                     )
 
         # Fallback: test invalid query params ONLY if not a parameter-test endpoint
@@ -2938,8 +3270,13 @@ Do NOT invent or call POST endpoints that are not documented here.
         if not scenarios and not is_parameter_test_endpoint:
             if query_params:
                 for name, ptype in query_params:
-                    if ptype.lower() in ("integer", "number") or ptype.lower().startswith("array[int"):
-                        scenarios.append(f"INVALID_QUERY: Send \"{name}=not_a_number\" (expects integer)")
+                    if ptype.lower() in (
+                        "integer",
+                        "number",
+                    ) or ptype.lower().startswith("array[int"):
+                        scenarios.append(
+                            f'INVALID_QUERY: Send "{name}=not_a_number" (expects integer)'
+                        )
                     # Skip "very long string" tests - most APIs don't validate string length without explicit constraints
 
         if not scenarios:
@@ -2982,7 +3319,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             disc_prop = discriminator.get("propertyName", "")
             lines.append("FIELD GENERATION INSTRUCTIONS (DISCRIMINATED UNION):")
             if disc_prop:
-                lines.append(f"Discriminator field: \"{disc_prop}\"")
+                lines.append(f'Discriminator field: "{disc_prop}"')
             lines.append("Pick ONE variant and include ALL its required fields:")
             lines.append("")
             for i, variant in enumerate(one_of[:4]):
@@ -2999,13 +3336,17 @@ Do NOT invent or call POST endpoints that are not documented here.
                             v_required = v_required + sub.get("required", [])
                 v_title = variant.get("title", f"Variant {i+1}")
                 if v_props:
-                    lines.append(f"  Variant \"{v_title}\" (required: {list(set(v_required))}):")
+                    lines.append(
+                        f'  Variant "{v_title}" (required: {list(set(v_required))}):'
+                    )
                     for vp_name, vp_schema in v_props.items():
                         if not isinstance(vp_schema, dict):
                             continue
                         unwrapped_vp, _ = self._unwrap_nullable_schema(vp_schema)
-                        instruction = self._get_type_instruction(unwrapped_vp, field_name=vp_name)
-                        lines.append(f"    \"{vp_name}\": {instruction}")
+                        instruction = self._get_type_instruction(
+                            unwrapped_vp, field_name=vp_name
+                        )
+                        lines.append(f'    "{vp_name}": {instruction}')
                     lines.append("")
             return "\n".join(lines)
 
@@ -3030,11 +3371,15 @@ Do NOT invent or call POST endpoints that are not documented here.
             # Use shared type→instruction mapper (pass field_name for inference)
             instruction = self._get_type_instruction(unwrapped, field_name=field_name)
 
-            lines.append(f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}")
+            lines.append(
+                f"  \"{field_name}\": {instruction}  # type={field_type}{', format=' + field_format if field_format else ''}{required_marker}"
+            )
 
         return "\n".join(lines)
 
-    def _precompute_object_instruction(self, schema: dict, _ancestors: Optional[frozenset] = None) -> str:
+    def _precompute_object_instruction(
+        self, schema: dict, _ancestors: Optional[frozenset] = None
+    ) -> str:
         """Generate a dict literal instruction for a nested object schema.
 
         Recurses into nested object properties. Uses identity-based ancestry
@@ -3063,7 +3408,9 @@ Do NOT invent or call POST endpoints that are not documented here.
             unwrapped, _ = self._unwrap_nullable_schema(prop_schema)
 
             # Delegate to shared type→instruction mapper with ancestry tracking and field name
-            val = self._get_type_instruction(unwrapped, _object_ancestors=new_ancestors, field_name=prop_name)
+            val = self._get_type_instruction(
+                unwrapped, _object_ancestors=new_ancestors, field_name=prop_name
+            )
             parts.append(f'"{prop_name}": {val}')
 
         return "{" + ", ".join(parts) + "}"
@@ -3083,14 +3430,17 @@ Do NOT invent or call POST endpoints that are not documented here.
     def _sanitize_identifier(self, name: str) -> str:
         """Sanitize string to be a valid Python identifier"""
         import re
+
         # Replace common separators with underscores
-        name = name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
+        name = (
+            name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
+        )
         # Remove any remaining non-alphanumeric chars (except underscore)
-        name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+        name = re.sub(r"[^a-zA-Z0-9_]", "", name)
         # Remove consecutive underscores
-        name = re.sub(r'_+', '_', name)
+        name = re.sub(r"_+", "_", name)
         # Remove leading/trailing underscores
-        name = name.strip('_')
+        name = name.strip("_")
         # Ensure doesn't start with a number
         if name and name[0].isdigit():
             name = f"n{name}"
@@ -3098,7 +3448,9 @@ Do NOT invent or call POST endpoints that are not documented here.
 
     def _operation_to_class_name(self, endpoint: Any) -> str:
         """Convert operation_id to valid Python class name"""
-        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
         # Sanitize and convert to PascalCase
         sanitized = self._sanitize_identifier(operation_id)
         words = sanitized.replace("_", " ").split()
@@ -3106,17 +3458,23 @@ Do NOT invent or call POST endpoints that are not documented here.
 
     def _generate_operation_id(self, endpoint: Any) -> str:
         """Generate operation_id from method and path if not present"""
-        path_parts = endpoint.path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+        path_parts = (
+            endpoint.path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+        )
         raw_id = f"{endpoint.method.lower()}_{path_parts}"
         return self._sanitize_identifier(raw_id)
 
     def get_endpoint_dir_name(self, endpoint: Any) -> str:
         """Get directory name for an endpoint"""
-        operation_id = getattr(endpoint, "operation_id", "") or self._generate_operation_id(endpoint)
+        operation_id = getattr(
+            endpoint, "operation_id", ""
+        ) or self._generate_operation_id(endpoint)
         # Sanitize for filesystem
         return self._sanitize_identifier(operation_id).lower()
 
-    async def _call_ai_service(self, prompt: str, scenario_type: str = "unknown") -> str:
+    async def _call_ai_service(
+        self, prompt: str, scenario_type: str = "unknown"
+    ) -> str:
         """Call AI service with retry logic. Raises AIServiceError after all retries fail."""
         messages = [
             {
@@ -3157,10 +3515,12 @@ Do NOT invent or call POST endpoints that are not documented here.
                 logger.debug(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
             except Exception as e:
                 last_error = e
-                logger.debug(f"AI error on attempt {attempt + 1} for {scenario_type}: {e}")
+                logger.debug(
+                    f"AI error on attempt {attempt + 1} for {scenario_type}: {e}"
+                )
 
             if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
 
         # All retries exhausted - raise exception
         raise AIServiceError(
@@ -3176,7 +3536,9 @@ Do NOT invent or call POST endpoints that are not documented here.
         import re
 
         # First, strip any <analysis> sections (from chain-of-thought prompts)
-        response = re.sub(r"<analysis>.*?</analysis>", "", response, flags=re.DOTALL | re.IGNORECASE)
+        response = re.sub(
+            r"<analysis>.*?</analysis>", "", response, flags=re.DOTALL | re.IGNORECASE
+        )
 
         # Try case-insensitive match with closing tag (handle attributes like <code lang="python">)
         pattern = r"<code[^>]*>(.*?)</code>"
@@ -3188,13 +3550,15 @@ Do NOT invent or call POST endpoints that are not documented here.
             # Fallback: handle <code> without closing tag
             code_start = re.search(r"<code[^>]*>", response, re.IGNORECASE)
             if code_start:
-                code = response[code_start.end():]
+                code = response[code_start.end() :]
             else:
                 code = response
 
         # Aggressively strip ALL markdown code fence variations (anywhere in content)
         # Handles: ```python, ```code, ```py, ``` with any language identifier
-        code = re.sub(r"```[\w]*\s*\n?", "", code)  # Opening fences with optional language
+        code = re.sub(
+            r"```[\w]*\s*\n?", "", code
+        )  # Opening fences with optional language
         code = re.sub(r"\n?```\s*$", "", code)  # Trailing fence at end
         code = re.sub(r"\n?```\s*\n", "\n", code)  # Fences in middle of content
 
@@ -3202,38 +3566,44 @@ Do NOT invent or call POST endpoints that are not documented here.
         code = re.sub(r"</?code[^>]*>", "", code, flags=re.IGNORECASE)
 
         # Clean up garbage lines that aren't valid Python
-        lines = code.split('\n')
+        lines = code.split("\n")
         cleaned_lines = []
         for line in lines:
             stripped = line.strip()
             # Skip lines starting with ! (not valid Python, often editor garbage)
-            if stripped.startswith('!'):
+            if stripped.startswith("!"):
                 continue
             # Skip lines that look like file headers from editors
-            if stripped.startswith('DO NOT EDIT') or stripped.startswith('generated by'):
+            if stripped.startswith("DO NOT EDIT") or stripped.startswith(
+                "generated by"
+            ):
                 continue
             # Skip LLM explanatory notes that aren't valid Python
             # These often start with "Note:", "Since", "This", etc. and aren't comments
-            if stripped.startswith('Note:') or stripped.startswith('Note that'):
+            if stripped.startswith("Note:") or stripped.startswith("Note that"):
                 continue
-            if stripped.startswith('Since ') and not stripped.startswith('Since('):
+            if stripped.startswith("Since ") and not stripped.startswith("Since("):
                 continue
-            if stripped.startswith('This endpoint') or stripped.startswith('This is'):
+            if stripped.startswith("This endpoint") or stripped.startswith("This is"):
                 continue
-            if stripped.startswith('We ') and ('test' in stripped.lower() or 'endpoint' in stripped.lower()):
+            if stripped.startswith("We ") and (
+                "test" in stripped.lower() or "endpoint" in stripped.lower()
+            ):
                 continue
             # Skip chain-of-thought analysis remnants that leaked through
-            if stripped.startswith('STEP ') and ':' in stripped:
+            if stripped.startswith("STEP ") and ":" in stripped:
                 continue
-            if stripped.startswith('Method:') or stripped.startswith('Path:'):
+            if stripped.startswith("Method:") or stripped.startswith("Path:"):
                 continue
-            if stripped.startswith('Required:') or stripped.startswith('Optional:'):
+            if stripped.startswith("Required:") or stripped.startswith("Optional:"):
                 continue
             cleaned_lines.append(line)
 
-        return '\n'.join(cleaned_lines).strip()
+        return "\n".join(cleaned_lines).strip()
 
-    def _fix_class_name(self, code: str, expected_class_name: str, scenario_type: str) -> str:
+    def _fix_class_name(
+        self, code: str, expected_class_name: str, scenario_type: str
+    ) -> str:
         """
         Fix class name in generated code to match expected naming convention.
 
@@ -3248,20 +3618,22 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Find class definition that inherits from BaseWorkflow
         # Matches: class SomeName(BaseWorkflow): or class SomeName(TaskSet, BaseWorkflow):
-        pattern = r'class\s+(\w+)\s*\([^)]*BaseWorkflow[^)]*\)\s*:'
+        pattern = r"class\s+(\w+)\s*\([^)]*BaseWorkflow[^)]*\)\s*:"
         match = re.search(pattern, code)
 
         if match:
             actual_class_name = match.group(1)
             if actual_class_name != expected_full_name:
-                logger.debug(f"Fixing class name: {actual_class_name} -> {expected_full_name}")
+                logger.debug(
+                    f"Fixing class name: {actual_class_name} -> {expected_full_name}"
+                )
                 # Replace the class name in definition only
                 # Note: We only fix the class definition, not docstrings/comments
                 # If LLM uses wrong name elsewhere, validation will fail and trigger retry
                 code = re.sub(
-                    rf'\bclass\s+{re.escape(actual_class_name)}\s*\(',
-                    f'class {expected_full_name}(',
-                    code
+                    rf"\bclass\s+{re.escape(actual_class_name)}\s*\(",
+                    f"class {expected_full_name}(",
+                    code,
                 )
 
         return code
@@ -3277,11 +3649,11 @@ Do NOT invent or call POST endpoints that are not documented here.
         Preserves ASCII printable characters (0x20-0x7E) and whitespace.
         """
         cleaned_lines = []
-        for line in code.split('\n'):
+        for line in code.split("\n"):
             # Keep only ASCII characters (codes 0-127)
-            cleaned = ''.join(c for c in line if ord(c) < 128)
+            cleaned = "".join(c for c in line if ord(c) < 128)
             cleaned_lines.append(cleaned)
-        return '\n'.join(cleaned_lines)
+        return "\n".join(cleaned_lines)
 
     def _fix_bytes_literals(self, code: str) -> str:
         """
@@ -3301,7 +3673,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             content = match.group(1)
             # Check if content has non-ASCII
             try:
-                content.encode('ascii')
+                content.encode("ascii")
                 return match.group(0)  # Valid ASCII, keep as-is
             except UnicodeEncodeError:
                 # Has non-ASCII, convert to .encode() form
@@ -3311,11 +3683,11 @@ Do NOT invent or call POST endpoints that are not documented here.
             content = match.group(1)
             # Check if content has non-ASCII
             try:
-                content.encode('ascii')
+                content.encode("ascii")
                 return match.group(0)  # Valid ASCII, keep as-is
             except UnicodeEncodeError:
                 # Has non-ASCII, convert to .encode() form
-                return f'"{content}".encode(\'utf-8\')'
+                return f"\"{content}\".encode('utf-8')"
 
         # Patterns that properly handle escaped quotes
         # (?:[^'\\]|\\.)* matches: non-quote-non-backslash OR backslash+anything
@@ -3348,15 +3720,15 @@ Do NOT invent or call POST endpoints that are not documented here.
         import re
 
         # Problematic escape sequences that trigger SyntaxWarnings
-        problematic_escapes = re.compile(
-            r'\\[dDwWsS+*?^$.|()\\[\]{}]'
-        )
+        problematic_escapes = re.compile(r"\\[dDwWsS+*?^$.|()\\[\]{}]")
 
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
         except tokenize.TokenizeError:
             # If tokenization fails, return unchanged (validation will catch issues)
-            logger.debug("Tokenization failed in _fix_regex_strings, returning unchanged")
+            logger.debug(
+                "Tokenization failed in _fix_regex_strings, returning unchanged"
+            )
             return code
 
         # Find strings that need fixing and build replacement list
@@ -3370,7 +3742,9 @@ Do NOT invent or call POST endpoints that are not documented here.
             string_val = tok.string
 
             # Skip if already a raw string (r"..." or r'...')
-            if string_val.startswith(('r"', "r'", 'R"', "R'", 'br"', "br'", 'rb"', "rb'")):
+            if string_val.startswith(
+                ('r"', "r'", 'R"', "R'", 'br"', "br'", 'rb"', "rb'")
+            ):
                 continue
 
             # Skip bytes literals (handled by _fix_bytes_literals)
@@ -3388,7 +3762,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                 if string_val.startswith('"""') or string_val.startswith("'''"):
                     quote = string_val[:3]
                     content = string_val[3:-3]
-                    new_string = f'r{quote}{content}{quote}'
+                    new_string = f"r{quote}{content}{quote}"
                 elif string_val.startswith('"'):
                     content = string_val[1:-1]
                     new_string = f'r"{content}"'
@@ -3399,17 +3773,22 @@ Do NOT invent or call POST endpoints that are not documented here.
                     # Unknown format, skip
                     continue
 
-                replacements.append((
-                    tok.start[0], tok.start[1],
-                    tok.end[0], tok.end[1],
-                    string_val, new_string
-                ))
+                replacements.append(
+                    (
+                        tok.start[0],
+                        tok.start[1],
+                        tok.end[0],
+                        tok.end[1],
+                        string_val,
+                        new_string,
+                    )
+                )
 
         # Apply replacements in reverse order to maintain positions
         if not replacements:
             return code
 
-        lines = code.split('\n')
+        lines = code.split("\n")
 
         # Sort by position (row, col) in reverse order
         replacements.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -3430,9 +3809,9 @@ Do NOT invent or call POST endpoints that are not documented here.
                 last_part = lines[end_row][end_col:]
                 lines[start_row] = first_part + new + last_part
                 # Remove the lines that were part of the multi-line string
-                del lines[start_row + 1:end_row + 1]
+                del lines[start_row + 1 : end_row + 1]
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def _fix_missing_imports(self, code: str) -> str:
         """
@@ -3445,10 +3824,10 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Map of function/symbol usage patterns to their required import statements
         import_fixes = {
-            r'\bget_task_weight\s*\(': 'from utils import get_task_weight',
+            r"\bget_task_weight\s*\(": "from utils import get_task_weight",
         }
 
-        lines = code.split('\n')
+        lines = code.split("\n")
 
         for pattern, import_stmt in import_fixes.items():
             # Check if the symbol is used in the code
@@ -3460,10 +3839,12 @@ Do NOT invent or call POST endpoints that are not documented here.
                     for i, line in enumerate(lines):
                         stripped = line.strip()
                         # Track the last import line
-                        if stripped.startswith('import ') or stripped.startswith('from '):
+                        if stripped.startswith("import ") or stripped.startswith(
+                            "from "
+                        ):
                             insert_idx = i + 1
                         # Stop at class definition
-                        elif stripped.startswith('class '):
+                        elif stripped.startswith("class "):
                             break
 
                     # Insert the import
@@ -3473,7 +3854,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                         # No imports found, insert at beginning
                         lines.insert(0, import_stmt)
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def _fix_isoformat_calls(self, code: str) -> str:
         """
@@ -3489,20 +3870,20 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         # Methods that return strings (not datetime objects)
         date_methods = [
-            'random_date',
-            'random_datetime',
-            'random_time',
-            'random_date_between',
-            'random_future_date',
-            'random_past_date',
+            "random_date",
+            "random_datetime",
+            "random_time",
+            "random_date_between",
+            "random_future_date",
+            "random_past_date",
         ]
 
         # Pattern: test_data_generator.random_date(...).isoformat()
         # Capture the method call and remove .isoformat()
         for method in date_methods:
             # Match method call with any arguments, followed by .isoformat()
-            pattern = rf'(test_data_generator\.{method}\([^)]*\))\.isoformat\(\)'
-            code = re.sub(pattern, r'\1', code)
+            pattern = rf"(test_data_generator\.{method}\([^)]*\))\.isoformat\(\)"
+            code = re.sub(pattern, r"\1", code)
 
         return code
 
@@ -3528,7 +3909,9 @@ Do NOT invent or call POST endpoints that are not documented here.
             )
         except Exception as e:
             # Fallback to simple prompt if template fails
-            logger.warning(f"Failed to render fix template: {e}. Falling back to inline prompt.")
+            logger.warning(
+                f"Failed to render fix template: {e}. Falling back to inline prompt."
+            )
             return f"""Fix this Python syntax error:
 
 Error: {error_message}
@@ -3571,7 +3954,9 @@ Output the complete corrected Python code:"""
                 endpoint_method=endpoint_method,
             )
         except Exception as e:
-            logger.warning(f"Failed to render semantic fix template: {e}. Falling back to inline prompt.")
+            logger.warning(
+                f"Failed to render semantic fix template: {e}. Falling back to inline prompt."
+            )
             return f"""Fix these semantic issues in the generated code:
 
 {error_message}
@@ -3587,7 +3972,14 @@ Fix ALL the violations and output the complete corrected Python code:"""
     # Project imports are extracted dynamically from prompt templates
     _BASE_ALLOWED_IMPORTS = {
         # Standard library
-        "random", "logging", "datetime", "time", "json", "re", "uuid", "string",
+        "random",
+        "logging",
+        "datetime",
+        "time",
+        "json",
+        "re",
+        "uuid",
+        "string",
         # Locust
         "locust",
     }
@@ -3626,9 +4018,9 @@ Fix ALL the violations and output the complete corrected Python code:"""
                 # Find the ALLOWED IMPORTS section
                 # Pattern: === ALLOWED IMPORTS ... === followed by ```python ... ```
                 match = re.search(
-                    r'===\s*ALLOWED IMPORTS[^=]*===.*?```python\s*(.*?)```',
+                    r"===\s*ALLOWED IMPORTS[^=]*===.*?```python\s*(.*?)```",
                     content,
-                    re.DOTALL | re.IGNORECASE
+                    re.DOTALL | re.IGNORECASE,
                 )
 
                 if not match:
@@ -3642,8 +4034,8 @@ Fix ALL the violations and output the complete corrected Python code:"""
                 except SyntaxError:
                     # Template might have Jinja syntax, try cleaning it
                     # Remove Jinja tags like {% if db_type == "mongo" %}
-                    cleaned = re.sub(r'\{%.*?%\}', '', imports_code)
-                    cleaned = re.sub(r'\{\{.*?\}\}', '', cleaned)
+                    cleaned = re.sub(r"\{%.*?%\}", "", imports_code)
+                    cleaned = re.sub(r"\{\{.*?\}\}", "", cleaned)
                     try:
                         tree = ast.parse(cleaned)
                     except SyntaxError:
@@ -3655,13 +4047,13 @@ Fix ALL the violations and output the complete corrected Python code:"""
                         for alias in node.names:
                             # Add both the full path and the root module
                             allowed.add(alias.name)
-                            allowed.add(alias.name.split('.')[0])
+                            allowed.add(alias.name.split(".")[0])
 
                     elif isinstance(node, ast.ImportFrom):
                         if node.module:
                             # Add both the full path and the root module
                             allowed.add(node.module)
-                            allowed.add(node.module.split('.')[0])
+                            allowed.add(node.module.split(".")[0])
 
             except Exception as e:
                 logger.debug(f"Could not parse imports from {template_file}: {e}")
@@ -3670,24 +4062,37 @@ Fix ALL the violations and output the complete corrected Python code:"""
         logger.debug(f"Extracted allowed imports from templates: {allowed}")
         return allowed
 
-    def _validate_template_context(self, context: Dict[str, Any], scenario_type: ScenarioType) -> None:
+    def _validate_template_context(
+        self, context: Dict[str, Any], scenario_type: ScenarioType
+    ) -> None:
         """Validate that required template context variables are present.
 
         Logs warnings for missing/empty critical variables that could cause
         LLM hallucination. Does not raise exceptions - just logs issues.
         """
         # Required variables for all scenarios (must not be None or empty)
-        required_vars = ["endpoint", "base_workflow", "test_data_content", "class_name", "method", "path"]
+        required_vars = [
+            "endpoint",
+            "base_workflow",
+            "test_data_content",
+            "class_name",
+            "method",
+            "path",
+        ]
 
         for var in required_vars:
             value = context.get(var)
             if value is None or (isinstance(value, str) and not value.strip()):
-                logger.warning(f"Template context missing required variable '{var}' for {scenario_type.value} scenario")
+                logger.warning(
+                    f"Template context missing required variable '{var}' for {scenario_type.value} scenario"
+                )
 
         # Check endpoint_expected_status - should be a list, not None
         expected_status = context.get("endpoint_expected_status")
         if not expected_status or not isinstance(expected_status, list):
-            logger.warning(f"Template context has invalid endpoint_expected_status: {expected_status}")
+            logger.warning(
+                f"Template context has invalid endpoint_expected_status: {expected_status}"
+            )
 
     def _validate_python_code(self, content: str) -> Tuple[bool, str]:
         """Validate Python syntax and check for suspicious imports"""
@@ -3695,7 +4100,10 @@ Fix ALL the violations and output the complete corrected Python code:"""
         try:
             compile(content, "<string>", "exec")
         except SyntaxError as e:
-            return False, f"Line {e.lineno}: {e.msg} - {e.text.strip() if e.text else ''}"
+            return (
+                False,
+                f"Line {e.lineno}: {e.msg} - {e.text.strip() if e.text else ''}",
+            )
 
         # Check for potentially problematic imports
         warnings = self._check_imports(content)
@@ -3728,14 +4136,18 @@ Fix ALL the violations and output the complete corrected Python code:"""
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    module_name = alias.name.split('.')[0]
+                    module_name = alias.name.split(".")[0]
                     if module_name not in self._allowed_imports:
-                        warnings.append(f"import {alias.name} - module '{module_name}' not in allowed list")
+                        warnings.append(
+                            f"import {alias.name} - module '{module_name}' not in allowed list"
+                        )
 
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
-                    module_name = node.module.split('.')[0]
+                    module_name = node.module.split(".")[0]
                     if module_name not in self._allowed_imports:
-                        warnings.append(f"from {node.module} import ... - module '{module_name}' not in allowed list")
+                        warnings.append(
+                            f"from {node.module} import ... - module '{module_name}' not in allowed list"
+                        )
 
         return warnings

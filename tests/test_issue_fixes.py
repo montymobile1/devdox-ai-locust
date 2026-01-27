@@ -15,9 +15,7 @@ Issue 11: TODO comment on auth detection (no test needed)
 Issue 12: Enum values not truncated
 """
 
-import pytest
-import json
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock
 from click.testing import CliRunner
 
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Response
@@ -28,15 +26,14 @@ from devdox_ai_locust.utils.code_validator import CodeValidator
 # Issue 1: --max-llm-workers CLI flag
 # ============================================================
 
+
 class TestMaxLLMWorkers:
     """Tests for --max-llm-workers CLI flag validation."""
 
     def test_default_value_is_1(self):
         """--max-llm-workers defaults to 1."""
         from devdox_ai_locust.cli import generate
-        from click.testing import CliRunner
 
-        runner = CliRunner()
         # We can't fully run generate without a valid swagger URL,
         # but we can check the parameter definition
         params = {p.name: p for p in generate.params}
@@ -46,26 +43,36 @@ class TestMaxLLMWorkers:
     def test_rejects_value_above_10(self):
         """--max-llm-workers > 10 raises BadParameter."""
         from devdox_ai_locust.cli import generate
-        from click.testing import CliRunner
 
         runner = CliRunner()
-        result = runner.invoke(generate, [
-            "--max-llm-workers", "11",
-            "http://example.com/swagger.json",
-        ], catch_exceptions=True)
+        result = runner.invoke(
+            generate,
+            [
+                "--max-llm-workers",
+                "11",
+                "http://example.com/swagger.json",
+            ],
+            catch_exceptions=True,
+        )
         assert result.exit_code != 0
-        assert "cannot exceed 10" in result.output or "cannot exceed 10" in str(result.exception)
+        assert "cannot exceed 10" in result.output or "cannot exceed 10" in str(
+            result.exception
+        )
 
     def test_accepts_value_10(self):
         """--max-llm-workers=10 is accepted (validation passes before other errors)."""
         from devdox_ai_locust.cli import generate
-        from click.testing import CliRunner
 
         runner = CliRunner()
-        result = runner.invoke(generate, [
-            "--max-llm-workers", "10",
-            "http://example.com/swagger.json",
-        ], catch_exceptions=True)
+        result = runner.invoke(
+            generate,
+            [
+                "--max-llm-workers",
+                "10",
+                "http://example.com/swagger.json",
+            ],
+            catch_exceptions=True,
+        )
         # Should not fail due to max-llm-workers validation
         assert "cannot exceed 10" not in (result.output or "")
 
@@ -73,6 +80,7 @@ class TestMaxLLMWorkers:
 # ============================================================
 # Issue 2: Recursive $ref resolution
 # ============================================================
+
 
 class TestRecursiveRefResolution:
     """Tests for _resolve_schema_deep recursive resolution."""
@@ -92,7 +100,7 @@ class TestRecursiveRefResolution:
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                        }
+                        },
                     }
                 }
             }
@@ -114,15 +122,15 @@ class TestRecursiveRefResolution:
                         "type": "object",
                         "properties": {
                             "city": {"type": "string"},
-                        }
+                        },
                     },
                     "User": {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
                             "address": {"$ref": "#/components/schemas/Address"},
-                        }
-                    }
+                        },
+                    },
                 }
             }
         }
@@ -146,7 +154,7 @@ class TestRecursiveRefResolution:
                         "properties": {
                             "name": {"type": "string"},
                             "best_friend": {"$ref": "#/components/schemas/Person"},
-                        }
+                        },
                     }
                 }
             }
@@ -173,7 +181,7 @@ class TestRecursiveRefResolution:
                         "type": "object",
                         "properties": {
                             "id": {"type": "integer"},
-                        }
+                        },
                     }
                 }
             }
@@ -201,7 +209,7 @@ class TestRecursiveRefResolution:
                         "type": "object",
                         "properties": {
                             "label": {"type": "string"},
-                        }
+                        },
                     }
                 }
             }
@@ -237,13 +245,17 @@ class TestRecursiveRefResolution:
 # Issue 4: Deterministic fallback templates
 # ============================================================
 
+
 class TestDeterministicFallbackTemplates:
     """Tests that optional params are never randomly skipped."""
 
     def test_all_optional_params_included(self):
         """All optional parameters are included in generated query params."""
         from devdox_ai_locust.locust_generator import LocustTestGenerator
-        from devdox_ai_locust.utils.open_ai_parser import Parameter, ParameterType, Endpoint
+        from devdox_ai_locust.utils.open_ai_parser import (
+            Parameter,
+            ParameterType,
+        )
 
         gen = LocustTestGenerator()
         endpoint = Mock()
@@ -280,6 +292,7 @@ class TestDeterministicFallbackTemplates:
 # Issue 5: Single _extract_code call
 # ============================================================
 
+
 class TestSingleExtractCode:
     """Tests that _call_ai_service returns raw content without extraction."""
 
@@ -300,7 +313,9 @@ class TestSingleExtractCode:
         )
 
         # Mock the AI response with <analysis> and <code> tags
-        raw_response = "<analysis>some analysis</analysis>\n<code>\nprint('hello')\n</code>"
+        raw_response = (
+            "<analysis>some analysis</analysis>\n<code>\nprint('hello')\n</code>"
+        )
         mock_response = Mock()
         mock_response.choices = [Mock()]
         mock_response.choices[0].message = Mock()
@@ -319,6 +334,7 @@ class TestSingleExtractCode:
 # ============================================================
 # Issue 6: Segment-by-segment path matching
 # ============================================================
+
 
 class TestPathMatching:
     """Tests for _paths_match segment-by-segment comparison."""
@@ -343,21 +359,20 @@ class TestPathMatching:
 
     def test_multi_param_paths(self):
         """Multiple path params are all treated as wildcards."""
-        assert CodeValidator._paths_match(
-            "/users/{user_id}/posts/{post_id}",
-            "/users/{uid}/posts/{pid}"
-        ) is True
+        assert (
+            CodeValidator._paths_match(
+                "/users/{user_id}/posts/{post_id}", "/users/{uid}/posts/{pid}"
+            )
+            is True
+        )
 
     def test_nested_resource_path(self):
         """Nested resource paths differentiated correctly."""
-        assert CodeValidator._paths_match(
-            "/items/{id}",
-            "/items/{id}/details"
-        ) is False
-        assert CodeValidator._paths_match(
-            "/items/{id}/details",
-            "/items/{id}/details"
-        ) is True
+        assert CodeValidator._paths_match("/items/{id}", "/items/{id}/details") is False
+        assert (
+            CodeValidator._paths_match("/items/{id}/details", "/items/{id}/details")
+            is True
+        )
 
     def test_trailing_slashes_normalized(self):
         """Trailing slashes are stripped."""
@@ -367,6 +382,7 @@ class TestPathMatching:
 # ============================================================
 # Issue 7: Regex captures f-string paths
 # ============================================================
+
 
 class TestMakeRequestRegex:
     """Tests for MAKE_REQUEST_CALL_RE capturing f-string paths."""
@@ -408,6 +424,7 @@ class TestMakeRequestRegex:
 # ============================================================
 # Issue 8: List[Response] handling
 # ============================================================
+
 
 class TestListResponseHandling:
     """Tests that orchestrator formatting handles List[Response] correctly."""
@@ -455,6 +472,7 @@ class TestListResponseHandling:
 # ============================================================
 # Issue 9: allOf handling in _precompute_positive_fields
 # ============================================================
+
 
 class TestAllOfHandling:
     """Tests for allOf schema merging in _precompute_positive_fields."""
@@ -520,7 +538,7 @@ class TestAllOfHandling:
                     "type": "object",
                     "properties": {"base_field": {"type": "string"}},
                 },
-            ]
+            ],
         }
 
         result = gen._precompute_positive_fields(endpoint)
@@ -533,6 +551,7 @@ class TestAllOfHandling:
 # ============================================================
 # Issue 10: Recursive _precompute_object_instruction
 # ============================================================
+
 
 class TestRecursiveObjectInstruction:
     """Tests for recursive nested object instruction generation."""
@@ -556,9 +575,9 @@ class TestRecursiveObjectInstruction:
                     "properties": {
                         "city": {"type": "string"},
                         "zip": {"type": "integer", "minimum": 10000, "maximum": 99999},
-                    }
+                    },
                 }
-            }
+            },
         }
 
         result = gen._precompute_object_instruction(schema)
@@ -591,11 +610,11 @@ class TestRecursiveObjectInstruction:
                             "type": "object",
                             "properties": {
                                 "level3_val": {"type": "string"},
-                            }
+                            },
                         }
-                    }
+                    },
                 }
-            }
+            },
         }
 
         result = gen._precompute_object_instruction(schema)
@@ -620,7 +639,7 @@ class TestRecursiveObjectInstruction:
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-            }
+            },
         }
         # Make best_friend point to the same schema object
         person_schema["properties"]["best_friend"] = person_schema
@@ -653,10 +672,10 @@ class TestRecursiveObjectInstruction:
                         "properties": {
                             "label": {"type": "string"},
                             "value": {"type": "integer"},
-                        }
-                    }
+                        },
+                    },
                 }
-            }
+            },
         }
 
         result = gen._precompute_object_instruction(schema)
@@ -669,6 +688,7 @@ class TestRecursiveObjectInstruction:
 # ============================================================
 # Issue 12: Enum values not truncated
 # ============================================================
+
 
 class TestEnumNotTruncated:
     """Tests that enum values are displayed in full."""
@@ -685,8 +705,14 @@ class TestEnumNotTruncated:
         )
 
         # Create a schema with a long enum list
-        long_enum = ["value_one", "value_two", "value_three", "value_four",
-                     "value_five_is_quite_long", "value_six_even_longer_than_before"]
+        long_enum = [
+            "value_one",
+            "value_two",
+            "value_three",
+            "value_four",
+            "value_five_is_quite_long",
+            "value_six_even_longer_than_before",
+        ]
         schema = {
             "type": "object",
             "properties": {
@@ -694,7 +720,7 @@ class TestEnumNotTruncated:
                     "type": "string",
                     "enum": long_enum,
                 }
-            }
+            },
         }
 
         result = gen._format_schema(schema, indent=0)
@@ -709,47 +735,56 @@ class TestEnumNotTruncated:
 # Issue 6 (additional): _path_matches_spec uses _paths_match
 # ============================================================
 
+
 class TestPathMatchesSpec:
     """Tests that _path_matches_spec correctly uses segment matching."""
 
     def test_matches_exact_path(self):
         """Exact path match works."""
         validator = CodeValidator()
-        assert validator._path_matches_spec(
-            "/items", "/items", ["/items", "/users"]
-        ) is True
+        assert (
+            validator._path_matches_spec("/items", "/items", ["/items", "/users"])
+            is True
+        )
 
     def test_matches_parameterized_path(self):
         """Parameterized paths match with different variable names."""
         validator = CodeValidator()
-        assert validator._path_matches_spec(
-            "/items/123", "/items/{id}", ["/items/{id}"]
-        ) is True
+        assert (
+            validator._path_matches_spec("/items/123", "/items/{id}", ["/items/{id}"])
+            is True
+        )
 
     def test_does_not_match_different_depth(self):
         """Paths with different depths don't match."""
         validator = CodeValidator()
-        assert validator._path_matches_spec(
-            "/items/123/details", "/items/{id}", ["/items/{id}"]
-        ) is False
+        assert (
+            validator._path_matches_spec(
+                "/items/123/details", "/items/{id}", ["/items/{id}"]
+            )
+            is False
+        )
 
     def test_does_not_match_different_base(self):
         """Paths with different base segments don't match."""
         validator = CodeValidator()
-        assert validator._path_matches_spec(
-            "/orders/123", "/items/{id}", ["/items/{id}"]
-        ) is False
+        assert (
+            validator._path_matches_spec("/orders/123", "/items/{id}", ["/items/{id}"])
+            is False
+        )
 
 
 # ============================================================
 # Issue 15: OpenAPI 3.1 anyOf nullable pattern unwrapping
 # ============================================================
 
+
 class TestUnwrapNullableSchema:
     """Tests for _unwrap_nullable_schema handling OpenAPI 3.0 and 3.1 nullable patterns."""
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_unwrap_31_string_nullable(self):
@@ -771,7 +806,12 @@ class TestUnwrapNullableSchema:
     def test_unwrap_31_ref_nullable(self):
         """OpenAPI 3.1 anyOf with object ref + null unwraps to the object schema."""
         gen = self._get_generator()
-        schema = {"anyOf": [{"type": "object", "properties": {"street": {"type": "string"}}}, {"type": "null"}]}
+        schema = {
+            "anyOf": [
+                {"type": "object", "properties": {"street": {"type": "string"}}},
+                {"type": "null"},
+            ]
+        }
         unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
         assert unwrapped["type"] == "object"
         assert "street" in unwrapped["properties"]
@@ -801,7 +841,7 @@ class TestUnwrapNullableSchema:
                 {"type": "object", "properties": {"pet_type": {"const": "dog"}}},
                 {"type": "object", "properties": {"pet_type": {"const": "cat"}}},
             ],
-            "discriminator": {"propertyName": "pet_type"}
+            "discriminator": {"propertyName": "pet_type"},
         }
         unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
         assert unwrapped == schema  # Not unwrapped
@@ -818,7 +858,12 @@ class TestUnwrapNullableSchema:
     def test_unwrap_enum_nullable(self):
         """Nullable enum schema is unwrapped to expose enum values."""
         gen = self._get_generator()
-        schema = {"anyOf": [{"type": "string", "enum": ["active", "inactive"]}, {"type": "null"}]}
+        schema = {
+            "anyOf": [
+                {"type": "string", "enum": ["active", "inactive"]},
+                {"type": "null"},
+            ]
+        }
         unwrapped, is_nullable = gen._unwrap_nullable_schema(schema)
         assert unwrapped["enum"] == ["active", "inactive"]
         assert is_nullable is True
@@ -835,11 +880,13 @@ class TestUnwrapNullableSchema:
 # Issue 15+16: Nullable schema integration in format/precompute
 # ============================================================
 
+
 class TestNullableSchemaIntegration:
     """Tests that nullable unwrapping is applied in formatting and precomputation."""
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         gen = ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
         return gen
 
@@ -850,9 +897,11 @@ class TestNullableSchemaIntegration:
             "type": "object",
             "properties": {
                 "notes": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                "count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+                "count": {
+                    "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]
+                },
             },
-            "required": ["count"]
+            "required": ["count"],
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -868,8 +917,13 @@ class TestNullableSchemaIntegration:
         schema = {
             "type": "object",
             "properties": {
-                "created_at": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
-            }
+                "created_at": {
+                    "anyOf": [
+                        {"type": "string", "format": "date-time"},
+                        {"type": "null"},
+                    ]
+                },
+            },
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -881,8 +935,13 @@ class TestNullableSchemaIntegration:
         schema = {
             "type": "object",
             "properties": {
-                "status": {"anyOf": [{"type": "string", "enum": ["active", "pending"]}, {"type": "null"}]},
-            }
+                "status": {
+                    "anyOf": [
+                        {"type": "string", "enum": ["active", "pending"]},
+                        {"type": "null"},
+                    ]
+                },
+            },
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -895,8 +954,13 @@ class TestNullableSchemaIntegration:
         schema = {
             "type": "object",
             "properties": {
-                "age": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 150}, {"type": "null"}]},
-            }
+                "age": {
+                    "anyOf": [
+                        {"type": "integer", "minimum": 0, "maximum": 150},
+                        {"type": "null"},
+                    ]
+                },
+            },
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -911,9 +975,14 @@ class TestNullableSchemaIntegration:
         endpoint.request_body.schema = {
             "type": "object",
             "properties": {
-                "count": {"anyOf": [{"type": "integer", "minimum": 1, "maximum": 100}, {"type": "null"}]},
+                "count": {
+                    "anyOf": [
+                        {"type": "integer", "minimum": 1, "maximum": 100},
+                        {"type": "null"},
+                    ]
+                },
             },
-            "required": ["count"]
+            "required": ["count"],
         }
         result = gen._precompute_positive_fields(endpoint)
         assert "generate_integer" in result
@@ -927,8 +996,10 @@ class TestNullableSchemaIntegration:
         endpoint.request_body.schema = {
             "type": "object",
             "properties": {
-                "email": {"anyOf": [{"type": "string", "format": "email"}, {"type": "null"}]},
-            }
+                "email": {
+                    "anyOf": [{"type": "string", "format": "email"}, {"type": "null"}]
+                },
+            },
         }
         result = gen._precompute_positive_fields(endpoint)
         assert "generate_email" in result
@@ -941,8 +1012,13 @@ class TestNullableSchemaIntegration:
         endpoint.request_body.schema = {
             "type": "object",
             "properties": {
-                "status": {"anyOf": [{"type": "string", "enum": ["active", "inactive"]}, {"type": "null"}]},
-            }
+                "status": {
+                    "anyOf": [
+                        {"type": "string", "enum": ["active", "inactive"]},
+                        {"type": "null"},
+                    ]
+                },
+            },
         }
         result = gen._precompute_positive_fields(endpoint)
         assert "random.choice" in result
@@ -955,7 +1031,9 @@ class TestNullableSchemaIntegration:
             "properties": {
                 "name": {"type": "string"},
                 "age": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-                "email": {"anyOf": [{"type": "string", "format": "email"}, {"type": "null"}]},
+                "email": {
+                    "anyOf": [{"type": "string", "format": "email"}, {"type": "null"}]
+                },
             }
         }
         result = gen._precompute_object_instruction(schema)
@@ -969,8 +1047,13 @@ class TestNullableSchemaIntegration:
             "type": "object",
             "properties": {
                 "id": {"type": "integer"},
-                "deleted_at": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
-            }
+                "deleted_at": {
+                    "anyOf": [
+                        {"type": "string", "format": "date-time"},
+                        {"type": "null"},
+                    ]
+                },
+            },
         }
         lines = gen._format_response_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -982,6 +1065,7 @@ class TestNullableSchemaIntegration:
 # ============================================================
 # Issue 16: Parameter enum extraction for nullable params
 # ============================================================
+
 
 class TestNullableParameterExtraction:
     """Tests that nullable enum parameters are correctly extracted."""
@@ -996,16 +1080,21 @@ class TestNullableParameterExtraction:
         """Parser extracts enum values from anyOf nullable parameter schema."""
         parser = self._get_parser()
         operation = {
-            "parameters": [{
-                "name": "status",
-                "in": "query",
-                "schema": {
-                    "anyOf": [
-                        {"type": "string", "enum": ["active", "inactive", "pending"]},
-                        {"type": "null"}
-                    ]
+            "parameters": [
+                {
+                    "name": "status",
+                    "in": "query",
+                    "schema": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": ["active", "inactive", "pending"],
+                            },
+                            {"type": "null"},
+                        ]
+                    },
                 }
-            }]
+            ]
         }
         params = parser._extract_parameters(operation)
         assert params[0].enum == ["active", "inactive", "pending"]
@@ -1015,16 +1104,18 @@ class TestNullableParameterExtraction:
         """Parser extracts format from anyOf nullable parameter schema."""
         parser = self._get_parser()
         operation = {
-            "parameters": [{
-                "name": "created_after",
-                "in": "query",
-                "schema": {
-                    "anyOf": [
-                        {"type": "string", "format": "date-time"},
-                        {"type": "null"}
-                    ]
+            "parameters": [
+                {
+                    "name": "created_after",
+                    "in": "query",
+                    "schema": {
+                        "anyOf": [
+                            {"type": "string", "format": "date-time"},
+                            {"type": "null"},
+                        ]
+                    },
                 }
-            }]
+            ]
         }
         params = parser._extract_parameters(operation)
         assert params[0].format == "date-time"
@@ -1034,16 +1125,18 @@ class TestNullableParameterExtraction:
         """Parser extracts constraints from anyOf nullable parameter schema."""
         parser = self._get_parser()
         operation = {
-            "parameters": [{
-                "name": "limit",
-                "in": "query",
-                "schema": {
-                    "anyOf": [
-                        {"type": "integer", "minimum": 1, "maximum": 100},
-                        {"type": "null"}
-                    ]
+            "parameters": [
+                {
+                    "name": "limit",
+                    "in": "query",
+                    "schema": {
+                        "anyOf": [
+                            {"type": "integer", "minimum": 1, "maximum": 100},
+                            {"type": "null"},
+                        ]
+                    },
                 }
-            }]
+            ]
         }
         params = parser._extract_parameters(operation)
         assert params[0].type == "integer"
@@ -1062,16 +1155,18 @@ class TestNullableParameterExtraction:
         }
         parser.components = parser.spec_data["components"]
         operation = {
-            "parameters": [{
-                "name": "status",
-                "in": "query",
-                "schema": {
-                    "anyOf": [
-                        {"$ref": "#/components/schemas/Status"},
-                        {"type": "null"}
-                    ]
+            "parameters": [
+                {
+                    "name": "status",
+                    "in": "query",
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": "#/components/schemas/Status"},
+                            {"type": "null"},
+                        ]
+                    },
                 }
-            }]
+            ]
         }
         params = parser._extract_parameters(operation)
         assert params[0].type == "string"
@@ -1082,11 +1177,13 @@ class TestNullableParameterExtraction:
 # Issue 17: Discriminator const matching normalization
 # ============================================================
 
+
 class TestDiscriminatorConstMatching:
     """Tests for _resolve_ref_in_union matching multi-word schema names."""
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         gen = ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
         return gen
 
@@ -1095,7 +1192,12 @@ class TestDiscriminatorConstMatching:
         gen = self._get_generator()
         one_of = [
             {"properties": {"pet_type": {"const": "dog"}, "breed": {"type": "string"}}},
-            {"properties": {"pet_type": {"const": "cat"}, "indoor": {"type": "boolean"}}},
+            {
+                "properties": {
+                    "pet_type": {"const": "cat"},
+                    "indoor": {"type": "boolean"},
+                }
+            },
         ]
         result = gen._resolve_ref_in_union("#/components/schemas/Dog", one_of)
         assert result is not None
@@ -1105,8 +1207,18 @@ class TestDiscriminatorConstMatching:
         """Multi-word snake_case const matches PascalCase ref name."""
         gen = self._get_generator()
         one_of = [
-            {"properties": {"payment_type": {"const": "credit_card"}, "card_number": {"type": "string"}}},
-            {"properties": {"payment_type": {"const": "bank_transfer"}, "account": {"type": "string"}}},
+            {
+                "properties": {
+                    "payment_type": {"const": "credit_card"},
+                    "card_number": {"type": "string"},
+                }
+            },
+            {
+                "properties": {
+                    "payment_type": {"const": "bank_transfer"},
+                    "account": {"type": "string"},
+                }
+            },
         ]
         result = gen._resolve_ref_in_union("#/components/schemas/CreditCard", one_of)
         assert result is not None
@@ -1116,7 +1228,12 @@ class TestDiscriminatorConstMatching:
         """kebab-case const matches PascalCase ref name."""
         gen = self._get_generator()
         one_of = [
-            {"properties": {"type": {"const": "bank-transfer"}, "iban": {"type": "string"}}},
+            {
+                "properties": {
+                    "type": {"const": "bank-transfer"},
+                    "iban": {"type": "string"},
+                }
+            },
         ]
         result = gen._resolve_ref_in_union("#/components/schemas/BankTransfer", one_of)
         assert result is not None
@@ -1136,11 +1253,13 @@ class TestDiscriminatorConstMatching:
 # Issue 18: additionalProperties (map types) handling
 # ============================================================
 
+
 class TestAdditionalPropertiesHandling:
     """Tests for additionalProperties map type handling in schema formatting."""
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         gen = ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
         return gen
 
@@ -1152,9 +1271,9 @@ class TestAdditionalPropertiesHandling:
             "properties": {
                 "metadata": {
                     "type": "object",
-                    "additionalProperties": {"type": "string"}
+                    "additionalProperties": {"type": "string"},
                 }
-            }
+            },
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -1169,9 +1288,9 @@ class TestAdditionalPropertiesHandling:
             "properties": {
                 "scores": {
                     "type": "object",
-                    "additionalProperties": {"type": "integer"}
+                    "additionalProperties": {"type": "integer"},
                 }
-            }
+            },
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -1182,12 +1301,7 @@ class TestAdditionalPropertiesHandling:
         gen = self._get_generator()
         schema = {
             "type": "object",
-            "properties": {
-                "extra": {
-                    "type": "object",
-                    "additionalProperties": True
-                }
-            }
+            "properties": {"extra": {"type": "object", "additionalProperties": True}},
         }
         lines = gen._format_schema(schema, indent=0)
         output = "\n".join(lines)
@@ -1202,11 +1316,8 @@ class TestAdditionalPropertiesHandling:
         endpoint.request_body.schema = {
             "type": "object",
             "properties": {
-                "tags": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"}
-                }
-            }
+                "tags": {"type": "object", "additionalProperties": {"type": "string"}}
+            },
         }
         result = gen._precompute_positive_fields(endpoint)
         assert "key_" in result
@@ -1222,9 +1333,9 @@ class TestAdditionalPropertiesHandling:
             "properties": {
                 "scores": {
                     "type": "object",
-                    "additionalProperties": {"type": "integer"}
+                    "additionalProperties": {"type": "integer"},
                 }
-            }
+            },
         }
         result = gen._precompute_positive_fields(endpoint)
         assert "generate_integer" in result
@@ -1234,10 +1345,7 @@ class TestAdditionalPropertiesHandling:
         gen = self._get_generator()
         schema = {
             "properties": {
-                "labels": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"}
-                }
+                "labels": {"type": "object", "additionalProperties": {"type": "string"}}
             }
         }
         result = gen._precompute_object_instruction(schema)
@@ -1249,11 +1357,13 @@ class TestAdditionalPropertiesHandling:
 # 4th Sweep: Shared Helper Tests
 # ============================================================
 
+
 class TestExtractAllProperties:
     """Tests for _extract_all_properties shared helper."""
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_direct_properties(self):
@@ -1291,7 +1401,7 @@ class TestExtractAllProperties:
             "properties": {"status": {"type": "string", "enum": ["active"]}},
             "allOf": [
                 {"properties": {"id": {"type": "integer"}}},
-            ]
+            ],
         }
         props, required = gen._extract_all_properties(schema)
         assert "id" in props
@@ -1304,8 +1414,14 @@ class TestExtractAllProperties:
         gen = self._get_generator()
         schema = {
             "oneOf": [
-                {"properties": {"card_number": {"type": "string"}}, "required": ["card_number"]},
-                {"properties": {"account_number": {"type": "string"}}, "required": ["account_number"]},
+                {
+                    "properties": {"card_number": {"type": "string"}},
+                    "required": ["card_number"],
+                },
+                {
+                    "properties": {"account_number": {"type": "string"}},
+                    "required": ["account_number"],
+                },
             ],
             "discriminator": {"propertyName": "payment_type"},
         }
@@ -1364,6 +1480,7 @@ class TestEscapeForPythonString:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_backslash_escaping(self):
@@ -1404,6 +1521,7 @@ class TestGetTypeInstruction:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_enum_priority(self):
@@ -1423,20 +1541,28 @@ class TestGetTypeInstruction:
 
     def test_format_date(self):
         gen = self._get_generator()
-        assert "random_date" in gen._get_type_instruction({"type": "string", "format": "date"})
+        assert "random_date" in gen._get_type_instruction(
+            {"type": "string", "format": "date"}
+        )
 
     def test_format_datetime(self):
         """date-time format uses dedicated random_datetime() method."""
         gen = self._get_generator()
-        assert "random_datetime" in gen._get_type_instruction({"type": "string", "format": "date-time"})
+        assert "random_datetime" in gen._get_type_instruction(
+            {"type": "string", "format": "date-time"}
+        )
 
     def test_format_email(self):
         gen = self._get_generator()
-        assert "generate_email" in gen._get_type_instruction({"type": "string", "format": "email"})
+        assert "generate_email" in gen._get_type_instruction(
+            {"type": "string", "format": "email"}
+        )
 
     def test_format_uuid(self):
         gen = self._get_generator()
-        assert "random_uuid" in gen._get_type_instruction({"type": "string", "format": "uuid"})
+        assert "random_uuid" in gen._get_type_instruction(
+            {"type": "string", "format": "uuid"}
+        )
 
     def test_format_uri_randomized(self):
         """URI format uses dedicated random_uri() method."""
@@ -1475,13 +1601,17 @@ class TestGetTypeInstruction:
 
     def test_integer_with_bounds(self):
         gen = self._get_generator()
-        result = gen._get_type_instruction({"type": "integer", "minimum": 5, "maximum": 50})
+        result = gen._get_type_instruction(
+            {"type": "integer", "minimum": 5, "maximum": 50}
+        )
         assert "min_val=5" in result
         assert "max_val=50" in result
 
     def test_integer_exclusive(self):
         gen = self._get_generator()
-        result = gen._get_type_instruction({"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 100})
+        result = gen._get_type_instruction(
+            {"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 100}
+        )
         assert "exclusive=True" in result
 
     def test_integer_multiple_of(self):
@@ -1501,24 +1631,32 @@ class TestGetTypeInstruction:
 
     def test_object_with_properties(self):
         gen = self._get_generator()
-        result = gen._get_type_instruction({"type": "object", "properties": {"x": {"type": "integer"}}})
+        result = gen._get_type_instruction(
+            {"type": "object", "properties": {"x": {"type": "integer"}}}
+        )
         assert "generate_integer" in result  # nested field instruction
 
     def test_object_additional_properties(self):
         gen = self._get_generator()
-        result = gen._get_type_instruction({"type": "object", "additionalProperties": {"type": "integer"}})
+        result = gen._get_type_instruction(
+            {"type": "object", "additionalProperties": {"type": "integer"}}
+        )
         assert "key_" in result
         assert "generate_integer" in result
 
     def test_array_string_items(self):
         gen = self._get_generator()
-        result = gen._get_type_instruction({"type": "array", "items": {"type": "string"}})
+        result = gen._get_type_instruction(
+            {"type": "array", "items": {"type": "string"}}
+        )
         assert "generate_string" in result
         assert "for _ in range" in result
 
     def test_array_enum_items(self):
         gen = self._get_generator()
-        result = gen._get_type_instruction({"type": "array", "items": {"type": "string", "enum": ["a", "b"]}})
+        result = gen._get_type_instruction(
+            {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}}
+        )
         assert "random.choice" in result
 
     def test_unknown_type_fallback(self):
@@ -1537,6 +1675,7 @@ class TestBoundaryArithmeticGuard:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def _make_endpoint(self, min_val=None, max_val=None):
@@ -1581,6 +1720,7 @@ class TestParameterTypeGuard:
     def test_invalid_location_skipped(self):
         """Parameter with invalid 'in' value is skipped with warning."""
         from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser
+
         parser = OpenAPIParser()
         parser.spec_data = {"openapi": "3.0.0", "info": {"title": "Test"}, "paths": {}}
         parser.components = {}
@@ -1588,7 +1728,11 @@ class TestParameterTypeGuard:
         operation = {
             "parameters": [
                 {"name": "valid_param", "in": "query", "schema": {"type": "string"}},
-                {"name": "invalid_param", "in": "body", "schema": {"type": "string"}},  # 2.x style
+                {
+                    "name": "invalid_param",
+                    "in": "body",
+                    "schema": {"type": "string"},
+                },  # 2.x style
                 {"name": "another_valid", "in": "header", "schema": {"type": "string"}},
             ]
         }
@@ -1603,7 +1747,11 @@ class TestStatusCodeFallbackDefaults:
     """Tests for H3 fix: fallback defaults when registry returns nothing."""
 
     def _get_generator(self):
-        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+        from devdox_ai_locust.utils.scenario_generator import (
+            ScenarioWorkflowGenerator,
+            ScenarioType,
+        )
+
         gen = ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
         # Mock fallback registry that returns empty responses
         mock_registry = Mock()
@@ -1624,7 +1772,9 @@ class TestStatusCodeFallbackDefaults:
         """Negative scenario gets default 400/422 when registry is empty."""
         gen, ScenarioType = self._get_generator()
         endpoint = self._make_endpoint()
-        result = gen._precompute_scenario_status_codes(endpoint, ScenarioType.NEGATIVE, has_auth=False)
+        result = gen._precompute_scenario_status_codes(
+            endpoint, ScenarioType.NEGATIVE, has_auth=False
+        )
         codes = [c for c, _ in result]
         assert 400 in codes
         assert 422 in codes
@@ -1633,7 +1783,9 @@ class TestStatusCodeFallbackDefaults:
         """Security scenario gets default 400/403/422 when registry is empty."""
         gen, ScenarioType = self._get_generator()
         endpoint = self._make_endpoint()
-        result = gen._precompute_scenario_status_codes(endpoint, ScenarioType.SECURITY, has_auth=False)
+        result = gen._precompute_scenario_status_codes(
+            endpoint, ScenarioType.SECURITY, has_auth=False
+        )
         codes = [c for c, _ in result]
         assert 400 in codes
         assert 403 in codes
@@ -1643,7 +1795,9 @@ class TestStatusCodeFallbackDefaults:
         """Positive scenario gets default 200 when registry is empty."""
         gen, ScenarioType = self._get_generator()
         endpoint = self._make_endpoint()
-        result = gen._precompute_scenario_status_codes(endpoint, ScenarioType.POSITIVE, has_auth=False)
+        result = gen._precompute_scenario_status_codes(
+            endpoint, ScenarioType.POSITIVE, has_auth=False
+        )
         codes = [c for c, _ in result]
         assert 200 in codes
 
@@ -1653,10 +1807,12 @@ class TestExclude2xxInFormatEndpoint:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def _make_endpoint(self):
         from devdox_ai_locust.utils.open_ai_parser import Response
+
         endpoint = Mock()
         endpoint.method = "POST"
         endpoint.path = "/items"
@@ -1696,6 +1852,7 @@ class TestParamTypeExactMatch:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def _make_endpoint_with_path_param(self, param_type):
@@ -1764,6 +1921,7 @@ class TestNoneParamType:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_none_type_defaults_to_string(self):
@@ -1788,6 +1946,7 @@ class TestPrecomputePositiveFieldsRefactored:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_allof_schema_generates_all_fields(self):
@@ -1867,6 +2026,7 @@ class TestNegativeInjectionWithAllOf:
 
     def _get_generator(self):
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     def test_negative_finds_allof_fields(self):
@@ -1879,8 +2039,14 @@ class TestNegativeInjectionWithAllOf:
         body = Mock()
         body.schema = {
             "allOf": [
-                {"properties": {"age": {"type": "integer", "minimum": 0}}, "required": ["age"]},
-                {"properties": {"score": {"type": "number", "maximum": 100}}, "required": ["score"]},
+                {
+                    "properties": {"age": {"type": "integer", "minimum": 0}},
+                    "required": ["age"],
+                },
+                {
+                    "properties": {"score": {"type": "number", "maximum": 100}},
+                    "required": ["score"],
+                },
             ]
         }
         endpoint.request_body = body
@@ -1914,12 +2080,14 @@ class TestNegativeInjectionWithAllOf:
 # 5th Sweep Fixes: Locust Run Error Analysis
 # ============================================================
 
+
 class TestFifthSweepFixes:
     """Tests for 5th sweep fixes addressing locust run errors."""
 
     def _get_generator(self):
         """Helper to create a ScenarioWorkflowGenerator instance for testing."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
         return ScenarioWorkflowGenerator.__new__(ScenarioWorkflowGenerator)
 
     # Category 1: Float-to-int TypeError in generate_integer
@@ -2042,7 +2210,9 @@ class TestFifthSweepFixes:
     # Category 2 & 5: Setup endpoints get their own status codes from OpenAPI spec
     def test_format_related_create_endpoints_includes_status_codes(self):
         """_format_related_create_endpoints should include expected_status for each setup endpoint."""
-        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+        from devdox_ai_locust.utils.scenario_generator import (
+            ScenarioWorkflowGenerator,
+        )
         from devdox_ai_locust.ai_config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
@@ -2073,7 +2243,9 @@ class TestFifthSweepFixes:
 
     def test_format_related_create_endpoints_fallback_when_no_responses(self):
         """_format_related_create_endpoints should use FallbackHttpResponseRegistry when no responses defined."""
-        from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator, ScenarioType
+        from devdox_ai_locust.utils.scenario_generator import (
+            ScenarioWorkflowGenerator,
+        )
         from devdox_ai_locust.ai_config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
@@ -2117,10 +2289,12 @@ class TestSixthSweepFixes:
         )
 
         # Test that the instruction uses generate_string with pattern
-        result = gen._get_type_instruction({"type": "string", "pattern": "^EMP-\\d{6}$"})
-        assert 'pattern=' in result
+        result = gen._get_type_instruction(
+            {"type": "string", "pattern": "^EMP-\\d{6}$"}
+        )
+        assert "pattern=" in result
         # The pattern should be preserved for generate_string to handle
-        assert 'EMP-' in result or 'generate_string' in result
+        assert "EMP-" in result or "generate_string" in result
 
     def test_field_name_inference_country_code(self):
         """Fields named 'country' with maxLength<=3 should use random_country_code()."""
@@ -2134,8 +2308,7 @@ class TestSixthSweepFixes:
         )
 
         result = gen._get_type_instruction(
-            {"type": "string", "maxLength": 2},
-            field_name="country"
+            {"type": "string", "maxLength": 2}, field_name="country"
         )
         assert "random_country_code" in result
 
@@ -2151,8 +2324,7 @@ class TestSixthSweepFixes:
         )
 
         result = gen._get_type_instruction(
-            {"type": "string", "maxLength": 3},
-            field_name="currency_code"
+            {"type": "string", "maxLength": 3}, field_name="currency_code"
         )
         assert "random_currency_code" in result
 
@@ -2168,8 +2340,7 @@ class TestSixthSweepFixes:
         )
 
         result = gen._get_type_instruction(
-            {"type": "string"},  # No format specified
-            field_name="created_at"
+            {"type": "string"}, field_name="created_at"  # No format specified
         )
         assert "random_datetime" in result
 
@@ -2185,8 +2356,7 @@ class TestSixthSweepFixes:
         )
 
         result = gen._get_type_instruction(
-            {"type": "string"},  # No format specified
-            field_name="user_email"
+            {"type": "string"}, field_name="user_email"  # No format specified
         )
         assert "generate_email" in result
 
@@ -2202,8 +2372,7 @@ class TestSixthSweepFixes:
         )
 
         result = gen._get_type_instruction(
-            {"type": "string"},
-            field_name="background_color"
+            {"type": "string"}, field_name="background_color"
         )
         assert "random_hex_color" in result
 

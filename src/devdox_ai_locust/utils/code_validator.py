@@ -17,7 +17,7 @@ import ast
 import re
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ValidationViolation:
     """A single validation violation found in generated code."""
+
     rule: str
     message: str
     line_number: Optional[int] = None
@@ -34,6 +35,7 @@ class ValidationViolation:
 @dataclass
 class ValidationResult:
     """Result of validating generated code."""
+
     is_valid: bool
     violations: List[ValidationViolation] = field(default_factory=list)
 
@@ -93,8 +95,7 @@ class CodeValidator:
 
     # Pattern to detect empty setup data dicts (dict with only whitespace/comment)
     EMPTY_SETUP_DICT_RE = re.compile(
-        r'(\w+_data)\s*=\s*\{\s*(?:#[^\n]*)?\s*\}',
-        re.MULTILINE
+        r"(\w+_data)\s*=\s*\{\s*(?:#[^\n]*)?\s*\}", re.MULTILINE
     )
 
     # Security payload patterns that should NOT appear in URL path segments
@@ -110,7 +111,7 @@ class CodeValidator:
 
     # Expected status with 2xx in make_request calls
     SUCCESS_IN_EXPECTED_STATUS_RE = re.compile(
-        r'expected_status=\[([^\]]*)\]',
+        r"expected_status=\[([^\]]*)\]",
     )
 
     # Maps OpenAPI string formats to their correct generator functions
@@ -161,10 +162,16 @@ class CodeValidator:
             violations.extend(self._check_security_path_injection(code))
 
         if scenario_type == "negative":
-            violations.extend(self._check_success_codes_in_negative(code, endpoint_path))
+            violations.extend(
+                self._check_success_codes_in_negative(code, endpoint_path)
+            )
 
         if all_endpoint_paths:
-            violations.extend(self._check_hallucinated_endpoints(code, endpoint_path, all_endpoint_paths))
+            violations.extend(
+                self._check_hallucinated_endpoints(
+                    code, endpoint_path, all_endpoint_paths
+                )
+            )
 
         # Schema compliance check (only for positive workflows with a schema)
         if request_body_schema and scenario_type == "positive":
@@ -185,12 +192,14 @@ class CodeValidator:
         for i, line in enumerate(lines, 1):
             for pattern in self.TEMPLATE_BOILERPLATE_PATTERNS:
                 if re.search(pattern, line, re.IGNORECASE):
-                    violations.append(ValidationViolation(
-                        rule="template_boilerplate",
-                        message=f"Template comment copied verbatim: {line.strip()}",
-                        line_number=i,
-                        severity="error",
-                    ))
+                    violations.append(
+                        ValidationViolation(
+                            rule="template_boilerplate",
+                            message=f"Template comment copied verbatim: {line.strip()}",
+                            line_number=i,
+                            severity="error",
+                        )
+                    )
                     break  # One violation per line
 
         return violations
@@ -203,13 +212,15 @@ class CodeValidator:
         for i, line in enumerate(lines, 1):
             for pattern in self.PLACEHOLDER_PATTERNS:
                 if re.search(pattern, line, re.IGNORECASE):
-                    violations.append(ValidationViolation(
-                        rule="placeholder_comment",
-                        message=f"Placeholder comment instead of code: {line.strip()}. "
-                                f"You MUST generate ALL required fields.",
-                        line_number=i,
-                        severity="error",
-                    ))
+                    violations.append(
+                        ValidationViolation(
+                            rule="placeholder_comment",
+                            message=f"Placeholder comment instead of code: {line.strip()}. "
+                            f"You MUST generate ALL required fields.",
+                            line_number=i,
+                            severity="error",
+                        )
+                    )
                     break
 
         return violations
@@ -230,40 +241,54 @@ class CodeValidator:
         setup_var_patterns = ["_data", "_payload", "_body", "_request"]
 
         for i, line in enumerate(lines, 1):
-            stripped = line.strip()
             # Check for empty dict assignment pattern
             for pattern in setup_var_patterns:
                 if pattern in line and "=" in line:
                     # Check if it's an empty dict (with optional comment inside)
-                    match = re.search(r'(\w+' + re.escape(pattern) + r')\s*=\s*\{\s*(?:#[^\n]*)?\s*\}', line)
+                    match = re.search(
+                        r"(\w+"
+                        + re.escape(pattern)
+                        + r")\s*=\s*\{\s*(?:#[^\n]*)?\s*\}",
+                        line,
+                    )
                     if match:
                         var_name = match.group(1)
-                        violations.append(ValidationViolation(
-                            rule="empty_setup_dict",
-                            message=f"Empty setup data dict '{var_name}'. "
-                                    f"You MUST generate actual field values for setup API calls. "
-                                    f"Do NOT leave empty dicts with placeholder comments.",
-                            line_number=i,
-                            severity="error",
-                        ))
+                        violations.append(
+                            ValidationViolation(
+                                rule="empty_setup_dict",
+                                message=f"Empty setup data dict '{var_name}'. "
+                                f"You MUST generate actual field values for setup API calls. "
+                                f"Do NOT leave empty dicts with placeholder comments.",
+                                line_number=i,
+                                severity="error",
+                            )
+                        )
                         break
 
             # Also check for multi-line empty dicts (opening brace only on this line)
-            if re.match(r'\s*(\w+_data|\w+_payload|\w+_body)\s*=\s*\{\s*$', line):
+            if re.match(r"\s*(\w+_data|\w+_payload|\w+_body)\s*=\s*\{\s*$", line):
                 # Check next line for closing brace with only comment
                 if i < len(lines):
                     next_line = lines[i].strip() if i < len(lines) else ""
                     # If next line is just "}" or "# comment" followed by "}"
-                    if next_line == "}" or (next_line.startswith("#") and i + 1 < len(lines) and lines[i + 1].strip() == "}"):
-                        var_match = re.match(r'\s*(\w+_data|\w+_payload|\w+_body)', line)
+                    if next_line == "}" or (
+                        next_line.startswith("#")
+                        and i + 1 < len(lines)
+                        and lines[i + 1].strip() == "}"
+                    ):
+                        var_match = re.match(
+                            r"\s*(\w+_data|\w+_payload|\w+_body)", line
+                        )
                         if var_match:
-                            violations.append(ValidationViolation(
-                                rule="empty_setup_dict",
-                                message=f"Empty setup data dict '{var_match.group(1)}'. "
-                                        f"You MUST generate actual field values for setup API calls.",
-                                line_number=i,
-                                severity="error",
-                            ))
+                            violations.append(
+                                ValidationViolation(
+                                    rule="empty_setup_dict",
+                                    message=f"Empty setup data dict '{var_match.group(1)}'. "
+                                    f"You MUST generate actual field values for setup API calls.",
+                                    line_number=i,
+                                    severity="error",
+                                )
+                            )
 
         return violations
 
@@ -276,22 +301,23 @@ class CodeValidator:
             # Check for f-string paths with payload variables in path segments
             if "make_request" in line and re.search(
                 r'f"[^"]*\/\{(?:payload|random\.choice)',
-                line, re.IGNORECASE,
+                line,
+                re.IGNORECASE,
             ):
-                violations.append(ValidationViolation(
-                    rule="path_param_injection",
-                    message="Security payload injected into URL path parameter. "
-                            "Path params are URL routing - inject into body/query/headers instead.",
-                    line_number=i,
-                    severity="error",
-                ))
+                violations.append(
+                    ValidationViolation(
+                        rule="path_param_injection",
+                        message="Security payload injected into URL path parameter. "
+                        "Path params are URL routing - inject into body/query/headers instead.",
+                        line_number=i,
+                        severity="error",
+                    )
+                )
 
         return violations
 
     # Regex to extract URL argument from make_request calls (second string arg, supports f-strings)
-    _URL_ARG_RE = re.compile(
-        r'make_request\(\s*"[^"]*"\s*,\s*f?"([^"]*)"'
-    )
+    _URL_ARG_RE = re.compile(r'make_request\(\s*"[^"]*"\s*,\s*f?"([^"]*)"')
 
     def _check_empty_path_segments(self, code: str) -> List[ValidationViolation]:
         """Check for empty path segments (double slashes) in URLs (Classification E)."""
@@ -305,15 +331,17 @@ class CodeValidator:
                 if url_match:
                     url = url_match.group(1)
                     # Remove protocol prefix before checking
-                    url_no_protocol = re.sub(r'^https?://', '', url)
+                    url_no_protocol = re.sub(r"^https?://", "", url)
                     if "//" in url_no_protocol:
-                        violations.append(ValidationViolation(
-                            rule="empty_path_segment",
-                            message=f"Empty path segment (double slash) in URL: {url}. "
-                                    f"Use a present but invalid value instead of empty segment.",
-                            line_number=i,
-                            severity="error",
-                        ))
+                        violations.append(
+                            ValidationViolation(
+                                rule="empty_path_segment",
+                                message=f"Empty path segment (double slash) in URL: {url}. "
+                                f"Use a present but invalid value instead of empty segment.",
+                                line_number=i,
+                                severity="error",
+                            )
+                        )
 
         return violations
 
@@ -337,13 +365,15 @@ class CodeValidator:
                 match = self._LITERAL_PATH_PARAM_RE.search(line)
                 if match:
                     url = match.group(1)
-                    violations.append(ValidationViolation(
-                        rule="literal_path_param",
-                        message=f"Path contains literal '{{param}}' without f-string: \"{url}\". "
-                                f"Use f-string like f\"{url}\" to substitute variables.",
-                        line_number=i,
-                        severity="error",
-                    ))
+                    violations.append(
+                        ValidationViolation(
+                            rule="literal_path_param",
+                            message=f"Path contains literal '{{param}}' without f-string: \"{url}\". "
+                            f'Use f-string like f"{url}" to substitute variables.',
+                            line_number=i,
+                            severity="error",
+                        )
+                    )
 
         return violations
 
@@ -379,7 +409,9 @@ class CodeValidator:
 
         return True
 
-    def _check_success_codes_in_negative(self, code: str, endpoint_path: str = "") -> List[ValidationViolation]:
+    def _check_success_codes_in_negative(
+        self, code: str, endpoint_path: str = ""
+    ) -> List[ValidationViolation]:
         """Check for 2xx status codes in negative workflow expected_status (Classification G).
 
         Only flags 2xx codes on make_request calls that target the endpoint under test.
@@ -404,23 +436,30 @@ class CodeValidator:
                         if call_match:
                             call_path = call_match.group(2)
                             # If calling a DIFFERENT endpoint (setup call), allow 2xx
-                            if call_path and not self._paths_match(endpoint_path, call_path):
+                            if call_path and not self._paths_match(
+                                endpoint_path, call_path
+                            ):
                                 continue
 
-                    violations.append(ValidationViolation(
-                        rule="success_in_negative",
-                        message=f"Negative workflow has success codes {success_codes} in expected_status. "
-                                f"Negative tests must ONLY expect 4xx error codes.",
-                        line_number=i,
-                        severity="error",
-                    ))
+                    violations.append(
+                        ValidationViolation(
+                            rule="success_in_negative",
+                            message=f"Negative workflow has success codes {success_codes} in expected_status. "
+                            f"Negative tests must ONLY expect 4xx error codes.",
+                            line_number=i,
+                            severity="error",
+                        )
+                    )
                 except (ValueError, TypeError):
                     pass
 
         return violations
 
     def _check_hallucinated_endpoints(
-        self, code: str, endpoint_path: str, all_endpoint_paths: List[str],
+        self,
+        code: str,
+        endpoint_path: str,
+        all_endpoint_paths: List[str],
     ) -> List[ValidationViolation]:
         """Check for invented endpoints not in the OpenAPI spec (Classification F)."""
         violations = []
@@ -442,18 +481,23 @@ class CodeValidator:
             if self._path_matches_spec(used_path, endpoint_path, all_endpoint_paths):
                 continue
 
-            violations.append(ValidationViolation(
-                rule="hallucinated_endpoint",
-                message=f"Endpoint '{used_path}' not found in OpenAPI spec. "
-                        f"Use ONLY endpoints from ENDPOINT TO TEST or SETUP ENDPOINTS sections.",
-                line_number=i,
-                severity="error",
-            ))
+            violations.append(
+                ValidationViolation(
+                    rule="hallucinated_endpoint",
+                    message=f"Endpoint '{used_path}' not found in OpenAPI spec. "
+                    f"Use ONLY endpoints from ENDPOINT TO TEST or SETUP ENDPOINTS sections.",
+                    line_number=i,
+                    severity="error",
+                )
+            )
 
         return violations
 
     def _path_matches_spec(
-        self, used_path: str, endpoint_path: str, all_paths: List[str],
+        self,
+        used_path: str,
+        endpoint_path: str,
+        all_paths: List[str],
     ) -> bool:
         """Check if a used path matches any known endpoint path."""
         # Direct match
@@ -470,7 +514,9 @@ class CodeValidator:
     # --- Schema Compliance Checks (Classification B) ---
 
     def _check_schema_compliance(
-        self, code: str, schema: Dict[str, Any],
+        self,
+        code: str,
+        schema: Dict[str, Any],
     ) -> List[ValidationViolation]:
         """
         Check generated code against the request body JSON Schema.
@@ -498,7 +544,9 @@ class CodeValidator:
 
         for dict_node in request_dicts:
             violations.extend(
-                self._validate_dict_against_schema(dict_node, properties, schema.get("required", []))
+                self._validate_dict_against_schema(
+                    dict_node, properties, schema.get("required", [])
+                )
             )
 
         return violations
@@ -512,7 +560,14 @@ class CodeValidator:
         - json= keyword argument in function calls
         """
         dicts: List[ast.Dict] = []
-        body_var_names = {"data", "json_data", "payload", "body", "request_data", "request_body"}
+        body_var_names = {
+            "data",
+            "json_data",
+            "payload",
+            "body",
+            "request_data",
+            "request_body",
+        }
 
         for node in ast.walk(tree):
             # Case 1: Assignment like `data = {...}`
@@ -560,27 +615,37 @@ class CodeValidator:
 
             # Check 1: Enum constraint ignored
             if field_enum:
-                violation = self._check_enum_usage(field_name, value_node, field_enum, line_num)
+                violation = self._check_enum_usage(
+                    field_name, value_node, field_enum, line_num
+                )
                 if violation:
                     violations.append(violation)
 
             # Check 2: String format with wrong generator
             elif field_type == "string" and field_format:
-                violation = self._check_format_usage(field_name, value_node, field_format, line_num)
+                violation = self._check_format_usage(
+                    field_name, value_node, field_format, line_num
+                )
                 if violation:
                     violations.append(violation)
 
             # Check 3: Array with mixed types
             if field_type == "array":
                 items_schema = field_schema.get("items", {})
-                violation = self._check_array_types(field_name, value_node, items_schema, line_num)
+                violation = self._check_array_types(
+                    field_name, value_node, items_schema, line_num
+                )
                 if violation:
                     violations.append(violation)
 
         return violations
 
     def _check_enum_usage(
-        self, field_name: str, value_node: ast.AST, enum_values: List[Any], line_num: Optional[int],
+        self,
+        field_name: str,
+        value_node: ast.AST,
+        enum_values: List[Any],
+        line_num: Optional[int],
     ) -> Optional[ValidationViolation]:
         """Check if an enum field uses random.choice() with correct values."""
         # Accept: random.choice([...]), Constant that's in enum, variable that was set from choice
@@ -594,11 +659,15 @@ class CodeValidator:
                 return None  # Using random.choice is correct
 
             # Using a generator (generate_string, generate_integer, etc.) on an enum field
-            if "generate_" in func_name or func_name in ("random_uuid", "random_date", "generate_email"):
+            if "generate_" in func_name or func_name in (
+                "random_uuid",
+                "random_date",
+                "generate_email",
+            ):
                 return ValidationViolation(
                     rule="enum_ignored",
                     message=f"Field '{field_name}' has enum constraint {enum_values} but uses "
-                            f"{func_name}() instead of random.choice({enum_values}).",
+                    f"{func_name}() instead of random.choice({enum_values}).",
                     line_number=line_num,
                     severity="error",
                 )
@@ -606,7 +675,11 @@ class CodeValidator:
         return None
 
     def _check_format_usage(
-        self, field_name: str, value_node: ast.AST, field_format: str, line_num: Optional[int],
+        self,
+        field_name: str,
+        value_node: ast.AST,
+        field_format: str,
+        line_num: Optional[int],
     ) -> Optional[ValidationViolation]:
         """Check if a formatted string field uses the correct generator."""
         expected_generators = self.FORMAT_GENERATOR_MAP.get(field_format)
@@ -619,12 +692,15 @@ class CodeValidator:
             # These formats accept literal strings, just reject generate_string
             if isinstance(value_node, ast.Call):
                 func_name = self._get_call_name(value_node)
-                if func_name in ("generate_string", "test_data_generator.generate_string"):
+                if func_name in (
+                    "generate_string",
+                    "test_data_generator.generate_string",
+                ):
                     return ValidationViolation(
                         rule="wrong_format_generator",
                         message=f"Field '{field_name}' has format '{field_format}' but uses "
-                                f"generate_string(). Use an appropriate literal value or generator "
-                                f"for '{field_format}' format.",
+                        f"generate_string(). Use an appropriate literal value or generator "
+                        f"for '{field_format}' format.",
                         line_number=line_num,
                         severity="error",
                     )
@@ -649,7 +725,7 @@ class CodeValidator:
                 return ValidationViolation(
                     rule="wrong_format_generator",
                     message=f"Field '{field_name}' has format '{field_format}' but uses "
-                            f"generate_string(). Use {expected_list}() instead.",
+                    f"generate_string(). Use {expected_list}() instead.",
                     line_number=line_num,
                     severity="error",
                 )
@@ -657,7 +733,11 @@ class CodeValidator:
         return None
 
     def _check_array_types(
-        self, field_name: str, value_node: ast.AST, items_schema: Dict[str, Any], line_num: Optional[int],
+        self,
+        field_name: str,
+        value_node: ast.AST,
+        items_schema: Dict[str, Any],
+        line_num: Optional[int],
     ) -> Optional[ValidationViolation]:
         """Check if array elements are all the same type as defined in items schema."""
         items_type = items_schema.get("type", "")
@@ -690,7 +770,11 @@ class CodeValidator:
                 # Bool is a subclass of int in Python, handle explicitly
                 if items_type == "integer" and isinstance(elt.value, bool):
                     wrong_elements.append((i, type(elt.value).__name__))
-                elif items_type == "boolean" and isinstance(elt.value, int) and not isinstance(elt.value, bool):
+                elif (
+                    items_type == "boolean"
+                    and isinstance(elt.value, int)
+                    and not isinstance(elt.value, bool)
+                ):
                     wrong_elements.append((i, type(elt.value).__name__))
                 elif not isinstance(elt.value, expected_python_type):
                     wrong_elements.append((i, type(elt.value).__name__))
@@ -700,7 +784,7 @@ class CodeValidator:
             return ValidationViolation(
                 rule="mixed_array_types",
                 message=f"Field '{field_name}' is a {items_type} array but contains mixed types: "
-                        f"{wrong_types}. ALL elements must be {items_type}.",
+                f"{wrong_types}. ALL elements must be {items_type}.",
                 line_number=line_num,
                 severity="error",
             )
@@ -732,19 +816,25 @@ class CodeValidator:
     def _literal_matches_format(self, value: str, field_format: str) -> bool:
         """Check if a literal string value looks valid for a given format."""
         if field_format == "date":
-            return bool(re.match(r'^\d{4}-\d{2}-\d{2}$', value))
+            return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", value))
         if field_format == "date-time":
-            return bool(re.match(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}', value))
+            return bool(re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", value))
         if field_format == "email":
             return "@" in value and "." in value
         if field_format == "uuid":
-            return bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', value, re.I))
+            return bool(
+                re.match(
+                    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    value,
+                    re.I,
+                )
+            )
         if field_format in ("uri", "url"):
             return value.startswith("http://") or value.startswith("https://")
         if field_format == "ipv4":
-            return bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', value))
+            return bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", value))
         if field_format == "hostname":
             return "." in value and " " not in value
         if field_format == "time":
-            return bool(re.match(r'^\d{2}:\d{2}', value))
+            return bool(re.match(r"^\d{2}:\d{2}", value))
         return True  # Unknown format, accept any literal

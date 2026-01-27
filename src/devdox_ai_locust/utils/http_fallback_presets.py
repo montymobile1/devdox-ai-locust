@@ -32,60 +32,138 @@ class FallbackHttpResponseRegistry:
     """
 
     _COMMON: Dict[str, Dict[str, str]] = {
-        "500": {"description": "The server encountered an internal error during request processing."},
-        "502": {"description": "The server received an invalid response from an upstream server."},
-        "503": {"description": "The server was unavailable or overloaded and could not handle the request."},
-        "504": {"description": "The server timed out while waiting for a response from an upstream server."},
+        "500": {
+            "description": "The server encountered an internal error during request processing."
+        },
+        "502": {
+            "description": "The server received an invalid response from an upstream server."
+        },
+        "503": {
+            "description": "The server was unavailable or overloaded and could not handle the request."
+        },
+        "504": {
+            "description": "The server timed out while waiting for a response from an upstream server."
+        },
     }
 
     _BASE_RESPONSES: Dict[str, Dict[str, Dict[str, str]]] = {
         "GET": {
-            "200": {"description": "The server accepted the request and returned a response body."},
-            "204": {"description": "The server accepted the request and returned no response body."},
-            "400": {"description": "The server rejected the request before executing it."},
-            "401": {"description": "The server rejected the request because authentication was not accepted."},
-            "403": {"description": "The server accepted authentication but rejected execution of the request."},
-            "404": {"description": "The server could not match the request to any available handler."},
-            "422": {"description": "The server parsed the request but rejected it before execution."},
+            "200": {
+                "description": "The server accepted the request and returned a response body."
+            },
+            "204": {
+                "description": "The server accepted the request and returned no response body."
+            },
+            "400": {
+                "description": "The server rejected the request before executing it."
+            },
+            "401": {
+                "description": "The server rejected the request because authentication was not accepted."
+            },
+            "403": {
+                "description": "The server accepted authentication but rejected execution of the request."
+            },
+            "404": {
+                "description": "The server could not match the request to any available handler."
+            },
+            "422": {
+                "description": "The server parsed the request but rejected it before execution."
+            },
         },
         "POST": {
-            "201": {"description": "The server executed the request and created new server-side state."},
-            "200": {"description": "The server executed the request and returned a response body."},
-            "204": {"description": "The server executed the request and returned no response body."},
+            "201": {
+                "description": "The server executed the request and created new server-side state."
+            },
+            "200": {
+                "description": "The server executed the request and returned a response body."
+            },
+            "204": {
+                "description": "The server executed the request and returned no response body."
+            },
             "400": {"description": "The server rejected the request before execution."},
-            "401": {"description": "The server rejected the request because authentication was not accepted."},
-            "403": {"description": "The server accepted authentication but rejected execution of the request."},
-            "409": {"description": "The server rejected the request due to a conflict with existing server-side state."},
-            "415": {"description": "The server rejected the request before execution due to unsupported input format."},
-            "422": {"description": "The server parsed the request but rejected it before execution."},
+            "401": {
+                "description": "The server rejected the request because authentication was not accepted."
+            },
+            "403": {
+                "description": "The server accepted authentication but rejected execution of the request."
+            },
+            "409": {
+                "description": "The server rejected the request due to a conflict with existing server-side state."
+            },
+            "415": {
+                "description": "The server rejected the request before execution due to unsupported input format."
+            },
+            "422": {
+                "description": "The server parsed the request but rejected it before execution."
+            },
         },
         "PUT": {
-            "200": {"description": "The server executed the request and replaced existing server-side state."},
-            "204": {"description": "The server executed the request and returned no response body."},
-            "201": {"description": "The server executed the request and created new server-side state."},
+            "200": {
+                "description": "The server executed the request and replaced existing server-side state."
+            },
+            "204": {
+                "description": "The server executed the request and returned no response body."
+            },
+            "201": {
+                "description": "The server executed the request and created new server-side state."
+            },
             "400": {"description": "The server rejected the request before execution."},
-            "401": {"description": "The server rejected the request because authentication was not accepted."},
-            "403": {"description": "The server accepted authentication but rejected execution of the request."},
-            "409": {"description": "The server rejected the request due to a conflict with existing server-side state."},
-            "422": {"description": "The server parsed the request but rejected it before execution."},
+            "401": {
+                "description": "The server rejected the request because authentication was not accepted."
+            },
+            "403": {
+                "description": "The server accepted authentication but rejected execution of the request."
+            },
+            "409": {
+                "description": "The server rejected the request due to a conflict with existing server-side state."
+            },
+            "422": {
+                "description": "The server parsed the request but rejected it before execution."
+            },
         },
         "PATCH": {
-            "200": {"description": "The server executed the request and updated server-side state."},
-            "204": {"description": "The server executed the request and returned no response body."},
+            "200": {
+                "description": "The server executed the request and updated server-side state."
+            },
+            "204": {
+                "description": "The server executed the request and returned no response body."
+            },
             "400": {"description": "The server rejected the request before execution."},
-            "401": {"description": "The server rejected the request because authentication was not accepted."},
-            "403": {"description": "The server accepted authentication but rejected execution of the request."},
-            "409": {"description": "The server rejected the request due to a conflict with existing server-side state."},
-            "415": {"description": "The server rejected the request before execution due to unsupported input format."},
-            "422": {"description": "The server parsed the request but rejected it before execution."},
+            "401": {
+                "description": "The server rejected the request because authentication was not accepted."
+            },
+            "403": {
+                "description": "The server accepted authentication but rejected execution of the request."
+            },
+            "409": {
+                "description": "The server rejected the request due to a conflict with existing server-side state."
+            },
+            "415": {
+                "description": "The server rejected the request before execution due to unsupported input format."
+            },
+            "422": {
+                "description": "The server parsed the request but rejected it before execution."
+            },
         },
         "DELETE": {
-            "204": {"description": "The server executed the request and returned no response body."},
-            "200": {"description": "The server executed the request and returned a response body."},
-            "404": {"description": "The server could not match the request to any available handler."},
-            "401": {"description": "The server rejected the request because authentication was not accepted."},
-            "403": {"description": "The server accepted authentication but rejected execution of the request."},
-            "422": {"description": "The server parsed the request but rejected it before execution."},
+            "204": {
+                "description": "The server executed the request and returned no response body."
+            },
+            "200": {
+                "description": "The server executed the request and returned a response body."
+            },
+            "404": {
+                "description": "The server could not match the request to any available handler."
+            },
+            "401": {
+                "description": "The server rejected the request because authentication was not accepted."
+            },
+            "403": {
+                "description": "The server accepted authentication but rejected execution of the request."
+            },
+            "422": {
+                "description": "The server parsed the request but rejected it before execution."
+            },
         },
     }
 
@@ -135,17 +213,23 @@ class FallbackHttpResponseRegistry:
 
             if requested_status:
                 responses = {
-                    code: data for code, data in responses.items() if code in requested_status
+                    code: data
+                    for code, data in responses.items()
+                    if code in requested_status
                 }
 
             if excluded_status:
                 responses = {
-                    code: data for code, data in responses.items() if code not in excluded_status
+                    code: data
+                    for code, data in responses.items()
+                    if code not in excluded_status
                 }
 
             if exclude_auth:
                 responses = {
-                    code: data for code, data in responses.items() if code not in self._AUTH_CODES
+                    code: data
+                    for code, data in responses.items()
+                    if code not in self._AUTH_CODES
                 }
 
             if responses:
@@ -155,7 +239,7 @@ class FallbackHttpResponseRegistry:
 
     @staticmethod
     def _expand_status_selectors(
-        selectors: Optional[Iterable[Union[str, int]]]
+        selectors: Optional[Iterable[Union[str, int]]],
     ) -> Set[str]:
         """Expand status selectors like '4xx' or 500 into concrete strings."""
         if not selectors:
@@ -168,7 +252,9 @@ class FallbackHttpResponseRegistry:
             if sel.endswith("xx") and len(sel) == 3:
                 try:
                     prefix = int(sel[0])
-                    expanded.update({str(code) for code in range(prefix * 100, (prefix + 1) * 100)})
+                    expanded.update(
+                        {str(code) for code in range(prefix * 100, (prefix + 1) * 100)}
+                    )
                 except (ValueError, IndexError):
                     expanded.add(sel)
                     continue

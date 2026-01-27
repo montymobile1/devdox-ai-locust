@@ -22,23 +22,23 @@ from typing import Dict, List, TextIO
 
 # Patterns compiled once
 _ERROR_PATTERN = re.compile(
-    r'(ERROR|CRITICAL|Request failed|HTTPError|Exception|Error:)',
+    r"(ERROR|CRITICAL|Request failed|HTTPError|Exception|Error:)",
     re.IGNORECASE,
 )
-_TRACEBACK_START = re.compile(r'^Traceback \(most recent call last\):')
+_TRACEBACK_START = re.compile(r"^Traceback \(most recent call last\):")
 _UUID_RE = re.compile(
-    r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
 )
-_TIMESTAMP_RE = re.compile(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*')
-_NUMERIC_PATH_RE = re.compile(r'/\d{2,}')
-_ADDR_RE = re.compile(r'0x[0-9a-f]+', re.I)
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*")
+_NUMERIC_PATH_RE = re.compile(r"/\d{2,}")
+_ADDR_RE = re.compile(r"0x[0-9a-f]+", re.I)
 _LONG_VALUE_RE = re.compile(r"'[^']{50,}'")
-_REQUEST_LINE = re.compile(r'REQUEST:\s*(GET|POST|PUT|PATCH|DELETE)\s+(\S+)', re.I)
-_API_PATH_RE = re.compile(r'(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)', re.I)
+_REQUEST_LINE = re.compile(r"REQUEST:\s*(GET|POST|PUT|PATCH|DELETE)\s+(\S+)", re.I)
+_API_PATH_RE = re.compile(r"(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)", re.I)
 
 # Context lines that are relevant to include with errors
 _CONTEXT_PATTERN = re.compile(
-    r'(REQUEST:|Response|status|body|json|failed|validation)',
+    r"(REQUEST:|Response|status|body|json|failed|validation)",
     re.IGNORECASE,
 )
 
@@ -48,19 +48,19 @@ _CONTEXT_BUFFER_SIZE = 8
 
 def _normalize_error(line: str) -> str:
     """Normalize an error line for deduplication (grouping key only)."""
-    line = _TIMESTAMP_RE.sub('', line)
-    line = _UUID_RE.sub('<UUID>', line)
-    line = _NUMERIC_PATH_RE.sub('/<ID>', line)
-    line = _ADDR_RE.sub('<ADDR>', line)
+    line = _TIMESTAMP_RE.sub("", line)
+    line = _UUID_RE.sub("<UUID>", line)
+    line = _NUMERIC_PATH_RE.sub("/<ID>", line)
+    line = _ADDR_RE.sub("<ADDR>", line)
     # Remove specific API paths to group same error across different endpoints
-    line = re.sub(r'(GET|POST|PUT|PATCH|DELETE)\s+/\S+', r'\1 <PATH>', line)
+    line = re.sub(r"(GET|POST|PUT|PATCH|DELETE)\s+/\S+", r"\1 <PATH>", line)
     return line.strip()
 
 
 def _normalize_exception(line: str) -> str:
     """Normalize an exception line for deduplication (grouping key only)."""
-    line = _UUID_RE.sub('<UUID>', line)
-    line = _NUMERIC_PATH_RE.sub('/<ID>', line)
+    line = _UUID_RE.sub("<UUID>", line)
+    line = _NUMERIC_PATH_RE.sub("/<ID>", line)
     line = _LONG_VALUE_RE.sub("'<LONG_VALUE>'", line)
     return line.strip()
 
@@ -94,7 +94,7 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
         sys.exit(1)
 
     if output_path is None:
-        output_path = str(src.with_suffix('')) + "_reduced.log"
+        output_path = str(src.with_suffix("")) + "_reduced.log"
 
     # Track signatures
     error_signatures: Counter = Counter()
@@ -114,7 +114,7 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
     # Rolling context buffer (recent lines before an error)
     context_buffer: List[str] = []
 
-    with open(src, 'r', encoding='utf-8', errors='replace') as f:
+    with open(src, "r", encoding="utf-8", errors="replace") as f:
         line_iter = _line_iterator(f)
         for line in line_iter:
             total_lines += 1
@@ -124,7 +124,7 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
                 tb_lines = [line]
                 for next_line in line_iter:
                     total_lines += 1
-                    if next_line.startswith((' ', '\t')) or not next_line.strip():
+                    if next_line.startswith((" ", "\t")) or not next_line.strip():
                         tb_lines.append(next_line)
                     else:
                         # Exception line
@@ -139,7 +139,11 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
 
                         if sig not in exception_samples:
                             # Include context before the traceback
-                            relevant_ctx = [l for l in context_buffer if _CONTEXT_PATTERN.search(l)]
+                            relevant_ctx = [
+                                ctx_line
+                                for ctx_line in context_buffer
+                                if _CONTEXT_PATTERN.search(ctx_line)
+                            ]
                             exception_samples[sig] = relevant_ctx + tb_lines
                         else:
                             duplicates_removed += len(tb_lines)
@@ -158,7 +162,11 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
                     error_apis[sig].add(api)
 
                 if sig not in error_samples:
-                    relevant_ctx = [l for l in context_buffer if _CONTEXT_PATTERN.search(l)]
+                    relevant_ctx = [
+                        ctx_line
+                        for ctx_line in context_buffer
+                        if _CONTEXT_PATTERN.search(ctx_line)
+                    ]
                     error_samples[sig] = relevant_ctx + [line]
                 else:
                     duplicates_removed += 1
@@ -173,9 +181,14 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
     # Write reduced log
     _write_reduced_log(
         output_path,
-        error_signatures, error_samples, error_apis,
-        exception_signatures, exception_samples, exception_apis,
-        total_lines, duplicates_removed,
+        error_signatures,
+        error_samples,
+        error_apis,
+        exception_signatures,
+        exception_samples,
+        exception_apis,
+        total_lines,
+        duplicates_removed,
     )
 
     return {
@@ -189,7 +202,7 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
 def _line_iterator(f: TextIO):
     """Yield lines from file, stripping newlines."""
     for line in f:
-        yield line.rstrip('\n\r')
+        yield line.rstrip("\n\r")
 
 
 def _write_reduced_log(
@@ -204,15 +217,21 @@ def _write_reduced_log(
     duplicates_removed: int,
 ):
     """Write the reduced log file with unique errors/exceptions and their context."""
-    with open(output_path, 'w', encoding='utf-8') as out:
-        out.write(f"# Reduced Locust Log\n")
-        out.write(f"# Original: {total_lines} lines | Duplicates removed: {duplicates_removed}\n")
-        out.write(f"# Unique errors: {len(error_signatures)} | Unique exceptions: {len(exception_signatures)}\n")
+    with open(output_path, "w", encoding="utf-8") as out:
+        out.write("# Reduced Locust Log\n")
+        out.write(
+            f"# Original: {total_lines} lines | Duplicates removed: {duplicates_removed}\n"
+        )
+        out.write(
+            f"# Unique errors: {len(error_signatures)} | Unique exceptions: {len(exception_signatures)}\n"
+        )
         out.write(f"#{'=' * 69}\n\n")
 
         # Exceptions (most important)
         if exception_signatures:
-            out.write(f"# {'=' * 30} EXCEPTIONS ({len(exception_signatures)}) {'=' * 30}\n\n")
+            out.write(
+                f"# {'=' * 30} EXCEPTIONS ({len(exception_signatures)}) {'=' * 30}\n\n"
+            )
             for sig, count in exception_signatures.most_common():
                 sample_lines = exception_samples.get(sig, [])
                 apis = exception_apis.get(sig, set())
@@ -246,7 +265,9 @@ def _write_reduced_log(
 def main():
     if len(sys.argv) < 2:
         print("Usage: devdox_ai_locust_analyze <log_file_path> [output_path]")
-        print("       python -m devdox_ai_locust.log_analyzer <log_file_path> [output_path]")
+        print(
+            "       python -m devdox_ai_locust.log_analyzer <log_file_path> [output_path]"
+        )
         sys.exit(1)
 
     log_path = sys.argv[1]
@@ -255,9 +276,11 @@ def main():
     stats = analyze_log(log_path, output_path)
 
     src = Path(log_path)
-    out_name = output_path or (str(src.with_suffix('')) + "_reduced.log")
+    out_name = output_path or (str(src.with_suffix("")) + "_reduced.log")
     print(f"Original:  {stats['total_lines']} lines")
-    print(f"Unique:    {stats['unique_errors']} errors, {stats['unique_exceptions']} exceptions")
+    print(
+        f"Unique:    {stats['unique_errors']} errors, {stats['unique_exceptions']} exceptions"
+    )
     print(f"Removed:   {stats['duplicates_removed']} duplicate lines")
     print(f"Output:    {out_name}")
 

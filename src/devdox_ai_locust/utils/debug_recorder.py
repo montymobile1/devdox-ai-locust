@@ -7,7 +7,7 @@ all intermediate inputs, outputs, and transformations for auditing and debugging
 
 import json
 import asyncio
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,6 +17,7 @@ import aiofiles
 @dataclass
 class ScenarioDebugInfo:
     """Debug information for a single scenario generation"""
+
     scenario_type: str
     context: Dict[str, Any] = field(default_factory=dict)
     prompt: str = ""
@@ -34,6 +35,7 @@ class ScenarioDebugInfo:
 @dataclass
 class EndpointDebugInfo:
     """Debug information for a single endpoint"""
+
     method: str
     path: str
     operation_id: str
@@ -132,8 +134,10 @@ class DebugRecorder:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         async with self._write_lock:
-            async with aiofiles.open(path, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(data, indent=2, default=str, ensure_ascii=False))
+            async with aiofiles.open(path, "w", encoding="utf-8") as f:
+                await f.write(
+                    json.dumps(data, indent=2, default=str, ensure_ascii=False)
+                )
 
     async def _write_text(self, path: Path, content: str) -> None:
         """Write text content to a file asynchronously"""
@@ -141,7 +145,7 @@ class DebugRecorder:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         async with self._write_lock:
-            async with aiofiles.open(path, 'w', encoding='utf-8') as f:
+            async with aiofiles.open(path, "w", encoding="utf-8") as f:
                 await f.write(content)
 
     def _write_json_sync(self, path: Path, data: Any) -> None:
@@ -149,7 +153,7 @@ class DebugRecorder:
         if not self.enabled:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str, ensure_ascii=False)
 
     def _write_text_sync(self, path: Path, content: str) -> None:
@@ -157,7 +161,7 @@ class DebugRecorder:
         if not self.enabled:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
 
     # =========================================================================
@@ -176,7 +180,9 @@ class DebugRecorder:
             return
         self._write_json_sync(self.input_dir / "openapi_raw.json", raw_spec)
 
-    def record_openapi_parsed(self, endpoints: List[Any], api_info: Dict[str, Any]) -> None:
+    def record_openapi_parsed(
+        self, endpoints: List[Any], api_info: Dict[str, Any]
+    ) -> None:
         """Record parsed OpenAPI data"""
         if not self.enabled:
             return
@@ -201,7 +207,9 @@ class DebugRecorder:
                 for param in ep.parameters:
                     param_dict = {
                         "name": getattr(param, "name", None),
-                        "location": str(getattr(param, "location", getattr(param, "in_", "query"))),
+                        "location": str(
+                            getattr(param, "location", getattr(param, "in_", "query"))
+                        ),
                         "required": getattr(param, "required", False),
                         "type": getattr(param, "type", "string"),
                         "format": getattr(param, "format", None),
@@ -224,13 +232,21 @@ class DebugRecorder:
                 if isinstance(ep.responses, dict):
                     for status, resp in ep.responses.items():
                         ep_dict["responses"][str(status)] = {
-                            "description": getattr(resp, "description", None) if hasattr(resp, "description") else str(resp),
+                            "description": (
+                                getattr(resp, "description", None)
+                                if hasattr(resp, "description")
+                                else str(resp)
+                            ),
                         }
                 elif isinstance(ep.responses, list):
                     for resp in ep.responses:
                         status = getattr(resp, "status_code", "unknown")
                         ep_dict["responses"][str(status)] = {
-                            "description": getattr(resp, "description", None) if hasattr(resp, "description") else str(resp),
+                            "description": (
+                                getattr(resp, "description", None)
+                                if hasattr(resp, "description")
+                                else str(resp)
+                            ),
                         }
 
             endpoints_data.append(ep_dict)
@@ -270,8 +286,11 @@ class DebugRecorder:
 
         # Don't include full base_workflow/test_data in context to save space
         # These are already recorded elsewhere
-        filtered_context = {k: v for k, v in context.items()
-                          if k not in ("base_workflow_content", "test_data_content")}
+        filtered_context = {
+            k: v
+            for k, v in context.items()
+            if k not in ("base_workflow_content", "test_data_content")
+        }
 
         self._write_json_sync(file_dir / "context.json", filtered_context)
 
@@ -283,13 +302,17 @@ class DebugRecorder:
         elif file_name.endswith(".md"):
             self._write_text_sync(file_dir / "rendered.md", rendered_content)
         else:
-            self._write_text_sync(file_dir / f"rendered{Path(file_name).suffix}", rendered_content)
+            self._write_text_sync(
+                file_dir / f"rendered{Path(file_name).suffix}", rendered_content
+            )
 
     # =========================================================================
     # Endpoint/Scenario Recording
     # =========================================================================
 
-    def _get_scenario_dir(self, tag: str, endpoint_dir_name: str, scenario_type: str) -> Path:
+    def _get_scenario_dir(
+        self, tag: str, endpoint_dir_name: str, scenario_type: str
+    ) -> Path:
         """Get the directory path for a scenario"""
         return self.workflows_dir / tag / endpoint_dir_name / scenario_type
 
@@ -660,12 +683,16 @@ class DebugRecorder:
         }
         await self._write_json(self.debug_root / "_manifest.json", manifest)
 
-    def record_error(self, error: str, context: Optional[Dict[str, Any]] = None) -> None:
+    def record_error(
+        self, error: str, context: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Record an error"""
         if not self.enabled:
             return
-        self.stats["errors"].append({
-            "error": error,
-            "context": context or {},
-            "timestamp": datetime.now().isoformat(),
-        })
+        self.stats["errors"].append(
+            {
+                "error": error,
+                "context": context or {},
+                "timestamp": datetime.now().isoformat(),
+            }
+        )

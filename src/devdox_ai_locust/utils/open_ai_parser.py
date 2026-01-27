@@ -105,6 +105,7 @@ class OpenAPIParser:
             A valid Python identifier for the operation
         """
         import re
+
         # Remove path parameter braces and leading slash
         path_parts = path.strip("/").replace("{", "").replace("}", "")
         # Combine method and path
@@ -112,11 +113,11 @@ class OpenAPIParser:
         # Sanitize: replace common separators with underscores
         raw_id = raw_id.replace("-", "_").replace(".", "_")
         # Remove non-alphanumeric chars except underscore
-        raw_id = re.sub(r'[^a-zA-Z0-9_]', '', raw_id)
+        raw_id = re.sub(r"[^a-zA-Z0-9_]", "", raw_id)
         # Remove consecutive underscores
-        raw_id = re.sub(r'_+', '_', raw_id)
+        raw_id = re.sub(r"_+", "_", raw_id)
         # Remove leading/trailing underscores
-        raw_id = raw_id.strip('_')
+        raw_id = raw_id.strip("_")
         # Ensure doesn't start with a number (shouldn't happen with method prefix)
         if raw_id and raw_id[0].isdigit():
             raw_id = f"n{raw_id}"
@@ -268,7 +269,10 @@ class OpenAPIParser:
                 resolved_schema = self._resolve_reference(param_schema)
                 if resolved_schema:
                     # Merge any additional properties from param_schema (like default, description)
-                    param_schema = {**resolved_schema, **{k: v for k, v in param_schema.items() if k != "$ref"}}
+                    param_schema = {
+                        **resolved_schema,
+                        **{k: v for k, v in param_schema.items() if k != "$ref"},
+                    }
 
             # Unwrap OpenAPI 3.1 anyOf nullable pattern
             effective_schema = param_schema
@@ -281,7 +285,9 @@ class OpenAPIParser:
                         resolved_variants.append(self._resolve_reference(v) or v)
                     elif isinstance(v, dict):
                         resolved_variants.append(v)
-                real_variants = [v for v in resolved_variants if v.get("type") != "null"]
+                real_variants = [
+                    v for v in resolved_variants if v.get("type") != "null"
+                ]
                 if len(real_variants) == 1:
                     effective_schema = real_variants[0]
 
@@ -409,7 +415,9 @@ class OpenAPIParser:
                     media_type = content[application_json_type]
                 else:
                     content_keys = list(content.keys())
-                    content_type = content_keys[0] if content_keys else "application/json"
+                    content_type = (
+                        content_keys[0] if content_keys else "application/json"
+                    )
                     media_type = content.get(content_type, {})
 
                 schema = media_type.get("schema")
@@ -504,7 +512,9 @@ class OpenAPIParser:
                 resolved = self._resolve_reference(schema)
                 if not resolved:
                     logger.warning(f"Circular reference {ref} could not be resolved")
-                    return {"type": "object"}  # Safe placeholder for unresolvable circular refs
+                    return {
+                        "type": "object"
+                    }  # Safe placeholder for unresolvable circular refs
                 # Return a shallow copy without recursing into its nested refs
                 result = dict(resolved)
                 result.pop("$ref", None)
@@ -526,24 +536,26 @@ class OpenAPIParser:
         if "properties" in result and isinstance(result["properties"], dict):
             resolved_props = {}
             for prop_name, prop_schema in result["properties"].items():
-                resolved_props[prop_name] = self._resolve_schema_deep(
-                    prop_schema, _ancestors
-                ) or prop_schema
+                resolved_props[prop_name] = (
+                    self._resolve_schema_deep(prop_schema, _ancestors) or prop_schema
+                )
             result["properties"] = resolved_props
 
         # Resolve additionalProperties
         if "additionalProperties" in result and isinstance(
             result["additionalProperties"], dict
         ):
-            result["additionalProperties"] = self._resolve_schema_deep(
-                result["additionalProperties"], _ancestors
-            ) or result["additionalProperties"]
+            result["additionalProperties"] = (
+                self._resolve_schema_deep(result["additionalProperties"], _ancestors)
+                or result["additionalProperties"]
+            )
 
         # Resolve items (for arrays)
         if "items" in result and isinstance(result["items"], dict):
-            result["items"] = self._resolve_schema_deep(
-                result["items"], _ancestors
-            ) or result["items"]
+            result["items"] = (
+                self._resolve_schema_deep(result["items"], _ancestors)
+                or result["items"]
+            )
 
         # Resolve allOf, oneOf, anyOf
         for keyword in ("allOf", "oneOf", "anyOf"):
