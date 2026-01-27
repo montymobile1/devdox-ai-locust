@@ -10,8 +10,7 @@ from rich.console import Console
 from rich.table import Table
 from together import AsyncTogether
 
-from .ai_config import AIEnhancementConfig
-from .config import Settings
+from .config import AIEnhancementConfig, Settings
 from devdox_ai_locust.utils.swagger_utils import get_api_schema
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Endpoint
 from devdox_ai_locust.utils.debug_recorder import DebugRecorder

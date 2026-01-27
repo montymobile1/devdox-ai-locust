@@ -300,7 +300,7 @@ class TestSingleExtractCode:
         """_call_ai_service returns raw AI response without _extract_code."""
         import asyncio
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         prompt_dir = Mock()
         mock_client = AsyncMock()
@@ -432,7 +432,7 @@ class TestListResponseHandling:
     def test_format_endpoints_with_list_responses(self):
         """_format_endpoints_for_orchestrator handles List[Response]."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -480,7 +480,7 @@ class TestAllOfHandling:
     def test_allof_properties_merged(self):
         """allOf items' properties are merged together."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -518,7 +518,7 @@ class TestAllOfHandling:
     def test_allof_with_direct_properties(self):
         """allOf + direct properties are all included."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -559,7 +559,7 @@ class TestRecursiveObjectInstruction:
     def test_nested_object_resolved(self):
         """Nested objects generate full dict instructions, not '{}'."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -592,7 +592,7 @@ class TestRecursiveObjectInstruction:
     def test_deeply_nested_objects(self):
         """Three levels of nesting are all resolved."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -626,7 +626,7 @@ class TestRecursiveObjectInstruction:
     def test_circular_object_does_not_infinite_loop(self):
         """Circular object reference stops recursion via identity tracking."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -654,7 +654,7 @@ class TestRecursiveObjectInstruction:
     def test_array_of_nested_objects(self):
         """Arrays of objects have their items recursively resolved."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -696,7 +696,7 @@ class TestEnumNotTruncated:
     def test_long_enum_not_truncated(self):
         """Enum values longer than 60 chars are not cut off."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2223,7 +2223,7 @@ class TestFifthSweepFixes:
         from devdox_ai_locust.utils.scenario_generator import (
             ScenarioWorkflowGenerator,
         )
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2256,7 +2256,7 @@ class TestFifthSweepFixes:
         from devdox_ai_locust.utils.scenario_generator import (
             ScenarioWorkflowGenerator,
         )
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2290,7 +2290,7 @@ class TestSixthSweepFixes:
     def test_prefix_pattern_instruction_generated(self):
         """Pattern like ^EMP-\\d{6}$ should generate correct instruction."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2309,7 +2309,7 @@ class TestSixthSweepFixes:
     def test_field_name_inference_country_code(self):
         """Fields named 'country' with maxLength<=3 should use random_country_code()."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2325,7 +2325,7 @@ class TestSixthSweepFixes:
     def test_field_name_inference_currency_code(self):
         """Fields named 'currency' with maxLength<=4 should use random_currency_code()."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2341,7 +2341,7 @@ class TestSixthSweepFixes:
     def test_field_name_inference_created_at(self):
         """Fields named 'created_at' should use random_datetime() even without format."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2357,7 +2357,7 @@ class TestSixthSweepFixes:
     def test_field_name_inference_email(self):
         """Fields named 'email' should use generate_email() even without format."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2373,7 +2373,7 @@ class TestSixthSweepFixes:
     def test_field_name_inference_color(self):
         """Fields named 'color' should use random_hex_color()."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2389,7 +2389,7 @@ class TestSixthSweepFixes:
     def test_format_byte_uses_base64(self):
         """Format 'byte' should use random_base64()."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
@@ -2403,7 +2403,7 @@ class TestSixthSweepFixes:
     def test_precompute_positive_fields_passes_field_name(self):
         """_precompute_positive_fields should pass field names for inference."""
         from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
-        from devdox_ai_locust.ai_config import AIEnhancementConfig
+        from devdox_ai_locust.config import AIEnhancementConfig
 
         gen = ScenarioWorkflowGenerator(
             prompt_dir=Mock(),
