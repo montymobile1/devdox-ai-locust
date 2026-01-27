@@ -349,7 +349,15 @@ class ScenarioWorkflowGenerator:
             scenario_types, llm_results, endpoint_info
         )
 
-        # Return partial results if some succeeded
+        return self._handle_workflow_results(results, errors, endpoint_info)
+
+    def _handle_workflow_results(
+        self,
+        results: Dict[ScenarioType, str],
+        errors: List[Tuple[ScenarioType, Exception]],
+        endpoint_info: str,
+    ) -> Dict[ScenarioType, str]:
+        """Handle mixed success/failure results from parallel scenario generation."""
         if errors and results:
             for scenario_type, error in errors:
                 logger.debug(
@@ -358,7 +366,6 @@ class ScenarioWorkflowGenerator:
                 )
             return results
 
-        # If ALL scenarios failed, raise the first error
         if errors and not results:
             raise errors[0][1]
 
@@ -848,60 +855,63 @@ class ScenarioWorkflowGenerator:
 
     def _format_endpoints_for_orchestrator(self, endpoints: List[Any]) -> str:
         """Format all endpoints in a tag for the orchestrator prompt."""
+        by_method = self._group_endpoints_by_method(endpoints)
         lines = []
-
-        # Group by HTTP method for clarity
-        by_method = {"POST": [], "GET": [], "PUT": [], "PATCH": [], "DELETE": []}
-        for ep in endpoints:
-            method = ep.method.upper()
-            if method in by_method:
-                by_method[method].append(ep)
-            else:
-                by_method.setdefault("OTHER", []).append(ep)
-
         for method, eps in by_method.items():
             if eps:
                 lines.append(f"\n{method} endpoints:")
                 for ep in eps:
-                    operation_id = getattr(
-                        ep, "operation_id", ""
-                    ) or self._generate_operation_id(ep)
-                    summary = getattr(ep, "summary", "") or "No summary"
-                    lines.append(f"  - {ep.path}")
-                    lines.append(f"    Operation ID: {operation_id}")
-                    lines.append(f"    Summary: {summary}")
-
-                    # Include request body schema for POST/PUT/PATCH
-                    if (
-                        method in ["POST", "PUT", "PATCH"]
-                        and hasattr(ep, "request_body")
-                        and ep.request_body
-                    ):
-                        rb = ep.request_body
-                        schema = getattr(rb, "schema", {})
-                        if schema and isinstance(schema, dict):
-                            lines.append("    Request Body Schema:")
-                            schema_lines = self._format_schema(schema, indent=3)
-                            lines.extend(schema_lines)
-
-                    # Include response schema for understanding ID field
-                    if hasattr(ep, "responses") and ep.responses:
-                        for response in ep.responses:
-                            if str(response.status_code).startswith("2"):
-                                resp_schema = (
-                                    response.schema if response.schema else None
-                                )
-                                if resp_schema:
-                                    lines.append(
-                                        f"    Response ({response.status_code}) Schema:"
-                                    )
-                                    schema_lines = self._format_response_schema(
-                                        resp_schema, indent=3
-                                    )
-                                    lines.extend(schema_lines)
-                                break
-
+                    lines.extend(self._format_orchestrator_endpoint(ep, method))
         return "\n".join(lines)
+
+    def _group_endpoints_by_method(self, endpoints: List[Any]) -> Dict[str, List[Any]]:
+        """Group endpoints by HTTP method."""
+        by_method: Dict[str, List[Any]] = {
+            "POST": [], "GET": [], "PUT": [], "PATCH": [], "DELETE": [],
+        }
+        for ep in endpoints:
+            method = ep.method.upper()
+            by_method.setdefault(method, []).append(ep)
+        return by_method
+
+    def _format_orchestrator_endpoint(self, ep: Any, method: str) -> List[str]:
+        """Format a single endpoint for orchestrator prompt."""
+        operation_id = getattr(
+            ep, "operation_id", ""
+        ) or self._generate_operation_id(ep)
+        summary = getattr(ep, "summary", "") or "No summary"
+        lines = [
+            f"  - {ep.path}",
+            f"    Operation ID: {operation_id}",
+            f"    Summary: {summary}",
+        ]
+        lines.extend(self._format_orchestrator_request_body(ep, method))
+        lines.extend(self._format_orchestrator_response_schema(ep))
+        return lines
+
+    def _format_orchestrator_request_body(self, ep: Any, method: str) -> List[str]:
+        """Format request body schema for orchestrator prompt (POST/PUT/PATCH only)."""
+        if method not in ("POST", "PUT", "PATCH"):
+            return []
+        if not (hasattr(ep, "request_body") and ep.request_body):
+            return []
+        schema = getattr(ep.request_body, "schema", {})
+        if not (schema and isinstance(schema, dict)):
+            return []
+        lines = ["    Request Body Schema:"]
+        lines.extend(self._format_schema(schema, indent=3))
+        return lines
+
+    def _format_orchestrator_response_schema(self, ep: Any) -> List[str]:
+        """Format the first 2xx response schema for orchestrator prompt."""
+        if not (hasattr(ep, "responses") and ep.responses):
+            return []
+        for response in ep.responses:
+            if str(response.status_code).startswith("2") and response.schema:
+                lines = [f"    Response ({response.status_code}) Schema:"]
+                lines.extend(self._format_response_schema(response.schema, indent=3))
+                return lines
+        return []
 
     def _tag_to_class_name(self, tag_name: str) -> str:
         """Convert tag name to valid Python class name."""
@@ -2007,24 +2017,24 @@ class ScenarioWorkflowGenerator:
 
     def _format_single_parameter(self, param: Any) -> Tuple[List[str], bool, bool]:
         """Format a single parameter. Returns (lines, is_cookie, is_header)."""
-        lines = []
         param_name = getattr(param, "name", "unknown")
-        param_in = getattr(param, "location", None) or getattr(param, "in_", "query")
-        if hasattr(param_in, "value"):
-            param_in = param_in.value
-
-        is_cookie = param_in == "cookie"
-        is_header = param_in == "header"
-
+        param_in = self._get_param_location(param)
         param_required = getattr(param, "required", False)
         param_type = getattr(param, "type", "string")
         param_format = getattr(param, "format", None)
 
         required_str = "(required)" if param_required else "(optional)"
         type_str = f"{param_type} [{param_format}]" if param_format else param_type
-        lines.append(f"  - {param_name} [{param_in}]: {type_str} {required_str}")
 
-        # Add constraints
+        lines = [f"  - {param_name} [{param_in}]: {type_str} {required_str}"]
+        lines.extend(self._format_param_constraints(param))
+
+        return lines, param_in == "cookie", param_in == "header"
+
+    @staticmethod
+    def _format_param_constraints(param: Any) -> List[str]:
+        """Format constraint lines for a parameter."""
+        lines = []
         if getattr(param, "enum", None):
             lines.append(f"      allowed values: {param.enum}")
         if getattr(param, "pattern", None):
@@ -2048,8 +2058,7 @@ class ScenarioWorkflowGenerator:
 
         if getattr(param, "description", None):
             lines.append(f"      description: {param.description[:80]}")
-
-        return lines, is_cookie, is_header
+        return lines
 
     def _get_cookie_warning(self) -> List[str]:
         """Return cookie type coercion warning lines."""
@@ -2520,66 +2529,61 @@ class ScenarioWorkflowGenerator:
         return [f"{prefix}        array constraints: {', '.join(constraints)}"]
 
     def _resolve_ref_in_union(self, ref: str, one_of: List[dict]) -> Optional[dict]:
-        """
-        Try to resolve a $ref within a oneOf/anyOf array.
-
-        When a discriminator mapping references a schema like "#/components/schemas/CreditCard",
-        we look for that $ref in the oneOf array and return its inline schema if available.
-
-        Args:
-            ref: The $ref string (e.g., "#/components/schemas/CreditCard")
-            one_of: The oneOf/anyOf array from the parent schema
-
-        Returns:
-            The resolved schema dict, or None if not found
-        """
+        """Try to resolve a $ref within a oneOf/anyOf array."""
+        # Direct $ref match or allOf containing the $ref
         for variant in one_of:
-            if variant.get("$ref") == ref:
-                # Found the reference, but it's not resolved here
-                # We need to look for inline properties or allOf patterns
-                if "properties" in variant:
-                    return variant
-                # Check if it's an allOf with the ref and additional properties
-                if "allOf" in variant:
-                    # Merge allOf schemas
-                    merged = {"properties": {}, "required": []}
-                    for sub in variant["allOf"]:
-                        if "properties" in sub:
-                            merged["properties"].update(sub["properties"])
-                        if "required" in sub:
-                            merged["required"].extend(sub["required"])
-                    if merged["properties"]:
-                        return merged
+            result = self._try_resolve_variant_by_ref(variant, ref)
+            if result is not None:
+                return result
 
-            # Sometimes the oneOf items have the schema inline, not as $ref
-            # Check if this variant has a $ref that matches
+        # Fallback: match by const value in inline properties
+        return self._try_resolve_variant_by_const(one_of, ref)
+
+    def _try_resolve_variant_by_ref(
+        self, variant: dict, ref: str,
+    ) -> Optional[dict]:
+        """Try to resolve a variant by direct $ref match or allOf containing the $ref."""
+        if variant.get("$ref") == ref:
+            if "properties" in variant:
+                return variant
             if "allOf" in variant:
-                for sub in variant["allOf"]:
-                    if sub.get("$ref") == ref:
-                        # Found it in allOf - return the merged schema
-                        merged = {"properties": {}, "required": []}
-                        for all_sub in variant["allOf"]:
-                            if "properties" in all_sub:
-                                merged["properties"].update(all_sub["properties"])
-                            if "required" in all_sub:
-                                merged["required"].extend(all_sub["required"])
-                        if merged["properties"]:
-                            return merged
+                merged = self._merge_all_of(variant["allOf"])
+                if merged and merged.get("properties"):
+                    return merged
 
-        # If the variant has inline properties, return it directly
+        if "allOf" in variant:
+            for sub in variant["allOf"]:
+                if sub.get("$ref") == ref:
+                    merged = self._merge_all_of(variant["allOf"])
+                    if merged and merged.get("properties"):
+                        return merged
+        return None
+
+    @staticmethod
+    def _merge_all_of(all_of: List[dict]) -> dict:
+        """Merge allOf schemas into a single schema with properties and required."""
+        merged: dict = {"properties": {}, "required": []}
+        for sub in all_of:
+            if "properties" in sub:
+                merged["properties"].update(sub["properties"])
+            if "required" in sub:
+                merged["required"].extend(sub["required"])
+        return merged
+
+    @staticmethod
+    def _try_resolve_variant_by_const(
+        one_of: List[dict], ref: str,
+    ) -> Optional[dict]:
+        """Try to match a variant by const value matching the ref name."""
+        ref_name = ref.split("/")[-1].lower().replace("_", "").replace("-", "") if ref else ""
         for variant in one_of:
             variant_props = variant.get("properties", {})
-            if variant_props:
-                # Check if this variant matches the ref name
-                # Extract schema name from ref: "#/components/schemas/CreditCard" -> "CreditCard"
-                ref_name = ref.split("/")[-1].lower() if ref else ""
-                # Check if any property const value matches
-                for prop_name, prop_schema in variant_props.items():
-                    if prop_schema.get("const", "").lower().replace("_", "").replace(
-                        "-", ""
-                    ) == ref_name.lower().replace("_", "").replace("-", ""):
-                        return variant
-
+            if not variant_props:
+                continue
+            for _, prop_schema in variant_props.items():
+                const_val = str(prop_schema.get("const", "")).lower().replace("_", "").replace("-", "")
+                if const_val == ref_name:
+                    return variant
         return None
 
     def _build_response_type_string(self, unwrapped: dict, is_nullable: bool) -> str:
@@ -2934,45 +2938,26 @@ Do NOT invent or call POST endpoints that are not documented here.
         method: str = "GET",
         exclude_auth: bool = False,
     ) -> List[int]:
-        """
-        Filter status codes based on scenario type.
+        """Filter status codes based on scenario type.
 
-        Source of truth logic:
-        - If OpenAPI spec defines responses: those are the ONLY codes used (no supplementation).
-          Filter by scenario type. If filtering empties it, return empty.
-        - If OpenAPI spec defines NO responses: use FallbackHttpResponseRegistry as fallback.
-
-        Args:
-            status_codes: All status codes from OpenAPI spec (empty if spec has no responses)
-            scenario_type: The type of scenario being generated
-            method: HTTP method (GET, POST, etc.) for fallback registry lookup
-            exclude_auth: If True, exclude 401/403 from fallback codes
-
-        Returns:
-            Filtered list of status codes appropriate for the scenario type.
-            Empty list means "no applicable codes" (e.g., positive for an endpoint with no 2xx).
+        Uses spec codes if available, otherwise falls back to FallbackHttpResponseRegistry.
         """
         if not status_codes:
-            # No codes defined in spec - use FallbackHttpResponseRegistry
             return self._get_fallback_codes(method, scenario_type, exclude_auth)
+        return self._filter_int_codes_by_scenario(status_codes, scenario_type)
 
-        # Spec defines responses - those are the ONLY source of truth
+    @staticmethod
+    def _filter_int_codes_by_scenario(
+        codes: List[int], scenario_type: ScenarioType,
+    ) -> List[int]:
+        """Filter integer status codes by scenario type."""
         if scenario_type == ScenarioType.POSITIVE:
-            # Positive tests: non-error responses (1xx, 2xx, 3xx) from spec
-            # If spec has no non-error codes, return empty (caller should skip positive generation)
-            return sorted([code for code in status_codes if code < 400])
-
-        elif scenario_type == ScenarioType.NEGATIVE:
-            # Negative tests: ONLY 4xx client error codes from spec
-            # If spec has no 4xx, return empty (no negative test possible from spec)
-            return sorted([code for code in status_codes if 400 <= code < 500])
-
-        elif scenario_type == ScenarioType.SECURITY:
-            # Security tests: all non-5xx codes from spec
-            # 5xx is excluded because it indicates vulnerability (logged as failure)
-            return sorted([code for code in status_codes if code < 500])
-
-        return sorted(status_codes)
+            return sorted(c for c in codes if c < 400)
+        if scenario_type == ScenarioType.NEGATIVE:
+            return sorted(c for c in codes if 400 <= c < 500)
+        if scenario_type == ScenarioType.SECURITY:
+            return sorted(c for c in codes if c < 500)
+        return sorted(codes)
 
     def _get_fallback_codes(
         self,
@@ -3019,95 +3004,97 @@ Do NOT invent or call POST endpoints that are not documented here.
         return sorted(all_codes)
 
     def _extract_expected_status_codes(self, endpoint: Any) -> List[int]:
-        """
-        Extract expected HTTP status codes from the OpenAPI spec responses.
-
-        This allows per-endpoint validation instead of hardcoded method-based defaults.
-        For example, a POST endpoint that defines both 201 (created) and 422 (validation error)
-        as valid responses will return [201, 422].
-
-        Args:
-            endpoint: The endpoint object with responses attribute
-
-        Returns:
-            List of valid HTTP status codes defined in the OpenAPI spec.
-            Returns empty list if no responses defined (will fall back to method-based defaults).
-        """
-        status_codes = []
-
+        """Extract expected HTTP status codes from the OpenAPI spec responses."""
         if not hasattr(endpoint, "responses") or not endpoint.responses:
-            return status_codes
+            return []
 
         responses = endpoint.responses
-
         if isinstance(responses, dict):
-            # OpenAPI 3.x style: responses is a dict with status codes as keys
-            for status_code_str in responses.keys():
-                try:
-                    # Handle string status codes like "200", "201", "default"
-                    if status_code_str.lower() == "default":
-                        continue  # Skip default response
-                    status_code = int(status_code_str)
-                    status_codes.append(status_code)
-                except (ValueError, TypeError):
-                    # Skip non-numeric status codes
-                    pass
-        elif isinstance(responses, list):
-            # Some parsers return responses as a list with status_code attribute
-            for response in responses:
-                status_code = getattr(response, "status_code", None)
-                if status_code is not None:
-                    try:
-                        status_codes.append(int(status_code))
-                    except (ValueError, TypeError):
-                        pass
+            return sorted(self._parse_status_codes_from_dict(responses))
+        if isinstance(responses, list):
+            return sorted(self._parse_status_codes_from_list(responses))
+        return []
 
-        # Sort for consistency
-        return sorted(status_codes)
+    @staticmethod
+    def _parse_status_codes_from_dict(responses: dict) -> List[int]:
+        """Parse integer status codes from a dict-style responses object."""
+        codes = []
+        for key in responses.keys():
+            try:
+                if str(key).lower() == "default":
+                    continue
+                codes.append(int(key))
+            except (ValueError, TypeError):
+                pass
+        return codes
+
+    @staticmethod
+    def _parse_status_codes_from_list(responses: list) -> List[int]:
+        """Parse integer status codes from a list-style responses object."""
+        codes = []
+        for response in responses:
+            status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                try:
+                    codes.append(int(status_code))
+                except (ValueError, TypeError):
+                    pass
+        return codes
 
     def _extract_status_codes_with_descriptions(
-        self, endpoint: Any
+        self, endpoint: Any,
     ) -> List[Tuple[int, str]]:
-        """
-        Extract status codes with their descriptions from the OpenAPI spec responses.
-
-        Returns:
-            List of (code, description) tuples from the spec.
-            Empty list if no responses defined.
-        """
-        result: List[Tuple[int, str]] = []
-
+        """Extract status codes with descriptions from OpenAPI spec responses."""
         if not hasattr(endpoint, "responses") or not endpoint.responses:
-            return result
+            return []
 
         responses = endpoint.responses
-
         if isinstance(responses, dict):
-            for status_code_str, response in responses.items():
-                try:
-                    if status_code_str.lower() == "default":
-                        continue
-                    code = int(status_code_str)
+            result = self._parse_codes_with_desc_from_dict(responses)
+        elif isinstance(responses, list):
+            result = self._parse_codes_with_desc_from_list(responses)
+        else:
+            return []
+        return sorted(result, key=lambda x: x[0])
+
+    @staticmethod
+    def _parse_codes_with_desc_from_dict(
+        responses: dict,
+    ) -> List[Tuple[int, str]]:
+        """Parse (code, description) tuples from dict-style responses."""
+        result = []
+        for status_code_str, response in responses.items():
+            try:
+                if str(status_code_str).lower() == "default":
+                    continue
+                code = int(status_code_str)
+                if hasattr(response, "description"):
+                    desc = getattr(response, "description", "") or ""
+                elif isinstance(response, dict):
+                    desc = response.get("description", "")
+                else:
                     desc = ""
-                    if hasattr(response, "description"):
-                        desc = getattr(response, "description", "") or ""
-                    elif isinstance(response, dict):
-                        desc = response.get("description", "")
+                result.append((code, desc))
+            except (ValueError, TypeError):
+                pass
+        return result
+
+    @staticmethod
+    def _parse_codes_with_desc_from_list(
+        responses: list,
+    ) -> List[Tuple[int, str]]:
+        """Parse (code, description) tuples from list-style responses."""
+        result = []
+        for response in responses:
+            status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                try:
+                    code = int(status_code)
+                    desc = getattr(response, "description", "") or ""
                     result.append((code, desc))
                 except (ValueError, TypeError):
                     pass
-        elif isinstance(responses, list):
-            for response in responses:
-                status_code = getattr(response, "status_code", None)
-                if status_code is not None:
-                    try:
-                        code = int(status_code)
-                        desc = getattr(response, "description", "") or ""
-                        result.append((code, desc))
-                    except (ValueError, TypeError):
-                        pass
-
-        return sorted(result, key=lambda x: x[0])
+        return result
 
     def _filter_codes_by_scenario_type(
         self,
@@ -3418,34 +3405,53 @@ Do NOT invent or call POST endpoints that are not documented here.
         numeric_fields: List[Tuple[str, Optional[float], Optional[float]]],
     ) -> List[str]:
         """Generate negative test scenarios based on field categories."""
-        scenarios = []
-
+        scenarios: List[str] = []
         if required_fields:
             scenarios.append(
                 f"MISSING_REQUIRED: Remove one of these required fields: {required_fields}"
             )
-
         if typed_fields:
-            examples = []
-            for name, ftype in typed_fields:
-                if ftype in ("integer", "number"):
-                    examples.append(f'"{name}": "not_a_number" (expects {ftype})')
-                elif ftype == "boolean":
-                    examples.append(f'"{name}": "not_a_bool" (expects boolean)')
-                elif ftype == "array":
-                    examples.append(f'"{name}": "not_an_array" (expects array)')
-            scenarios.append(f"WRONG_TYPE: Send wrong type: {examples}")
+            scenarios.append(self._build_wrong_type_scenario(typed_fields))
+        scenarios.extend(self._build_enum_scenarios(enum_fields))
+        scenarios.extend(self._build_pattern_scenarios(pattern_fields))
+        scenarios.extend(self._build_boundary_scenarios(numeric_fields))
+        return scenarios
 
-        for name, values in enum_fields:
-            scenarios.append(
-                f'INVALID_ENUM: Field "{name}" allows only {values}, send "INVALID_VALUE_XYZ"'
-            )
+    @staticmethod
+    def _build_wrong_type_scenario(typed_fields: List[Tuple[str, str]]) -> str:
+        """Build a WRONG_TYPE scenario string from typed fields."""
+        type_mismatch = {
+            "integer": "not_a_number", "number": "not_a_number",
+            "boolean": "not_a_bool", "array": "not_an_array",
+        }
+        examples = [
+            f'"{name}": "{type_mismatch.get(ftype, "wrong")}" (expects {ftype})'
+            for name, ftype in typed_fields
+        ]
+        return f"WRONG_TYPE: Send wrong type: {examples}"
 
-        for name, pattern in pattern_fields:
-            scenarios.append(
-                f'INVALID_PATTERN: Field "{name}" must match pattern {pattern}, send "!!!invalid!!!"'
-            )
+    @staticmethod
+    def _build_enum_scenarios(enum_fields: List[Tuple[str, List[Any]]]) -> List[str]:
+        """Build INVALID_ENUM scenarios."""
+        return [
+            f'INVALID_ENUM: Field "{name}" allows only {values}, send "INVALID_VALUE_XYZ"'
+            for name, values in enum_fields
+        ]
 
+    @staticmethod
+    def _build_pattern_scenarios(pattern_fields: List[Tuple[str, str]]) -> List[str]:
+        """Build INVALID_PATTERN scenarios."""
+        return [
+            f'INVALID_PATTERN: Field "{name}" must match pattern {pattern}, send "!!!invalid!!!"'
+            for name, pattern in pattern_fields
+        ]
+
+    @staticmethod
+    def _build_boundary_scenarios(
+        numeric_fields: List[Tuple[str, Optional[float], Optional[float]]],
+    ) -> List[str]:
+        """Build BOUNDARY scenarios for numeric fields with min/max constraints."""
+        scenarios = []
         for name, min_val, max_val in numeric_fields:
             if min_val is not None and isinstance(min_val, (int, float)):
                 scenarios.append(
@@ -3455,7 +3461,6 @@ Do NOT invent or call POST endpoints that are not documented here.
                 scenarios.append(
                     f'BOUNDARY: Field "{name}" has max={max_val}, send {max_val + 1}'
                 )
-
         return scenarios
 
     def _generate_fallback_query_scenarios(
@@ -3720,7 +3725,26 @@ Do NOT invent or call POST endpoints that are not documented here.
         self, prompt: str, scenario_type: str = "unknown"
     ) -> str:
         """Call AI service with retry logic. Raises AIServiceError after all retries fail."""
-        messages = [
+        messages = self._build_ai_messages(prompt)
+
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            result = await self._try_ai_call(messages, scenario_type, attempt)
+            if isinstance(result, str):
+                return result
+            last_error = result
+
+            if attempt < 2:
+                await asyncio.sleep(2**attempt)
+
+        raise AIServiceError(
+            f"AI service failed after 3 attempts for {scenario_type}"
+        ) from last_error
+
+    @staticmethod
+    def _build_ai_messages(prompt: str) -> List[Dict[str, str]]:
+        """Build the message payload for the AI service."""
+        return [
             {
                 "role": "system",
                 "content": (
@@ -3733,43 +3757,37 @@ Do NOT invent or call POST endpoints that are not documented here.
             {"role": "user", "content": prompt},
         ]
 
-        last_error: Optional[Exception] = None
-        for attempt in range(3):
-            try:
-                async with self._api_semaphore:
-                    response = await asyncio.wait_for(
-                        self.ai_client.chat.completions.create(
-                            model=self.ai_config.model,
-                            messages=messages,
-                            max_tokens=self.ai_config.max_tokens,
-                            temperature=self.ai_config.temperature,
-                        ),
-                        timeout=self.ai_config.timeout,
-                    )
-
-                    # Update rate limit from headers if available
-                    if hasattr(response, "headers"):
-                        self.update_rate_limit(dict(response.headers))
-
-                    if response.choices and response.choices[0].message:
-                        return response.choices[0].message.content.strip()
-
-            except asyncio.TimeoutError as e:
-                last_error = e
-                logger.debug(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
-            except Exception as e:
-                last_error = e
-                logger.debug(
-                    f"AI error on attempt {attempt + 1} for {scenario_type}: {e}"
+    async def _try_ai_call(
+        self, messages: List[Dict[str, str]], scenario_type: str, attempt: int,
+    ) -> "str | Exception":
+        """Attempt a single AI call. Returns content string on success, Exception on failure."""
+        try:
+            async with self._api_semaphore:
+                response = await asyncio.wait_for(
+                    self.ai_client.chat.completions.create(
+                        model=self.ai_config.model,
+                        messages=messages,
+                        max_tokens=self.ai_config.max_tokens,
+                        temperature=self.ai_config.temperature,
+                    ),
+                    timeout=self.ai_config.timeout,
                 )
 
-            if attempt < 2:
-                await asyncio.sleep(2**attempt)
+                if hasattr(response, "headers"):
+                    self.update_rate_limit(dict(response.headers))
 
-        # All retries exhausted - raise exception
-        raise AIServiceError(
-            f"AI service failed after 3 attempts for {scenario_type}"
-        ) from last_error
+                if response.choices and response.choices[0].message:
+                    return response.choices[0].message.content.strip()
+
+            return Exception("Empty AI response")
+        except asyncio.TimeoutError as e:
+            logger.debug(f"AI timeout on attempt {attempt + 1} for {scenario_type}")
+            return e
+        except Exception as e:
+            logger.debug(
+                f"AI error on attempt {attempt + 1} for {scenario_type}: {e}"
+            )
+            return e
 
     def _render_fix_prompt(self, failed_code: str, error_message: str) -> str:
         """
