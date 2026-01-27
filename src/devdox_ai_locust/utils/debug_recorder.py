@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 
 
 @dataclass
@@ -106,7 +106,7 @@ class DebugRecorder:
         self.workflows_dir = self.debug_root / "workflows"
 
         # Statistics tracking
-        self.stats = {
+        self.stats: Dict[str, Any] = {
             "tags": 0,
             "endpoints": 0,
             "scenarios": {"total": 0, "succeeded": 0, "fallback": 0},

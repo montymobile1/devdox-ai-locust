@@ -291,7 +291,7 @@ class OpenAPIParser:
             if len(real_variants) == 1:
                 effective_schema = real_variants[0]
 
-        return effective_schema
+        return effective_schema  # type: ignore[no-any-return]
 
     def _parse_single_parameter(self, param: Dict[str, Any]) -> Optional[Parameter]:
         """Parse a single resolved parameter dict into a Parameter object."""

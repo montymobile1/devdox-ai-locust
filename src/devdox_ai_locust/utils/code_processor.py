@@ -64,7 +64,7 @@ class CodeProcessor:
         matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
 
         if matches:
-            return max(matches, key=len).strip()
+            return str(max(matches, key=len)).strip()
 
         code_start = re.search(r"<code[^>]*>", response, re.IGNORECASE)
         if code_start:
@@ -177,7 +177,7 @@ class CodeProcessor:
             Code with fixed bytes literals
         """
 
-        def fix_single_quoted(match: re.Match) -> str:
+        def fix_single_quoted(match: re.Match[str]) -> str:
             content = match.group(1)
             try:
                 content.encode("ascii")
@@ -185,7 +185,7 @@ class CodeProcessor:
             except UnicodeEncodeError:
                 return f"'{content}'.encode('utf-8')"
 
-        def fix_double_quoted(match: re.Match) -> str:
+        def fix_double_quoted(match: re.Match[str]) -> str:
             content = match.group(1)
             try:
                 content.encode("ascii")
@@ -217,7 +217,7 @@ class CodeProcessor:
 
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
-        except tokenize.TokenizeError:
+        except tokenize.TokenError:
             logger.debug(
                 "Tokenization failed in fix_regex_strings, returning unchanged"
             )
@@ -230,7 +230,7 @@ class CodeProcessor:
 
         return self._apply_replacements(code, replacements)
 
-    def _find_regex_replacements(self, tokens, problematic_escapes) -> List:
+    def _find_regex_replacements(self, tokens: List[tokenize.TokenInfo], problematic_escapes: re.Pattern[str]) -> List[Tuple[int, int, int, int, str, str]]:
         """Find string tokens that need regex raw-string conversion."""
         replacements = []
 

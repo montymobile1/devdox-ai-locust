@@ -216,7 +216,7 @@ class LLMClient:
                     if hasattr(response, "_headers"):
                         self.update_rate_limit(dict(response._headers))
 
-                    return response.choices[0].message.content
+                    return str(response.choices[0].message.content)
 
                 except asyncio.TimeoutError:
                     last_error = asyncio.TimeoutError(

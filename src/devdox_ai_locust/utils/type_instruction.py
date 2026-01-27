@@ -127,7 +127,7 @@ def get_string_instruction(field_schema: dict, field_name: str = "") -> str:
     # Default string generation with length constraints
     length = max_length if isinstance(max_length, int) and max_length <= 50 else 10
     if not isinstance(length, int):
-        length = 10
+        length = 10  # type: ignore[unreachable]
     return f"test_data_generator.generate_string(length={length})"
 
 

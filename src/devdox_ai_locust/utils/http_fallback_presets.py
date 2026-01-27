@@ -1,4 +1,4 @@
-from typing import Dict, Union, Iterable, Optional, Set
+from typing import Any, Dict, Union, Iterable, Optional, Set
 from pydantic import BaseModel
 import json
 import yaml
@@ -12,7 +12,7 @@ class ResponseBlock(BaseModel):
 
     responses: Dict[str, Dict[str, Dict[str, str]]]
 
-    def to_json(self, **kwargs) -> str:
+    def to_json(self, **kwargs: Any) -> str:
         """Export the responses to a JSON-formatted string."""
         return json.dumps(self.responses, **kwargs)
 
@@ -169,7 +169,7 @@ class FallbackHttpResponseRegistry:
 
     _AUTH_CODES = {"401", "403"}
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with merged COMMON codes into each method."""
         self._RESPONSES = {
             method: {**codes, **self._COMMON}

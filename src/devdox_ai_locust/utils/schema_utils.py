@@ -8,7 +8,7 @@ Handles schema unwrapping, property extraction, and string escaping.
 from typing import Any, Dict, List, Optional, Tuple
 
 
-def unwrap_nullable_schema(schema: dict) -> Tuple[dict, bool]:
+def unwrap_nullable_schema(schema: Any) -> Tuple[Any, bool]:
     """
     Unwrap OpenAPI nullable patterns.
 
@@ -42,7 +42,7 @@ def unwrap_nullable_schema(schema: dict) -> Tuple[dict, bool]:
     return schema, False
 
 
-def extract_all_properties(schema: dict) -> Tuple[Dict[str, Any], List[str]]:
+def extract_all_properties(schema: Any) -> Tuple[Dict[str, Any], List[str]]:
     """
     Extract all properties from a schema, handling allOf and discriminated unions.
 
@@ -124,7 +124,7 @@ def _merge_union_properties(
     return properties, required_list
 
 
-def escape_for_python_string(value: str) -> str:
+def escape_for_python_string(value: Any) -> str:
     """
     Escape a string for safe embedding in a Python double-quoted string.
 
@@ -145,7 +145,7 @@ def escape_for_python_string(value: str) -> str:
     )
 
 
-def escape_for_raw_string(value: str) -> str:
+def escape_for_raw_string(value: Any) -> str:
     """
     Escape a string for safe embedding in a Python raw string (r"...").
 
@@ -165,7 +165,7 @@ def escape_for_raw_string(value: str) -> str:
 
 def resolve_ref_in_union(
     ref: str,
-    one_of: List[dict],
+    one_of: List[Any],
     full_schema: Optional[dict] = None,
 ) -> Optional[dict]:
     """
@@ -200,7 +200,7 @@ def resolve_ref_in_union(
     return None
 
 
-def get_schema_type(schema: dict) -> str:
+def get_schema_type(schema: Any) -> str:
     """
     Get the type of a schema, handling nullable wrappers.
 
@@ -214,7 +214,7 @@ def get_schema_type(schema: dict) -> str:
         return "unknown"
 
     unwrapped, _ = unwrap_nullable_schema(schema)
-    return unwrapped.get("type", "object")
+    return str(unwrapped.get("type", "object"))
 
 
 def is_required_field(field_name: str, required_list: List[str]) -> bool:

@@ -1,7 +1,7 @@
 import click
 import sys
 import asyncio
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -68,6 +68,8 @@ def _setup_logging(output_dir: Path, command_type: str) -> Tuple[Path, TextIO]:
     log_file = open(log_path, "w", encoding="utf-8")
 
     # Replace stdout and stderr with tee versions
+    assert sys.__stdout__ is not None
+    assert sys.__stderr__ is not None
     sys.stdout = TeeOutput(sys.__stdout__, log_file)
     sys.stderr = TeeOutput(sys.__stderr__, log_file)
 
@@ -461,7 +463,7 @@ def _init_scenario_generator(
     prompt_dir = Path(__file__).parent / "prompt"
     return ScenarioWorkflowGenerator(
         prompt_dir=prompt_dir,
-        ai_client=ai_client,
+        ai_client=ai_client,  # type: ignore[arg-type]
         ai_config=ai_config,
         max_concurrency=max_llm_workers,
         debug_recorder=debug_recorder,
@@ -1465,6 +1467,7 @@ def run(
 
         # Read and display output in real-time (tee will capture it)
         try:
+            assert process.stdout is not None
             for line in process.stdout:
                 print(line, end="", flush=True)
         except KeyboardInterrupt:

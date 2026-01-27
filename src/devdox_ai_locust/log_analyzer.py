@@ -17,7 +17,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, Iterator, List, TextIO
+from typing import Dict, Iterator, List, Optional, TextIO
 
 
 # Patterns compiled once
@@ -74,7 +74,7 @@ def _extract_api_path(lines: List[str]) -> str:
     return ""
 
 
-def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
+def analyze_log(log_path: str, output_path: Optional[str] = None) -> Dict[str, int]:
     """
     Stream-parse a Locust .log file and write a reduced .log with unique errors.
 
@@ -179,7 +179,7 @@ def _relevant_context(context_buffer: List[str]) -> List[str]:
 
 def _collect_traceback(
     first_line: str,
-    line_iter,
+    line_iter: Iterator[str],
     context_buffer: List[str],
     exception_signatures: Counter,
     exception_samples: Dict[str, List[str]],
@@ -235,15 +235,15 @@ def _line_iterator(f: TextIO) -> Iterator[str]:
 
 def _write_reduced_log(
     output_path: str,
-    error_signatures: Counter,
+    error_signatures: "Counter[str]",
     error_samples: Dict[str, List[str]],
     error_apis: Dict[str, set],
-    exception_signatures: Counter,
+    exception_signatures: "Counter[str]",
     exception_samples: Dict[str, List[str]],
     exception_apis: Dict[str, set],
     total_lines: int,
     duplicates_removed: int,
-):
+) -> None:
     """Write the reduced log file with unique errors/exceptions and their context."""
     with open(output_path, "w", encoding="utf-8") as out:
         out.write("# Reduced Locust Log\n")
@@ -290,7 +290,7 @@ def _write_reduced_log(
                 out.write("\n")
 
 
-def main() -> int:
+def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: devdox_ai_locust_analyze <log_file_path> [output_path]")
         print(

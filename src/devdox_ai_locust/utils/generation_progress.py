@@ -223,8 +223,8 @@ class GenerationProgress:
 
         # Orchestrator counters
         self.orchestrator_completed = 0
-        self.orchestrator_failed = 0
-        self.orchestrator_skipped = 0
+        self._orchestrator_failed_count = 0
+        self._orchestrator_skipped_count = 0
 
     def start(self) -> None:
         """Print start message."""
@@ -647,7 +647,7 @@ class GenerationProgress:
 
     def orchestrator_failed(self, tag_name: str, error: Exception) -> None:
         """Called when an orchestrator fails."""
-        self.orchestrator_failed += 1
+        self._orchestrator_failed_count += 1
 
         error_str = str(error)
         self.console.print(
@@ -670,7 +670,7 @@ class GenerationProgress:
 
     def orchestrator_skipped(self, tag_name: str, reason: str = "") -> None:
         """Called when an orchestrator is skipped."""
-        self.orchestrator_skipped += 1
+        self._orchestrator_skipped_count += 1
         self.console.print(
             f"  [yellow]⚠[/yellow] {tag_name}/orchestrator_workflow.py skipped ({reason})"
         )

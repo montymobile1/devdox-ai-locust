@@ -478,7 +478,7 @@ class ScenarioWorkflowGenerator:
         if hasattr(endpoint, "parameters") and endpoint.parameters:
             for param in endpoint.parameters:
                 loc = getattr(param, "location", None) or getattr(param, "in_", "query")
-                if hasattr(loc, "value"):
+                if loc is not None and hasattr(loc, "value"):
                     loc = loc.value
                 if (
                     loc == "query"
@@ -490,7 +490,7 @@ class ScenarioWorkflowGenerator:
 
     def _parse_negative_scenario_types(self, negative_scenarios: str) -> List[str]:
         """Parse negative scenario types from precomputed string."""
-        negative_types = []
+        negative_types: list[str] = []
         if not negative_scenarios:
             return negative_types
 
@@ -554,7 +554,7 @@ class ScenarioWorkflowGenerator:
         if hasattr(endpoint, "request_body") and endpoint.request_body:
             ct = getattr(endpoint.request_body, "content_type", None)
             if ct:
-                return ct
+                return str(ct)
         return "application/json"
 
     def _build_setup_analysis(
@@ -835,7 +835,7 @@ class ScenarioWorkflowGenerator:
             self._log_orchestrator_retry(tag_name, attempt, max_retries, error)
 
         raise CodeValidationError(
-            "orchestrator", last_error, last_code, endpoint_info=f"tag: {tag_name}"
+            "orchestrator", last_error or "", last_code or "", endpoint_info=f"tag: {tag_name}"
         )
 
     async def _orchestrator_single_attempt(
@@ -1101,7 +1101,7 @@ class ScenarioWorkflowGenerator:
             return [400, 422]
         elif scenario_type == ScenarioType.SECURITY:
             return [200, 400, 422]
-        return []
+        return []  # type: ignore[unreachable]
 
     def _precompute_scenario_specific_data(
         self,
@@ -1874,7 +1874,7 @@ class ScenarioWorkflowGenerator:
                 self._report_syntax_failure(endpoint_info, scenario_name, error)
                 is_semantic_error = False
             else:
-                result = self._check_and_finalize_scenario(
+                result = await self._check_and_finalize_scenario(
                     content,
                     scenario_type,
                     endpoint,
@@ -1897,7 +1897,7 @@ class ScenarioWorkflowGenerator:
             await self._handle_retry_or_fail(
                 attempt,
                 max_retries,
-                error,
+                error or "",
                 content,
                 last_is_semantic,
                 scenario_type,
@@ -1911,8 +1911,8 @@ class ScenarioWorkflowGenerator:
 
         raise CodeValidationError(
             scenario_type.value,
-            last_error,
-            last_code,
+            last_error or "",
+            last_code or "",
             endpoint_info=f"{endpoint.method} {endpoint.path}",
         )
 
@@ -2064,7 +2064,7 @@ class ScenarioWorkflowGenerator:
             Python code string for generating a valid test value
         """
         if not isinstance(field_schema, dict):
-            return "test_data_generator.generate_string(length=10)"
+            return "test_data_generator.generate_string(length=10)"  # type: ignore[unreachable]
 
         field_type = field_schema.get("type", "string")
         field_format = field_schema.get("format", "")
@@ -2130,7 +2130,7 @@ class ScenarioWorkflowGenerator:
         Returns:
             Tuple of (lines, has_cookie_params, has_header_params)
         """
-        lines = []
+        lines: list[str] = []
         has_cookie_params = False
         has_header_params = False
 
@@ -2219,7 +2219,7 @@ class ScenarioWorkflowGenerator:
 
     def _format_endpoint_request_body(self, endpoint: "Endpoint") -> List[str]:
         """Format endpoint request body section."""
-        lines = []
+        lines: list[str] = []
         if not (hasattr(endpoint, "request_body") and endpoint.request_body):
             return lines
 
@@ -2229,8 +2229,9 @@ class ScenarioWorkflowGenerator:
 
         lines.append("\nRequest Body:")
         lines.append(f"  Content-Type: {content_type}")
-        if getattr(rb, "description", None):
-            lines.append(f"  Description: {rb.description[:100]}")
+        rb_desc = getattr(rb, "description", None)
+        if rb_desc:
+            lines.append(f"  Description: {rb_desc[:100]}")
         lines.append(f"  Required: {getattr(rb, 'required', True)}")
 
         # File upload warning
@@ -2258,15 +2259,15 @@ class ScenarioWorkflowGenerator:
         self, endpoint: "Endpoint", exclude_2xx: bool = False
     ) -> List[str]:
         """Format endpoint responses section."""
-        lines = []
+        lines: list[str] = []
         if not (hasattr(endpoint, "responses") and endpoint.responses):
             return lines
 
         responses = endpoint.responses
         lines.append("\nResponses:")
 
-        if isinstance(responses, dict):
-            for status_code, response in responses.items():
+        if isinstance(responses, dict):  # type: ignore[unreachable]
+            for status_code, response in responses.items():  # type: ignore[unreachable]
                 if exclude_2xx and self._is_2xx_status(status_code):
                     continue
                 lines.extend(self._format_single_response(status_code, response))
@@ -2619,7 +2620,7 @@ class ScenarioWorkflowGenerator:
 
         for variant in items_one_of:
             if not isinstance(variant, dict):
-                continue
+                continue  # type: ignore[unreachable]
             name = self._get_variant_name(variant)
             if name:
                 variant_names.append(name)
@@ -2646,11 +2647,11 @@ class ScenarioWorkflowGenerator:
     def _get_variant_name(self, variant: dict) -> Optional[str]:
         """Get a name for a union variant."""
         if "$ref" in variant:
-            return variant["$ref"].split("/")[-1]
+            return str(variant["$ref"].split("/")[-1])
         if "properties" in variant:
             for p_schema in variant.get("properties", {}).values():
                 if isinstance(p_schema, dict) and p_schema.get("const"):
-                    return p_schema["const"]
+                    return str(p_schema["const"])
         return None
 
     def _format_array_constraints(self, unwrapped: dict, prefix: str) -> List[str]:
@@ -2889,7 +2890,7 @@ class ScenarioWorkflowGenerator:
             reasons.append(tag_reason)
 
         if score > 0:
-            return (endpoint, score, "; ".join(reasons))
+            return (endpoint, score, "; ".join(r for r in reasons if r))
         return None
 
     def _find_related_create_endpoints(
@@ -3107,7 +3108,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             return sorted(c for c in codes if 400 <= c < 500)
         if scenario_type == ScenarioType.SECURITY:
             return sorted(c for c in codes if c < 500)
-        return sorted(codes)
+        return sorted(codes)  # type: ignore[unreachable]
 
     def _get_fallback_codes(
         self,
@@ -3151,7 +3152,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             # Security: all non-5xx (5xx = vulnerability)
             return sorted([code for code in all_codes if code < 500])
 
-        return sorted(all_codes)
+        return sorted(all_codes)  # type: ignore[unreachable]
 
     def _extract_expected_status_codes(self, endpoint: "Endpoint") -> List[int]:
         """Extract expected HTTP status codes from the OpenAPI spec responses."""
@@ -3159,11 +3160,11 @@ Do NOT invent or call POST endpoints that are not documented here.
             return []
 
         responses = endpoint.responses
-        if isinstance(responses, dict):
-            return sorted(self._parse_status_codes_from_dict(responses))
+        if isinstance(responses, dict):  # type: ignore[unreachable]
+            return sorted(self._parse_status_codes_from_dict(responses))  # type: ignore[unreachable]
         if isinstance(responses, list):
             return sorted(self._parse_status_codes_from_list(responses))
-        return []
+        return []  # type: ignore[unreachable]
 
     @staticmethod
     def _parse_status_codes_from_dict(responses: dict) -> List[int]:
@@ -3200,12 +3201,12 @@ Do NOT invent or call POST endpoints that are not documented here.
             return []
 
         responses = endpoint.responses
-        if isinstance(responses, dict):
-            result = self._parse_codes_with_desc_from_dict(responses)
+        if isinstance(responses, dict):  # type: ignore[unreachable]
+            result = self._parse_codes_with_desc_from_dict(responses)  # type: ignore[unreachable]
         elif isinstance(responses, list):
             result = self._parse_codes_with_desc_from_list(responses)
         else:
-            return []
+            return []  # type: ignore[unreachable]
         return sorted(result, key=lambda x: x[0])
 
     @staticmethod
@@ -3259,7 +3260,7 @@ Do NOT invent or call POST endpoints that are not documented here.
             return [(c, d) for c, d in codes if 400 <= c < 500]
         elif scenario_type == ScenarioType.SECURITY:
             return [(c, d) for c, d in codes if c < 500]
-        return codes
+        return codes  # type: ignore[unreachable]
 
     def _get_fallback_codes_with_descriptions(
         self, method: str, has_auth: bool
@@ -3294,7 +3295,7 @@ Do NOT invent or call POST endpoints that are not documented here.
                 (403, "Forbidden"),
                 (422, "Unprocessable Entity"),
             ]
-        return []
+        return []  # type: ignore[unreachable]
 
     def _precompute_scenario_status_codes(
         self,
@@ -3389,9 +3390,9 @@ Do NOT invent or call POST endpoints that are not documented here.
         location = getattr(param, "location", None)
         if location is None:
             location = getattr(param, "in_", "query")
-        if hasattr(location, "value"):
+        if location is not None and hasattr(location, "value"):
             location = location.value
-        return location
+        return str(location) if location is not None else "query"
 
     @staticmethod
     def _format_injection_points(
@@ -3425,10 +3426,10 @@ Do NOT invent or call POST endpoints that are not documented here.
         for param in endpoint.parameters:
             param_name = getattr(param, "name", "unknown")
             param_type = getattr(param, "type", None) or "string"
-            param_location = getattr(param, "location", None)
+            param_location: Any = getattr(param, "location", None)
             if param_location is None:
                 param_location = getattr(param, "in_", "query")
-            if hasattr(param_location, "value"):
+            if param_location is not None and hasattr(param_location, "value"):
                 param_location = param_location.value
 
             if param_location == "path":
@@ -3468,7 +3469,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         Returns:
             Tuple of (required, typed, enum, pattern, numeric) field lists
         """
-        empty_result = ([], [], [], [], [])
+        empty_result: Tuple[List[str], List[Tuple[str, str]], List[Tuple[str, List[Any]]], List[Tuple[str, str]], List[Tuple[str, Optional[float], Optional[float]]]] = ([], [], [], [], [])
 
         properties, required_list = self._get_body_properties(endpoint)
         if properties is None:
@@ -3736,7 +3737,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         for i, variant in enumerate(one_of[:4]):
             if not isinstance(variant, dict):
-                continue
+                continue  # type: ignore[unreachable]
             v_props, v_required = self._resolve_variant_properties(variant)
             v_title = variant.get("title", f"Variant {i+1}")
             if v_props:
@@ -3749,7 +3750,7 @@ Do NOT invent or call POST endpoints that are not documented here.
     ) -> Optional[str]:
         """Format a single field instruction line."""
         if not isinstance(field_schema, dict):
-            return None
+            return None  # type: ignore[unreachable]
         unwrapped, _ = unwrap_nullable_schema(field_schema)
         field_type = unwrapped.get("type", "string")
         field_format = unwrapped.get("format", "")
@@ -3933,7 +3934,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         try:
             async with self._api_semaphore:
                 response = await asyncio.wait_for(
-                    self.ai_client.chat.completions.create(
+                    self.ai_client.chat.completions.create(  # type: ignore[attr-defined]
                         model=self.ai_config.model,
                         messages=messages,
                         max_tokens=self.ai_config.max_tokens,
@@ -3946,7 +3947,8 @@ Do NOT invent or call POST endpoints that are not documented here.
                     self.update_rate_limit(dict(response.headers))
 
                 if response.choices and response.choices[0].message:
-                    return response.choices[0].message.content.strip()
+                    content = response.choices[0].message.content
+                    return str(content).strip() if content else ""
 
             return Exception("Empty AI response")
         except asyncio.TimeoutError as e:

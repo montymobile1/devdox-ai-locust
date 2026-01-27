@@ -772,7 +772,7 @@ class CodeValidator:
                     and not isinstance(elt.value, bool)
                 ):
                     wrong_elements.append((i, type(elt.value).__name__))
-                elif not isinstance(elt.value, expected_python_type):
+                elif not isinstance(elt.value, expected_python_type):  # type: ignore[arg-type]
                     wrong_elements.append((i, type(elt.value).__name__))
 
         if wrong_elements:
@@ -800,7 +800,7 @@ class CodeValidator:
             return func.id
         if isinstance(func, ast.Attribute):
             parts = []
-            current = func
+            current: ast.expr = func
             while isinstance(current, ast.Attribute):
                 parts.append(current.attr)
                 current = current.value
