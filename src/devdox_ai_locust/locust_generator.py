@@ -110,30 +110,19 @@ class LocustTestGenerator:
             autoescape=False,
         )
 
-    def _sanitize_identifier(self, name: str) -> str:
-        """Sanitize string to be a valid Python identifier"""
-        import re
+    @staticmethod
+    def _sanitize_identifier(name: str) -> str:
+        """Sanitize string to be a valid Python identifier."""
+        from devdox_ai_locust.utils.constants import sanitize_identifier
 
-        # Replace common separators with underscores
-        name = (
-            name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
-        )
-        # Remove any remaining non-alphanumeric chars (except underscore)
-        name = re.sub(r"[^a-zA-Z0-9_]", "", name)
-        # Remove consecutive underscores
-        name = re.sub(r"_+", "_", name)
-        # Remove leading/trailing underscores
-        name = name.strip("_")
-        # Ensure doesn't start with a number
-        if name and name[0].isdigit():
-            name = f"n{name}"
-        return name or "unnamed"
+        return sanitize_identifier(name)
 
-    def _to_class_name(self, name: str) -> str:
-        """Convert name to PascalCase class name"""
-        sanitized = self._sanitize_identifier(name)
-        words = sanitized.replace("_", " ").split()
-        return "".join(word.capitalize() for word in words) or "Unnamed"
+    @staticmethod
+    def _to_class_name(name: str) -> str:
+        """Convert name to PascalCase class name."""
+        from devdox_ai_locust.utils.constants import to_class_name
+
+        return to_class_name(name)
 
     def fix_indent(self, base_files: Dict[str, str]) -> Dict[str, str]:
         """Fix indentation for generated files"""

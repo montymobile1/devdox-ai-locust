@@ -20,6 +20,7 @@ from click.testing import CliRunner
 
 from devdox_ai_locust.utils.open_ai_parser import OpenAPIParser, Response
 from devdox_ai_locust.utils.code_validator import CodeValidator
+from devdox_ai_locust.utils.constants import MAKE_REQUEST_CALL_RE
 
 
 # ============================================================
@@ -390,7 +391,7 @@ class TestMakeRequestRegex:
     def test_captures_simple_path(self):
         """Regex captures a simple quoted path."""
         line = 'self.make_request("GET", "/items")'
-        match = CodeValidator.MAKE_REQUEST_CALL_RE.search(line)
+        match = MAKE_REQUEST_CALL_RE.search(line)
         assert match is not None
         assert match.group(1) == "GET"
         assert match.group(2) == "/items"
@@ -398,14 +399,14 @@ class TestMakeRequestRegex:
     def test_captures_fstring_path(self):
         """Regex captures f-string path with variable."""
         line = 'self.make_request("GET", f"/items/{item_id}")'
-        match = CodeValidator.MAKE_REQUEST_CALL_RE.search(line)
+        match = MAKE_REQUEST_CALL_RE.search(line)
         assert match is not None
         assert match.group(2) == "/items/{item_id}"
 
     def test_captures_complex_fstring_path(self):
         """Regex captures f-string with complex expression."""
         line = 'self.make_request("DELETE", f"/users/{self.created_ids[-1]}/posts/{post_id}")'
-        match = CodeValidator.MAKE_REQUEST_CALL_RE.search(line)
+        match = MAKE_REQUEST_CALL_RE.search(line)
         assert match is not None
         assert match.group(1) == "DELETE"
         assert "/users/" in match.group(2)
@@ -414,7 +415,7 @@ class TestMakeRequestRegex:
     def test_captures_path_with_expected_status(self):
         """Regex works when make_request has additional kwargs."""
         line = 'result = self.make_request("POST", f"/items/{item_id}/verify", expected_status=[200])'
-        match = CodeValidator.MAKE_REQUEST_CALL_RE.search(line)
+        match = MAKE_REQUEST_CALL_RE.search(line)
         assert match is not None
         assert match.group(1) == "POST"
         assert "/items/" in match.group(2)

@@ -145,8 +145,10 @@ class ScenarioWorkflowGenerator:
         self._fallback_registry = FallbackHttpResponseRegistry()
         self._code_validator = CodeValidator()
 
-        # Setup Jinja environment for prompts
-        self.prompt_env = Environment(
+        # Setup Jinja environment for prompts.
+        # These templates generate Python source code for LLM prompts, not HTML.
+        # XSS / auto-escaping (S5247) is not applicable here.
+        self.prompt_env = Environment(  # NOSONAR
             loader=FileSystemLoader(str(self.prompt_dir)),
             trim_blocks=True,
             lstrip_blocks=True,
@@ -835,7 +837,10 @@ class ScenarioWorkflowGenerator:
             self._log_orchestrator_retry(tag_name, attempt, max_retries, error)
 
         raise CodeValidationError(
-            "orchestrator", last_error or "", last_code or "", endpoint_info=f"tag: {tag_name}"
+            "orchestrator",
+            last_error or "",
+            last_code or "",
+            endpoint_info=f"tag: {tag_name}",
         )
 
     async def _orchestrator_single_attempt(
@@ -3469,7 +3474,13 @@ Do NOT invent or call POST endpoints that are not documented here.
         Returns:
             Tuple of (required, typed, enum, pattern, numeric) field lists
         """
-        empty_result: Tuple[List[str], List[Tuple[str, str]], List[Tuple[str, List[Any]]], List[Tuple[str, str]], List[Tuple[str, Optional[float], Optional[float]]]] = ([], [], [], [], [])
+        empty_result: Tuple[
+            List[str],
+            List[Tuple[str, str]],
+            List[Tuple[str, List[Any]]],
+            List[Tuple[str, str]],
+            List[Tuple[str, Optional[float], Optional[float]]],
+        ] = ([], [], [], [], [])
 
         properties, required_list = self._get_body_properties(endpoint)
         if properties is None:
@@ -3843,24 +3854,12 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         return "\n".join(lines)
 
-    def _sanitize_identifier(self, name: str) -> str:
-        """Sanitize string to be a valid Python identifier"""
-        import re
+    @staticmethod
+    def _sanitize_identifier(name: str) -> str:
+        """Sanitize string to be a valid Python identifier."""
+        from devdox_ai_locust.utils.constants import sanitize_identifier
 
-        # Replace common separators with underscores
-        name = (
-            name.replace("-", "_").replace(" ", "_").replace(".", "_").replace("/", "_")
-        )
-        # Remove any remaining non-alphanumeric chars (except underscore)
-        name = re.sub(r"[^a-zA-Z0-9_]", "", name)
-        # Remove consecutive underscores
-        name = re.sub(r"_+", "_", name)
-        # Remove leading/trailing underscores
-        name = name.strip("_")
-        # Ensure doesn't start with a number
-        if name and name[0].isdigit():
-            name = f"n{name}"
-        return name or "unnamed"
+        return sanitize_identifier(name)
 
     def _operation_to_class_name(self, endpoint: "Endpoint") -> str:
         """Convert operation_id to valid Python class name"""
@@ -4077,19 +4076,15 @@ Fix ALL the violations and output the complete corrected Python code:"""
         allowed: set,
     ) -> None:
         """Extract imports from a single template file into the allowed set."""
-        import re
-
         try:
             template_path = self.prompt_dir / template_file
             if not template_path.exists():
                 return
 
             content = template_path.read_text(encoding="utf-8")
-            match = re.search(
-                r"===\s*ALLOWED IMPORTS[^=]*===.*?```python\s*(.*?)```",
-                content,
-                re.DOTALL | re.IGNORECASE,
-            )
+            from devdox_ai_locust.utils.constants import ALLOWED_IMPORTS_RE
+
+            match = ALLOWED_IMPORTS_RE.search(content)
             if not match:
                 return
 
@@ -4103,13 +4098,14 @@ Fix ALL the violations and output the complete corrected Python code:"""
     def _parse_imports_code(self, imports_code: str) -> Any:
         """Parse Python import code, cleaning Jinja syntax if needed."""
         import ast
-        import re
 
         try:
             return ast.parse(imports_code)
         except SyntaxError:
-            cleaned = re.sub(r"\{%.*?%\}", "", imports_code)
-            cleaned = re.sub(r"\{\{.*?\}\}", "", cleaned)
+            from devdox_ai_locust.utils.constants import JINJA_BLOCK_RE, JINJA_VAR_RE
+
+            cleaned = JINJA_BLOCK_RE.sub("", imports_code)
+            cleaned = JINJA_VAR_RE.sub("", cleaned)
             try:
                 return ast.parse(cleaned)
             except SyntaxError:

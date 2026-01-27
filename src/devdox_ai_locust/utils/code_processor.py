@@ -131,8 +131,9 @@ class CodeProcessor:
         scenario_suffix = f"{scenario_type.capitalize()}Workflow"
         expected_full_name = f"{expected_class_name}{scenario_suffix}"
 
-        pattern = r"class\s+(\w+)\s*\([^)]*BaseWorkflow[^)]*\)\s*:"
-        match = re.search(pattern, code)
+        from devdox_ai_locust.utils.constants import WORKFLOW_CLASS_RE
+
+        match = WORKFLOW_CLASS_RE.search(code)
 
         if match:
             actual_class_name = match.group(1)
@@ -213,7 +214,9 @@ class CodeProcessor:
         Returns:
             Code with raw strings for regex patterns
         """
-        problematic_escapes = re.compile(r"\\[dDwWsS+*?^$.|()\\[\]{}]")
+        from devdox_ai_locust.utils.constants import PROBLEMATIC_ESCAPES_RE
+
+        problematic_escapes = PROBLEMATIC_ESCAPES_RE
 
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
@@ -230,7 +233,9 @@ class CodeProcessor:
 
         return self._apply_replacements(code, replacements)
 
-    def _find_regex_replacements(self, tokens: List[tokenize.TokenInfo], problematic_escapes: re.Pattern[str]) -> List[Tuple[int, int, int, int, str, str]]:
+    def _find_regex_replacements(
+        self, tokens: List[tokenize.TokenInfo], problematic_escapes: re.Pattern[str]
+    ) -> List[Tuple[int, int, int, int, str, str]]:
         """Find string tokens that need regex raw-string conversion."""
         replacements = []
 

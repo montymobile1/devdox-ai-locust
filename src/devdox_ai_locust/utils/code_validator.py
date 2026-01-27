@@ -14,10 +14,19 @@ hallucination patterns including:
 """
 
 import ast
-import re
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+
+from devdox_ai_locust.utils.constants import (
+    LITERAL_PATH_PARAM_RE,
+    MAKE_REQUEST_CALL_RE,
+    PLACEHOLDER_PATTERNS,
+    SUCCESS_IN_EXPECTED_STATUS_RE,
+    TEMPLATE_BOILERPLATE_PATTERNS,
+    URL_ARG_RE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,56 +72,7 @@ class CodeValidator:
     - G: Success codes in negative workflows
     """
 
-    # Known template boilerplate patterns that should never appear in generated code
-    TEMPLATE_BOILERPLATE_PATTERNS = [
-        r"#\s*Check if request succeeded \(result is dict or None\)",
-        r"#\s*Success - result contains JSON response data",
-        r"#\s*Example: item_id = result\.get",
-        r"#\s*If result is None, make_request\(\) already logged the failure",
-        r"#\s*Use make_request\(\) with SUCCESS codes only",
-        r"#\s*NEVER include 4xx codes here",
-        r"#\s*make_request\(\) returns dict \(JSON data\) or None",
-        r"#\s*Build request data with VALID values",
-    ]
-
-    # Placeholder comment patterns
-    PLACEHOLDER_PATTERNS = [
-        r"#\s*Add other required .* fields",
-        r"#\s*TODO:?\s",
-        r"#\s*Fill in remaining",
-        r"#\s*Complete this",
-        r"#\s*Add remaining",
-        r"#\s*Add more fields",
-        r"#\s*Generate .* here if needed",
-        r"#\s*Generate .* data here",
-        r"#\s*Add .* data here",
-        r"#\s*Fill in .* data",
-        r"#\s*Populate .* fields",
-        r"#\s*Add .* fields here",
-        r"#\s*Insert .* data",
-        r"#\s*\.\.\.",  # Catch "# ..." ellipsis placeholder
-    ]
-
-    # Pattern to detect empty setup data dicts (dict with only whitespace/comment)
-    EMPTY_SETUP_DICT_RE = re.compile(
-        r"(\w+_data)\s*=\s*\{\s*(?:#[^\n]*)?\s*\}", re.MULTILINE
-    )
-
-    # Security payload patterns that should NOT appear in URL path segments
-    SECURITY_PAYLOAD_IN_PATH_RE = re.compile(
-        r'make_request\([^)]*f"[^"]*\{(?:payload|random\.choice\([^)]*PAYLOAD|XSS_PAYLOAD|SQL_PAYLOAD|PATH_TRAVERSAL)[^}]*\}[^"]*"',
-        re.IGNORECASE,
-    )
-
-    # Empty path segment pattern (double slashes in URLs, excluding https://)
-    EMPTY_PATH_SEGMENT_RE = re.compile(
-        r'make_request\([^)]*"[^"]*(?<!https:)(?<!http:)//[^"]*"',
-    )
-
-    # Expected status with 2xx in make_request calls
-    SUCCESS_IN_EXPECTED_STATUS_RE = re.compile(
-        r"expected_status=\[([^\]]*)\]",
-    )
+    # Patterns imported from constants module for centralized maintenance
 
     # Maps OpenAPI string formats to their correct generator functions
     FORMAT_GENERATOR_MAP: Dict[str, Set[str]] = {
@@ -190,7 +150,7 @@ class CodeValidator:
         lines = code.split("\n")
 
         for i, line in enumerate(lines, 1):
-            for pattern in self.TEMPLATE_BOILERPLATE_PATTERNS:
+            for pattern in TEMPLATE_BOILERPLATE_PATTERNS:
                 if re.search(pattern, line, re.IGNORECASE):
                     violations.append(
                         ValidationViolation(
@@ -210,7 +170,7 @@ class CodeValidator:
         lines = code.split("\n")
 
         for i, line in enumerate(lines, 1):
-            for pattern in self.PLACEHOLDER_PATTERNS:
+            for pattern in PLACEHOLDER_PATTERNS:
                 if re.search(pattern, line, re.IGNORECASE):
                     violations.append(
                         ValidationViolation(
@@ -312,9 +272,6 @@ class CodeValidator:
 
         return violations
 
-    # Regex to extract URL argument from make_request calls (second string arg, supports f-strings)
-    _URL_ARG_RE = re.compile(r'make_request\(\s*"[^"]*"\s*,\s*f?"([^"]*)"')
-
     def _check_empty_path_segments(self, code: str) -> List[ValidationViolation]:
         """Check for empty path segments (double slashes) in URLs (Classification E)."""
         violations = []
@@ -323,7 +280,7 @@ class CodeValidator:
         for i, line in enumerate(lines, 1):
             if "make_request" in line:
                 # Match the URL argument specifically (second string arg after method)
-                url_match = self._URL_ARG_RE.search(line)
+                url_match = URL_ARG_RE.search(line)
                 if url_match:
                     url = url_match.group(1)
                     # Remove protocol prefix before checking
@@ -341,11 +298,6 @@ class CodeValidator:
 
         return violations
 
-    # Regex to detect non-f-string with literal {param} placeholders
-    _LITERAL_PATH_PARAM_RE = re.compile(
-        r'make_request\(\s*"[^"]*"\s*,\s*"([^"]*\{[^}]+\}[^"]*)"'
-    )
-
     def _check_literal_path_params(self, code: str) -> List[ValidationViolation]:
         """Check for literal {param} in non-f-string paths.
 
@@ -358,7 +310,7 @@ class CodeValidator:
         for i, line in enumerate(lines, 1):
             if "make_request" in line:
                 # Check for non-f-string with curly braces (literal path param)
-                match = self._LITERAL_PATH_PARAM_RE.search(line)
+                match = LITERAL_PATH_PARAM_RE.search(line)
                 if match:
                     url = match.group(1)
                     violations.append(
@@ -372,11 +324,6 @@ class CodeValidator:
                     )
 
         return violations
-
-    # Regex to extract method and path from make_request calls (supports f-strings)
-    MAKE_REQUEST_CALL_RE = re.compile(
-        r'make_request\(\s*"(\w+)"\s*,\s*(?:f)?"([^"]*)"',
-    )
 
     @staticmethod
     def _paths_match(spec_path: str, call_path: str) -> bool:
@@ -417,7 +364,7 @@ class CodeValidator:
         lines = code.split("\n")
 
         for i, line in enumerate(lines, 1):
-            match = self.SUCCESS_IN_EXPECTED_STATUS_RE.search(line)
+            match = SUCCESS_IN_EXPECTED_STATUS_RE.search(line)
             if match:
                 codes_str = match.group(1)
                 try:
@@ -428,7 +375,7 @@ class CodeValidator:
 
                     # Check if this call targets the endpoint under test or a different endpoint
                     if endpoint_path:
-                        call_match = self.MAKE_REQUEST_CALL_RE.search(line)
+                        call_match = MAKE_REQUEST_CALL_RE.search(line)
                         if call_match:
                             call_path = call_match.group(2)
                             # If calling a DIFFERENT endpoint (setup call), allow 2xx

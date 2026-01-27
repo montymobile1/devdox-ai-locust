@@ -19,31 +19,18 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, TextIO
 
-
-# Patterns compiled once
-_ERROR_PATTERN = re.compile(
-    r"(ERROR|CRITICAL|Request failed|HTTPError|Exception|Error:)",
-    re.IGNORECASE,
+from devdox_ai_locust.utils.constants import (
+    ADDR_RE as _ADDR_RE,
+    API_PATH_RE as _API_PATH_RE,
+    CONTEXT_BUFFER_SIZE as _CONTEXT_BUFFER_SIZE,
+    CONTEXT_PATTERN as _CONTEXT_PATTERN,
+    ERROR_PATTERN as _ERROR_PATTERN,
+    LONG_VALUE_RE as _LONG_VALUE_RE,
+    NUMERIC_PATH_RE as _NUMERIC_PATH_RE,
+    TIMESTAMP_RE as _TIMESTAMP_RE,
+    TRACEBACK_START as _TRACEBACK_START,
+    UUID_RE as _UUID_RE,
 )
-_TRACEBACK_START = re.compile(r"^Traceback \(most recent call last\):")
-_UUID_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
-)
-_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*")
-_NUMERIC_PATH_RE = re.compile(r"/\d{2,}")
-_ADDR_RE = re.compile(r"0x[0-9a-f]+", re.I)
-_LONG_VALUE_RE = re.compile(r"'[^']{50,}'")
-_REQUEST_LINE = re.compile(r"REQUEST:\s*(GET|POST|PUT|PATCH|DELETE)\s+(\S+)", re.I)
-_API_PATH_RE = re.compile(r"(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)", re.I)
-
-# Context lines that are relevant to include with errors
-_CONTEXT_PATTERN = re.compile(
-    r"(REQUEST:|Response|status|body|json|failed|validation)",
-    re.IGNORECASE,
-)
-
-# How many preceding lines to keep as context buffer
-_CONTEXT_BUFFER_SIZE = 8
 
 
 def _normalize_error(line: str) -> str:
