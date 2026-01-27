@@ -185,12 +185,27 @@ class TestCLI:
             # Should not crash, might fail due to async issues in testing
             mock_asyncio_run.assert_called_once()
 
-    @patch("subprocess.run")
-    def test_run_command_basic(self, mock_subprocess, cli_runner, temp_dir):
+    @patch("devdox_ai_locust.cli._teardown_logging")
+    @patch("devdox_ai_locust.cli._setup_logging")
+    @patch("subprocess.Popen")
+    def test_run_command_basic(
+        self, mock_popen, mock_setup_log, mock_teardown_log, cli_runner, temp_dir
+    ):
         """Test basic run command."""
         # Create a dummy test file
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
+
+        # Mock logging setup to not modify stdout
+        mock_log_file = Mock()
+        mock_setup_log.return_value = (temp_dir / "test.log", mock_log_file)
+
+        # Mock the Popen process
+        mock_process = Mock()
+        mock_process.stdout = iter([])
+        mock_process.wait.return_value = 0
+        mock_process.returncode = 0
+        mock_popen.return_value = mock_process
 
         _ = cli_runner.invoke(
             cli,
@@ -206,26 +221,41 @@ class TestCLI:
             ],
         )
 
-        # Should call subprocess.run with locust command
-        mock_subprocess.assert_called_once()
-        args = mock_subprocess.call_args[0][0]
+        # Should call subprocess.Popen with locust command
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
         assert "locust" in args
         assert str(test_file) in args
         assert "http://localhost:8000" in args
 
-    @patch("subprocess.run")
-    def test_run_command_headless(self, mock_subprocess, cli_runner, temp_dir):
+    @patch("devdox_ai_locust.cli._teardown_logging")
+    @patch("devdox_ai_locust.cli._setup_logging")
+    @patch("subprocess.Popen")
+    def test_run_command_headless(
+        self, mock_popen, mock_setup_log, mock_teardown_log, cli_runner, temp_dir
+    ):
         """Test run command with headless flag."""
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
+
+        # Mock logging setup
+        mock_log_file = Mock()
+        mock_setup_log.return_value = (temp_dir / "test.log", mock_log_file)
+
+        # Mock the Popen process
+        mock_process = Mock()
+        mock_process.stdout = iter([])
+        mock_process.wait.return_value = 0
+        mock_process.returncode = 0
+        mock_popen.return_value = mock_process
 
         _ = cli_runner.invoke(
             cli,
             ["run", str(test_file), "--host", "http://localhost:8000", "--headless"],
         )
 
-        mock_subprocess.assert_called_once()
-        args = mock_subprocess.call_args[0][0]
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
         assert "--headless" in args
 
     def test_run_command_file_not_found(self, cli_runner):
@@ -236,15 +266,26 @@ class TestCLI:
 
         assert result.exit_code != 0
 
-    @patch("subprocess.run")
-    def test_run_command_subprocess_error(self, mock_subprocess, cli_runner, temp_dir):
+    @patch("devdox_ai_locust.cli._teardown_logging")
+    @patch("devdox_ai_locust.cli._setup_logging")
+    @patch("subprocess.Popen")
+    def test_run_command_subprocess_error(
+        self, mock_popen, mock_setup_log, mock_teardown_log, cli_runner, temp_dir
+    ):
         """Test run command with subprocess error."""
-        from subprocess import CalledProcessError
-
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
 
-        mock_subprocess.side_effect = CalledProcessError(1, "locust")
+        # Mock logging setup
+        mock_log_file = Mock()
+        mock_setup_log.return_value = (temp_dir / "test.log", mock_log_file)
+
+        # Mock a process that fails
+        mock_process = Mock()
+        mock_process.stdout = iter([])
+        mock_process.wait.return_value = 1
+        mock_process.returncode = 1
+        mock_popen.return_value = mock_process
 
         result = cli_runner.invoke(
             cli, ["run", str(test_file), "--host", "http://localhost:8000"]
@@ -252,13 +293,21 @@ class TestCLI:
 
         assert result.exit_code == 1
 
-    @patch("subprocess.run")
-    def test_run_command_locust_not_found(self, mock_subprocess, cli_runner, temp_dir):
+    @patch("devdox_ai_locust.cli._teardown_logging")
+    @patch("devdox_ai_locust.cli._setup_logging")
+    @patch("subprocess.Popen")
+    def test_run_command_locust_not_found(
+        self, mock_popen, mock_setup_log, mock_teardown_log, cli_runner, temp_dir
+    ):
         """Test run command when locust is not installed."""
         test_file = temp_dir / "test_locustfile.py"
         test_file.write_text("# Test locust file")
 
-        mock_subprocess.side_effect = FileNotFoundError()
+        # Mock logging setup
+        mock_log_file = Mock()
+        mock_setup_log.return_value = (temp_dir / "test.log", mock_log_file)
+
+        mock_popen.side_effect = FileNotFoundError()
 
         result = cli_runner.invoke(
             cli, ["run", str(test_file), "--host", "http://localhost:8000"]
@@ -271,6 +320,7 @@ class TestAsyncGenerate:
     """Test async generate functionality."""
 
     @pytest.mark.asyncio
+    @patch("devdox_ai_locust.cli.DebugRecorder")
     @patch("devdox_ai_locust.cli._initialize_config")
     @patch("devdox_ai_locust.cli._setup_output_directory")
     @patch("devdox_ai_locust.cli._process_api_schema")
@@ -283,6 +333,7 @@ class TestAsyncGenerate:
         mock_process_schema,
         mock_setup_output,
         mock_init_config,
+        mock_debug_recorder,
         temp_dir,
         sample_endpoints,
         sample_api_info,
@@ -302,31 +353,37 @@ class TestAsyncGenerate:
         await _async_generate(
             mock_ctx,
             "https://api.example.com/swagger.json",
-            "output",
+            str(temp_dir),
             10,  # users
             2,  # spawn_rate
             "5m",  # run_time
             None,  # host
-            "",
             True,  # auth
+            "",  # db_type
             False,  # dry_run
             None,  # custom_requirement
             "test-api-key",
         )
 
-        # Verify calls
+        # Verify calls - note: _setup_output_directory is called by 'generate',
+        # not by _async_generate directly
         mock_init_config.assert_called_once()
-        mock_setup_output.assert_called_once()
         mock_process_schema.assert_called_once()
         mock_generate_tests.assert_called_once()
         mock_show_results.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("devdox_ai_locust.cli.DebugRecorder")
     @patch("devdox_ai_locust.cli._initialize_config")
     @patch("devdox_ai_locust.cli._setup_output_directory")
     @patch("devdox_ai_locust.cli._process_api_schema")
     async def test_async_generate_schema_error(
-        self, mock_process_schema, mock_setup_output, mock_init_config, temp_dir
+        self,
+        mock_process_schema,
+        mock_setup_output,
+        mock_init_config,
+        mock_debug_recorder,
+        temp_dir,
     ):
         """Test async generate with schema processing error."""
         # Setup mocks
@@ -343,7 +400,7 @@ class TestAsyncGenerate:
             await _async_generate(
                 mock_ctx,
                 "https://api.example.com/swagger.json",
-                "output",
+                str(temp_dir),
                 10,
                 2,
                 "5m",
@@ -356,6 +413,7 @@ class TestAsyncGenerate:
             )
 
     @pytest.mark.asyncio
+    @patch("devdox_ai_locust.cli.DebugRecorder")
     @patch("devdox_ai_locust.cli._initialize_config")
     @patch("devdox_ai_locust.cli._setup_output_directory")
     @patch("devdox_ai_locust.cli._process_api_schema")
@@ -366,6 +424,7 @@ class TestAsyncGenerate:
         mock_process_schema,
         mock_setup_output,
         mock_init_config,
+        mock_debug_recorder,
         temp_dir,
         sample_endpoints,
         sample_api_info,
@@ -387,7 +446,7 @@ class TestAsyncGenerate:
                 await _async_generate(
                     mock_ctx,
                     "https://api.example.com/swagger.json",
-                    "output",
+                    str(temp_dir),
                     10,
                     2,
                     "5m",
@@ -441,12 +500,12 @@ class TestGenerateAndCreateTests:
     """Test test generation and creation functionality."""
 
     @pytest.mark.asyncio
+    @patch("devdox_ai_locust.cli._generate_scenario_based_tests")
     @patch("devdox_ai_locust.cli.AsyncTogether")
-    @patch("devdox_ai_locust.cli.HybridLocustGenerator")
     async def test_generate_and_create_tests_success(
         self,
-        mock_generator_class,
         mock_together_class,
+        mock_scenario_tests,
         temp_dir,
         sample_endpoints,
         sample_api_info,
@@ -456,18 +515,8 @@ class TestGenerateAndCreateTests:
         mock_client = AsyncMock()
         mock_together_class.return_value = mock_client
 
-        # Mock generator
-        mock_generator = Mock()
-        mock_generator.generate_from_endpoints = AsyncMock(
-            return_value=(
-                {"test_file.py": "test content"},
-                [{"workflow_file.py": "workflow content"}],
-            )
-        )
-        mock_generator._create_test_files_safely = AsyncMock(
-            return_value=[{"path": "created_file.py"}]
-        )
-        mock_generator_class.return_value = mock_generator
+        # Mock scenario tests
+        mock_scenario_tests.return_value = [{"path": "created_file.py"}]
 
         # Test the function
         created_files = await _generate_and_create_tests(
@@ -482,9 +531,8 @@ class TestGenerateAndCreateTests:
 
         # Verify calls
         mock_together_class.assert_called_once_with(api_key="test-api-key")
-        mock_generator_class.assert_called_once_with(ai_client=mock_client)
-        mock_generator.generate_from_endpoints.assert_called_once()
-        assert len(created_files) > 0
+        mock_scenario_tests.assert_called_once()
+        assert created_files == [{"path": "created_file.py"}]
 
 
 class TestCLIHelperFunctions:

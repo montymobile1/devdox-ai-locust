@@ -4,8 +4,14 @@ Tests for file_creation utility module
 
 import pytest
 import asyncio
+import sys
 
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
+
+# Skip tests that rely on Unix permissions on Windows
+skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix permissions not supported on Windows"
+)
 
 
 class TestFileCreationConfig:
@@ -183,6 +189,7 @@ class TestSafeFileCreator:
         assert (temp_dir / filename).exists()
         assert (temp_dir / filename).read_text() == content
 
+    @skip_on_windows
     @pytest.mark.asyncio
     async def test_create_temp_file_executable(self, temp_dir):
         """Test creating executable temporary file."""
@@ -344,6 +351,7 @@ class TestSafeFileCreator:
 class TestSafeFileCreatorIntegration:
     """Integration tests for SafeFileCreator."""
 
+    @skip_on_windows
     @pytest.mark.asyncio
     async def test_full_workflow(self, temp_dir):
         """Test complete file creation workflow."""
@@ -426,6 +434,7 @@ class TestSafeFileCreatorIntegration:
         for i in range(10):
             assert (staging_dir / f"file_{i}.py").exists()
 
+    @skip_on_windows
     @pytest.mark.asyncio
     async def test_error_handling(self, temp_dir):
         """Test error handling in file operations."""

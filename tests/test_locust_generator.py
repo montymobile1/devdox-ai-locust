@@ -285,8 +285,8 @@ def test_function():
 
         code = generator._generate_path_params_code(endpoint)
 
-        assert "id = data_generator.generate_integer()" in code
-        assert "username = data_generator.generate_string()" in code
+        assert "id = test_data_generator.generate_integer()" in code
+        assert "username = test_data_generator.generate_string()" in code
 
     def test_generate_query_params_code(self):
         """Test generating query parameters code."""
@@ -329,7 +329,7 @@ def test_function():
 
         code = generator._generate_request_body_code(endpoint)
 
-        assert "json_data = data_generator.generate_json_data(" in code
+        assert "json_data = test_data_generator.generate_json_data(" in code
 
     def test_generate_request_body_code_form(self):
         """Test generating request body code for form data."""
@@ -341,7 +341,7 @@ def test_function():
 
         code = generator._generate_request_body_code(endpoint)
 
-        assert "data = data_generator.generate_form_data()" in code
+        assert "data = test_data_generator.generate_form_data()" in code
 
     def test_generate_request_body_code_none(self):
         """Test generating request body code when no body."""
@@ -555,7 +555,7 @@ class TestLocustTestGeneratorTemplates:
             mock_jinja_env.get_template.return_value = mock_template
 
             result = generator._build_endpoint_template(
-                sample_api_info, "# Task methods", "users"
+                sample_api_info, "# Task methods", "users", "UsersWorkflow"
             )
 
             assert result == "# Endpoint template"
