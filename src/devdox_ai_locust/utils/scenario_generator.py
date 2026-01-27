@@ -745,23 +745,10 @@ class ScenarioWorkflowGenerator:
         )
 
         # Record orchestrator context and prompt
-        if self.debug_recorder and self.debug_recorder.enabled:
-            orchestrator_context = {
-                "tag_name": tag_name,
-                "endpoints_count": len(tag_endpoints),
-                "class_name": class_name,
-                "custom_requirement": custom_requirement or "",
-                "db_type": db_type,
-                "endpoints_list": endpoints_list,
-            }
-            await self.debug_recorder.record_orchestrator_context(
-                tag=tag_name,
-                context=orchestrator_context,
-            )
-            await self.debug_recorder.record_orchestrator_prompt(
-                tag=tag_name,
-                prompt=prompt,
-            )
+        await self._record_orchestrator_context(
+            tag_name, tag_endpoints, class_name, custom_requirement,
+            db_type, endpoints_list, prompt
+        )
 
         # Call LLM with validation retry
         max_validation_retries = 2
@@ -773,65 +760,26 @@ class ScenarioWorkflowGenerator:
             if attempt > 0 and last_error and last_code:
                 current_prompt = self._render_fix_prompt(last_code, last_error)
 
-            # Record LLM request
-            if self.debug_recorder and self.debug_recorder.enabled:
-                await self.debug_recorder.record_orchestrator_llm_request(
-                    tag=tag_name,
-                    request_data={
-                        "model": self.ai_config.model,
-                        "max_tokens": self.ai_config.max_tokens,
-                        "temperature": self.ai_config.temperature,
-                        "timeout": self.ai_config.timeout,
-                        "attempt": attempt + 1,
-                        "is_retry": attempt > 0,
-                    },
-                )
-
+            # Record and call LLM
+            await self._record_orchestrator_llm_call(tag_name, attempt)
             content = await self._call_ai_service(
                 current_prompt, f"orchestrator_{tag_name}"
             )
 
-            # Record LLM response
+            # Record response
             if self.debug_recorder and self.debug_recorder.enabled:
                 await self.debug_recorder.record_orchestrator_llm_response(
-                    tag=tag_name,
-                    response=content or "(empty response)",
+                    tag=tag_name, response=content or "(empty response)"
                 )
 
-            if not content:
-                raise AIServiceError(
-                    f"AI service returned empty response for orchestrator [{tag_name}]"
-                )
-
-            # Detect HTML error page
-            if content.strip().startswith("<") and "<html" in content.lower():
-                raise AIServiceError(
-                    f"API returned HTML error page for orchestrator [{tag_name}]"
-                )
-
-            # Extract and clean code using code processor
-            extracted = self._code_processor.extract_code(content)
-            sanitized = self._code_processor.sanitize_unicode(extracted)
-            after_class_fix = self._fix_orchestrator_class_name(sanitized, class_name)
-            after_bytes_fix = self._code_processor.fix_bytes_literals(after_class_fix)
-            after_regex_fix = self._code_processor.fix_regex_strings(after_bytes_fix)
-            content = after_regex_fix
-
+            # Validate and process
+            self._validate_orchestrator_response(content, tag_name)
+            content = self._apply_orchestrator_fixes(content, class_name)
             is_valid, error = self._code_processor.validate_python_code(content)
 
             if is_valid:
-                # Record final orchestrator code
-                if self.debug_recorder and self.debug_recorder.enabled:
-                    await self.debug_recorder.record_orchestrator_final(
-                        tag=tag_name,
-                        code=content,
-                        summary={
-                            "success": True,
-                            "attempts": attempt + 1,
-                            "used_fallback": False,
-                            "code_length": len(content),
-                        },
-                    )
+                # Record success
+                await self._record_orchestrator_success(tag_name, content, attempt)
                 if attempt > 0:
                     logger.info(
                         f"Retry SUCCEEDED for orchestrator [{tag_name}] "
@@ -944,6 +892,90 @@ class ScenarioWorkflowGenerator:
                 )
 
         return code
+
+    async def _record_orchestrator_context(
+        self,
+        tag_name: str,
+        tag_endpoints: List[Any],
+        class_name: str,
+        custom_requirement: Optional[str],
+        db_type: str,
+        endpoints_list: str,
+        prompt: str,
+    ) -> None:
+        """Record orchestrator context and prompt for debugging."""
+        if not self.debug_recorder or not self.debug_recorder.enabled:
+            return
+        context = {
+            "tag_name": tag_name,
+            "endpoints_count": len(tag_endpoints),
+            "class_name": class_name,
+            "custom_requirement": custom_requirement or "",
+            "db_type": db_type,
+            "endpoints_list": endpoints_list,
+        }
+        await self.debug_recorder.record_orchestrator_context(
+            tag=tag_name, context=context
+        )
+        await self.debug_recorder.record_orchestrator_prompt(
+            tag=tag_name, prompt=prompt
+        )
+
+    async def _record_orchestrator_llm_call(
+        self, tag_name: str, attempt: int
+    ) -> None:
+        """Record orchestrator LLM request."""
+        if not self.debug_recorder or not self.debug_recorder.enabled:
+            return
+        await self.debug_recorder.record_orchestrator_llm_request(
+            tag=tag_name,
+            request_data={
+                "model": self.ai_config.model,
+                "max_tokens": self.ai_config.max_tokens,
+                "temperature": self.ai_config.temperature,
+                "timeout": self.ai_config.timeout,
+                "attempt": attempt + 1,
+                "is_retry": attempt > 0,
+            },
+        )
+
+    def _validate_orchestrator_response(
+        self, content: Optional[str], tag_name: str
+    ) -> None:
+        """Validate orchestrator LLM response, raise if invalid."""
+        if not content:
+            raise AIServiceError(
+                f"AI service returned empty response for orchestrator [{tag_name}]"
+            )
+        if content.strip().startswith("<") and "<html" in content.lower():
+            raise AIServiceError(
+                f"API returned HTML error page for orchestrator [{tag_name}]"
+            )
+
+    def _apply_orchestrator_fixes(self, content: str, class_name: str) -> str:
+        """Apply all code fixes to orchestrator code."""
+        extracted = self._code_processor.extract_code(content)
+        sanitized = self._code_processor.sanitize_unicode(extracted)
+        after_class = self._fix_orchestrator_class_name(sanitized, class_name)
+        after_bytes = self._code_processor.fix_bytes_literals(after_class)
+        return self._code_processor.fix_regex_strings(after_bytes)
+
+    async def _record_orchestrator_success(
+        self, tag_name: str, content: str, attempt: int
+    ) -> None:
+        """Record successful orchestrator generation."""
+        if not self.debug_recorder or not self.debug_recorder.enabled:
+            return
+        await self.debug_recorder.record_orchestrator_final(
+            tag=tag_name,
+            code=content,
+            summary={
+                "success": True,
+                "attempts": attempt + 1,
+                "used_fallback": False,
+                "code_length": len(content),
+            },
+        )
 
     def _should_skip_scenario(
         self,
