@@ -337,22 +337,120 @@ async def _generate_scenario_based_tests(
     from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
     from devdox_ai_locust.locust_generator import LocustTestGenerator
 
-    # Group endpoints by tag for directory organization
-    grouped_endpoints: Dict[str, List[Endpoint]] = {}
-    for ep in endpoints:
-        tag = ep.tags[0] if ep.tags else "default"
-        if tag not in grouped_endpoints:
-            grouped_endpoints[tag] = []
-        grouped_endpoints[tag].append(ep)
-
+    grouped_endpoints = _group_endpoints_by_tag(endpoints)
     num_tags = len(grouped_endpoints)
     num_endpoints = len(endpoints)
 
-    # Setup prompt directory
-    prompt_dir = Path(__file__).parent / "prompt"
+    scenario_gen = _init_scenario_generator(
+        ai_client, ai_config, max_llm_workers, debug_recorder
+    )
+    _print_generation_plan(ai_config, scenario_gen, num_endpoints, num_tags)
 
-    # Initialize scenario generator
-    scenario_gen = ScenarioWorkflowGenerator(
+    template_gen = LocustTestGenerator()
+    base_files = _generate_base_files(
+        template_gen, endpoints, api_info, auth, host, db_type, debug_recorder
+    )
+    base_workflow_content = base_files.get("base_workflow.py", "")
+    test_data_content = base_files.get("test_data.py", "")
+
+    auth_endpoints = _detect_auth_endpoints(endpoints)
+    workflows_dir = _prepare_workflows_dir(output_dir)
+
+    pre_llm_templates = _generate_pre_llm_templates(
+        endpoints, scenario_gen, template_gen
+    )
+
+    endpoint_to_tag = _build_endpoint_tag_mapping(grouped_endpoints)
+
+    # Shared mutable state for parallel processing
+    state = _GenerationState()
+
+    progress = _init_progress(scenario_gen, num_endpoints, verbose)
+
+    # Process all endpoints in parallel
+    with progress:
+        tasks = [
+            _process_and_save_endpoint(
+                endpoint=ep,
+                state=state,
+                endpoint_to_tag=endpoint_to_tag,
+                scenario_gen=scenario_gen,
+                workflows_dir=workflows_dir,
+                base_workflow_content=base_workflow_content,
+                test_data_content=test_data_content,
+                auth_endpoints=auth_endpoints if auth else None,
+                all_endpoints=endpoints,
+                custom_requirement=custom_requirement,
+                db_type=db_type,
+                pre_llm_templates=pre_llm_templates,
+                template_gen=template_gen,
+                progress=progress,
+            )
+            for ep in endpoints
+        ]
+        await asyncio.gather(*tasks)
+
+    # Generate orchestrators
+    orchestrator_files, orchestrator_failures = await _generate_orchestrators(
+        grouped_endpoints=grouped_endpoints,
+        successful_endpoints=state.successful_endpoints,
+        scenario_gen=scenario_gen,
+        workflows_dir=workflows_dir,
+        base_workflow_content=base_workflow_content,
+        test_data_content=test_data_content,
+        auth_endpoints=auth_endpoints if auth else None,
+        custom_requirement=custom_requirement,
+        db_type=db_type,
+        progress=progress,
+    )
+    state.created_files.extend(orchestrator_files)
+
+    _report_orchestrator_results(orchestrator_files, orchestrator_failures, num_tags)
+    _report_generation_summary(
+        scenario_gen, state.failed_endpoints, state.completed_count,
+        state.failed_count, num_endpoints,
+    )
+
+    _create_init_files(
+        workflows_dir, grouped_endpoints, scenario_gen,
+    )
+    _write_base_files(base_files, output_dir, workflows_dir, state.created_files)
+
+    return state.created_files
+
+
+class _GenerationState:
+    """Mutable state shared across parallel endpoint processing."""
+
+    def __init__(self) -> None:
+        self.created_files: List[Dict[str, Any]] = []
+        self.failed_endpoints: List[Dict[str, Any]] = []
+        self.completed_count: int = 0
+        self.failed_count: int = 0
+        self.successful_endpoints: set = set()
+        self.file_write_lock: asyncio.Lock = asyncio.Lock()
+
+
+def _group_endpoints_by_tag(endpoints: List[Endpoint]) -> Dict[str, List[Endpoint]]:
+    """Group endpoints by their first tag."""
+    grouped: Dict[str, List[Endpoint]] = {}
+    for ep in endpoints:
+        tag = ep.tags[0] if ep.tags else "default"
+        grouped.setdefault(tag, []).append(ep)
+    return grouped
+
+
+def _init_scenario_generator(
+    ai_client: AsyncTogether,
+    ai_config: AIEnhancementConfig,
+    max_llm_workers: int,
+    debug_recorder: Optional[DebugRecorder],
+) -> Any:
+    """Initialize the ScenarioWorkflowGenerator."""
+    from devdox_ai_locust.utils.scenario_generator import ScenarioWorkflowGenerator
+
+    prompt_dir = Path(__file__).parent / "prompt"
+    return ScenarioWorkflowGenerator(
         prompt_dir=prompt_dir,
         ai_client=ai_client,
         ai_config=ai_config,
@@ -360,32 +458,43 @@ async def _generate_scenario_based_tests(
         debug_recorder=debug_recorder,
     )
 
-    # Get dynamic counts from generator
-    num_scenarios = scenario_gen.num_scenarios
-    scenario_filenames = ", ".join(scenario_gen.SCENARIO_FILES.values())
 
-    # Get generation metrics
+def _print_generation_plan(
+    ai_config: AIEnhancementConfig,
+    scenario_gen: Any,
+    num_endpoints: int,
+    num_tags: int,
+) -> None:
+    """Print the generation plan to console."""
+    scenario_filenames = ", ".join(scenario_gen.SCENARIO_FILES.values())
     time_estimate = scenario_gen.estimate_time(num_endpoints)
 
     console.print("\n[bold]→ Generation Plan[/bold]")
     console.print(f"  Model: [cyan]{ai_config.model}[/cyan]")
     console.print(f"  Concurrency: {scenario_gen.current_concurrency} workers")
     console.print(f"  Endpoints: {num_endpoints} across {num_tags} tags")
-    console.print(f"  Scenarios: {num_scenarios} per endpoint ({scenario_filenames})")
+    console.print(
+        f"  Scenarios: {scenario_gen.num_scenarios} per endpoint ({scenario_filenames})"
+    )
     console.print(f"  Total LLM calls: {time_estimate.total_calls}")
     console.print()
 
-    # Generate base files first using template generator
-    template_gen = LocustTestGenerator()
+
+def _generate_base_files(
+    template_gen: Any,
+    endpoints: List[Endpoint],
+    api_info: Dict[str, Any],
+    auth: bool,
+    host: Optional[str],
+    db_type: str,
+    debug_recorder: Optional[DebugRecorder],
+) -> Dict[str, str]:
+    """Generate base template files and record debug info."""
     base_files, _, _ = template_gen.generate_from_endpoints(
         endpoints, api_info, include_auth=auth, target_host=host, db_type=db_type
     )
     base_files = template_gen.fix_indent(base_files)
 
-    base_workflow_content = base_files.get("base_workflow.py", "")
-    test_data_content = base_files.get("test_data.py", "")
-
-    # Record static file generation
     if debug_recorder and debug_recorder.enabled:
         for filename, content in base_files.items():
             debug_recorder.record_static_file(
@@ -399,69 +508,71 @@ async def _generate_scenario_based_tests(
                 },
                 rendered_content=content,
             )
+    return base_files
 
+
+def _detect_auth_endpoints(endpoints: List[Endpoint]) -> List[Endpoint]:
+    """Detect auth-related endpoints by keyword matching."""
     # TODO: Auth endpoint detection is overly broad - matches any path containing
-    # "auth", "login", "token", or "session" as substrings (e.g. "/authorization-codes",
-    # "/reset-session-timer"). Consider using OpenAPI security schemes instead.
-    auth_endpoints = [
+    # "auth", "login", "token", or "session" as substrings. Consider using
+    # OpenAPI security schemes instead.
+    return [
         ep
         for ep in endpoints
         if any(kw in ep.path.lower() for kw in ["auth", "login", "token", "session"])
     ]
 
-    created_files: List[Dict[str, Any]] = []
-    failed_endpoints: List[Dict[str, Any]] = []  # Track failures
+
+def _prepare_workflows_dir(output_dir: Path) -> Path:
+    """Clean and create the workflows output directory."""
+    import shutil
+
     workflows_dir = output_dir / "workflows"
-
-    # Clean previous workflow files to prevent stale/broken files from prior runs
     if workflows_dir.exists():
-        import shutil
-
         shutil.rmtree(workflows_dir)
         logger.info("Cleaned previous workflow files")
     workflows_dir.mkdir(parents=True, exist_ok=True)
+    return workflows_dir
 
-    completed_count = 0
-    failed_count = 0
-    file_write_lock = asyncio.Lock()
 
-    # Helper to sanitize directory names
-    def sanitize_dir_name(name: str) -> str:
-        import re
+def _sanitize_dir_name(name: str) -> str:
+    """Sanitize a string for use as a directory name."""
+    import re
 
-        name = (
-            name.lower()
-            .replace("-", "_")
-            .replace(" ", "_")
-            .replace(".", "_")
-            .replace("/", "_")
-        )
-        name = re.sub(r"[^a-z0-9_]", "", name)
-        name = re.sub(r"_+", "_", name).strip("_")
-        return name or "unnamed"
+    name = (
+        name.lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+        .replace(".", "_")
+        .replace("/", "_")
+    )
+    name = re.sub(r"[^a-z0-9_]", "", name)
+    name = re.sub(r"_+", "_", name).strip("_")
+    return name or "unnamed"
 
-    # Helper to convert to PascalCase class name
-    def to_class_name(name: str) -> str:
-        sanitized = sanitize_dir_name(name)
-        words = sanitized.replace("_", " ").split()
-        return "".join(word.capitalize() for word in words) or "Unnamed"
 
-    # Generate pre-LLM template for a single endpoint and scenario
-    def generate_pre_llm_workflow(endpoint: Any, scenario_type: str) -> str:
-        """Generate a pre-LLM workflow using template generator"""
-        operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
-        class_name = to_class_name(operation_id)
-        method = endpoint.method.lower()
-        path = endpoint.path
+def _to_class_name(name: str) -> str:
+    """Convert a name to PascalCase class name."""
+    sanitized = _sanitize_dir_name(name)
+    words = sanitized.replace("_", " ").split()
+    return "".join(word.capitalize() for word in words) or "Unnamed"
 
-        # Use template generator to create proper task method
-        task_method = template_gen._generate_task_method(endpoint)
-        # Indent task method for class body (4 spaces)
-        indented_task = "\n".join(
-            f"    {line}" if line.strip() else line for line in task_method.split("\n")
-        )
 
-        return f'''"""
+def _generate_pre_llm_workflow(
+    endpoint: Any, scenario_type: str, scenario_gen: Any, template_gen: Any,
+) -> str:
+    """Generate a pre-LLM fallback workflow for an endpoint and scenario type."""
+    operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
+    class_name = _to_class_name(operation_id)
+    method = endpoint.method.lower()
+    path = endpoint.path
+
+    task_method = template_gen._generate_task_method(endpoint)
+    indented_task = "\n".join(
+        f"    {line}" if line.strip() else line for line in task_method.split("\n")
+    )
+
+    return f'''"""
 Pre-LLM workflow for {method.upper()} {path}
 Generated using template generator.
 """
@@ -479,16 +590,19 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
 {indented_task}
 '''
 
-    # Generate base templates first (LLM will enhance these)
-    # These are critical fallback infrastructure - fail fast if generation fails
+
+def _generate_pre_llm_templates(
+    endpoints: List[Endpoint], scenario_gen: Any, template_gen: Any,
+) -> Dict[Tuple[int, str], str]:
+    """Generate all pre-LLM fallback templates. Exits on failure."""
     console.print("→ Generating base templates...")
-    pre_llm_templates: Dict[Tuple[int, str], str] = {}
+    templates: Dict[Tuple[int, str], str] = {}
     scenario_types = ["positive", "negative", "security"]
     try:
         for endpoint in endpoints:
-            for scenario_type in scenario_types:
-                pre_llm_templates[(id(endpoint), scenario_type)] = (
-                    generate_pre_llm_workflow(endpoint, scenario_type)
+            for st in scenario_types:
+                templates[(id(endpoint), st)] = _generate_pre_llm_workflow(
+                    endpoint, st, scenario_gen, template_gen
                 )
     except Exception as e:
         console.print(
@@ -499,171 +613,282 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         logger.error(f"Pre-LLM template generation failed: {e}", exc_info=True)
         sys.exit(1)
     console.print("[green]✓[/green] Base templates generated")
+    return templates
 
-    # Build endpoint to tag mapping
-    endpoint_to_tag = {}
+
+def _build_endpoint_tag_mapping(
+    grouped_endpoints: Dict[str, List[Endpoint]],
+) -> Dict[int, str]:
+    """Build a mapping from endpoint id to tag name."""
+    mapping: Dict[int, str] = {}
     for tag_name, tag_endpoints in grouped_endpoints.items():
         for ep in tag_endpoints:
-            endpoint_to_tag[id(ep)] = tag_name
+            mapping[id(ep)] = tag_name
+    return mapping
 
-    # Track successful endpoints for orchestrator generation
-    # Orchestrator should only reference endpoints that were successfully generated
-    successful_endpoints: set = set()  # Set of endpoint ids that succeeded
 
-    # Live progress display
+def _init_progress(scenario_gen: Any, num_endpoints: int, verbose: bool) -> Any:
+    """Initialize and attach the GenerationProgress display."""
     from devdox_ai_locust.utils.generation_progress import GenerationProgress
 
-    num_workers = scenario_gen.current_concurrency
     progress = GenerationProgress(
         total=num_endpoints,
-        num_workers=num_workers,
+        num_workers=scenario_gen.current_concurrency,
         console=console,
         verbose=verbose,
     )
     scenario_gen.progress = progress
+    return progress
 
-    # Process endpoint and save files (resilient - catches and tracks errors)
-    async def process_and_save_endpoint(endpoint: Any) -> List[Dict[str, Any]]:
-        nonlocal completed_count, failed_count
-        tag_name = endpoint_to_tag.get(id(endpoint), "default")
-        tag_dir_name = sanitize_dir_name(tag_name)
-        operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
-        endpoint_info = f"{endpoint.method} {endpoint.path}"
 
-        progress.endpoint_start(endpoint_info)
+async def _process_and_save_endpoint(
+    endpoint: Any,
+    state: _GenerationState,
+    endpoint_to_tag: Dict[int, str],
+    scenario_gen: Any,
+    workflows_dir: Path,
+    base_workflow_content: str,
+    test_data_content: str,
+    auth_endpoints: Optional[List[Any]],
+    all_endpoints: List[Any],
+    custom_requirement: Optional[str],
+    db_type: str,
+    pre_llm_templates: Dict[Tuple[int, str], str],
+    template_gen: Any,
+    progress: Any,
+) -> List[Dict[str, Any]]:
+    """Process a single endpoint: generate scenarios and save files."""
+    tag_name = endpoint_to_tag.get(id(endpoint), "default")
+    tag_dir_name = _sanitize_dir_name(tag_name)
+    operation_id = scenario_gen.get_endpoint_dir_name(endpoint)
+    endpoint_info = f"{endpoint.method} {endpoint.path}"
+    endpoint_dir = workflows_dir / tag_dir_name / operation_id
 
-        try:
-            # Create endpoint directory
-            endpoint_dir = workflows_dir / tag_dir_name / operation_id
-            endpoint_dir.mkdir(parents=True, exist_ok=True)
+    progress.endpoint_start(endpoint_info)
 
-            # Generate scenario workflows
-            scenarios = await scenario_gen.generate_endpoint_workflows(
-                endpoint=endpoint,
-                base_workflow_content=base_workflow_content,
-                test_data_content=test_data_content,
-                auth_endpoints=auth_endpoints if auth else None,
-                tag_name=tag_name,
-                all_endpoints=endpoints,
-                custom_requirement=custom_requirement,
-                db_type=db_type,
+    try:
+        return await _save_generated_scenarios(
+            endpoint=endpoint,
+            state=state,
+            scenario_gen=scenario_gen,
+            endpoint_dir=endpoint_dir,
+            base_workflow_content=base_workflow_content,
+            test_data_content=test_data_content,
+            auth_endpoints=auth_endpoints,
+            all_endpoints=all_endpoints,
+            tag_name=tag_name,
+            custom_requirement=custom_requirement,
+            db_type=db_type,
+            operation_id=operation_id,
+            endpoint_info=endpoint_info,
+            progress=progress,
+        )
+    except Exception as e:
+        return await _handle_endpoint_failure(
+            e=e,
+            state=state,
+            endpoint=endpoint,
+            endpoint_dir=endpoint_dir,
+            workflows_dir=workflows_dir,
+            operation_id=operation_id,
+            endpoint_info=endpoint_info,
+            tag_name=tag_name,
+            pre_llm_templates=pre_llm_templates,
+            scenario_gen=scenario_gen,
+            template_gen=template_gen,
+            progress=progress,
+        )
+
+
+async def _save_generated_scenarios(
+    endpoint: Any,
+    state: _GenerationState,
+    scenario_gen: Any,
+    endpoint_dir: Path,
+    base_workflow_content: str,
+    test_data_content: str,
+    auth_endpoints: Optional[List[Any]],
+    all_endpoints: List[Any],
+    tag_name: str,
+    custom_requirement: Optional[str],
+    db_type: str,
+    operation_id: str,
+    endpoint_info: str,
+    progress: Any,
+) -> List[Dict[str, Any]]:
+    """Generate and save scenario workflows for a single endpoint."""
+    endpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    scenarios = await scenario_gen.generate_endpoint_workflows(
+        endpoint=endpoint,
+        base_workflow_content=base_workflow_content,
+        test_data_content=test_data_content,
+        auth_endpoints=auth_endpoints,
+        tag_name=tag_name,
+        all_endpoints=all_endpoints,
+        custom_requirement=custom_requirement,
+        db_type=db_type,
+    )
+
+    local_files = []
+    for scenario_type, content in scenarios.items():
+        if content:
+            filename = scenario_gen.SCENARIO_FILES[scenario_type]
+            file_path = endpoint_dir / filename
+            async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+                await f.write(content)
+            local_files.append({
+                "path": str(file_path),
+                "size": len(content),
+                "tag": tag_name,
+                "operation_id": operation_id,
+                "scenario": scenario_type.value,
+            })
+
+    async with state.file_write_lock:
+        state.completed_count += 1
+        state.successful_endpoints.add(id(endpoint))
+        state.created_files.extend(local_files)
+
+    progress.endpoint_done(endpoint_info, scenarios_generated=len(local_files))
+    return local_files
+
+
+async def _handle_endpoint_failure(
+    e: Exception,
+    state: _GenerationState,
+    endpoint: Any,
+    endpoint_dir: Path,
+    workflows_dir: Path,
+    operation_id: str,
+    endpoint_info: str,
+    tag_name: str,
+    pre_llm_templates: Dict[Tuple[int, str], str],
+    scenario_gen: Any,
+    template_gen: Any,
+    progress: Any,
+) -> List[Dict[str, Any]]:
+    """Handle a failed endpoint by saving failure info and writing fallback files."""
+    saved_failure_path = await _save_failure_code(
+        e, workflows_dir, operation_id, endpoint_info
+    )
+
+    fallback_files = await _write_fallback_files(
+        endpoint=endpoint,
+        endpoint_dir=endpoint_dir,
+        tag_name=tag_name,
+        operation_id=operation_id,
+        pre_llm_templates=pre_llm_templates,
+        scenario_gen=scenario_gen,
+        template_gen=template_gen,
+    )
+
+    async with state.file_write_lock:
+        state.failed_count += 1
+        state.failed_endpoints.append({
+            "endpoint": endpoint_info,
+            "operation_id": operation_id,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "saved_code": saved_failure_path,
+        })
+        state.created_files.extend(fallback_files)
+
+    progress.endpoint_failed(endpoint_info, e)
+    return fallback_files
+
+
+async def _save_failure_code(
+    e: Exception, workflows_dir: Path, operation_id: str, endpoint_info: str,
+) -> Optional[str]:
+    """Save failed LLM-generated code to the failures directory."""
+    if not (hasattr(e, "code") and e.code):
+        return None
+
+    failures_dir = workflows_dir / ".failures"
+    failures_dir.mkdir(parents=True, exist_ok=True)
+    failure_filename = f"{operation_id}_{getattr(e, 'scenario_type', 'unknown')}.py"
+    failure_path = failures_dir / failure_filename
+    try:
+        async with aiofiles.open(failure_path, "w", encoding="utf-8") as f:
+            error_header = (
+                f"# FAILED CODE - {endpoint_info}\n"
+                f"# Error: {getattr(e, 'error', str(e))}\n"
+                f"# Scenario: {getattr(e, 'scenario_type', 'unknown')}\n"
+                f"# {'─' * 57}\n\n"
             )
+            await f.write(error_header + e.code)
+        logger.debug(f"Saved failed code to {failure_path}")
+        return str(failure_path)
+    except Exception as save_error:
+        logger.debug(f"Could not save failed code: {save_error}")
+        return None
 
-            # Save files using async I/O
-            local_files = []
-            for scenario_type, content in scenarios.items():
-                if content:
-                    filename = scenario_gen.SCENARIO_FILES[scenario_type]
-                    file_path = endpoint_dir / filename
-                    async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
-                        await f.write(content)
-                    local_files.append(
-                        {
-                            "path": str(file_path),
-                            "size": len(content),
-                            "tag": tag_name,
-                            "operation_id": operation_id,
-                            "scenario": scenario_type.value,
-                        }
-                    )
 
-            # Update progress (success)
-            async with file_write_lock:
-                completed_count += 1
-                successful_endpoints.add(id(endpoint))
-                created_files.extend(local_files)
+async def _write_fallback_files(
+    endpoint: Any,
+    endpoint_dir: Path,
+    tag_name: str,
+    operation_id: str,
+    pre_llm_templates: Dict[Tuple[int, str], str],
+    scenario_gen: Any,
+    template_gen: Any,
+) -> List[Dict[str, Any]]:
+    """Write pre-LLM fallback templates when LLM generation fails."""
+    endpoint_dir.mkdir(parents=True, exist_ok=True)
+    fallback_files = []
 
-            progress.endpoint_done(endpoint_info, scenarios_generated=len(local_files))
-            return local_files
+    for scenario_type in ["positive", "negative", "security"]:
+        fallback_content = pre_llm_templates.get(
+            (id(endpoint), scenario_type), ""
+        )
+        if not fallback_content:
+            fallback_content = _generate_pre_llm_workflow(
+                endpoint, scenario_type, scenario_gen, template_gen
+            )
+        filename = f"{scenario_type}_workflow.py"
+        file_path = endpoint_dir / filename
+        try:
+            async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+                await f.write(fallback_content)
+            fallback_files.append({
+                "path": str(file_path),
+                "size": len(fallback_content),
+                "tag": tag_name,
+                "operation_id": operation_id,
+                "scenario": scenario_type,
+                "fallback": True,
+            })
+        except Exception as write_error:
+            logger.error(f"Failed to write fallback file {file_path}: {write_error}")
 
-        except Exception as e:
-            # Save failed code to failures directory for debugging
-            saved_failure_path = None
-            if hasattr(e, "code") and e.code:
-                failures_dir = workflows_dir / ".failures"
-                failures_dir.mkdir(parents=True, exist_ok=True)
-                failure_filename = (
-                    f"{operation_id}_{getattr(e, 'scenario_type', 'unknown')}.py"
-                )
-                failure_path = failures_dir / failure_filename
-                try:
-                    async with aiofiles.open(failure_path, "w", encoding="utf-8") as f:
-                        # Add error info as comment at top
-                        error_header = f"""# FAILED CODE - {endpoint_info}
-# Error: {getattr(e, 'error', str(e))}
-# Scenario: {getattr(e, 'scenario_type', 'unknown')}
-# ─────────────────────────────────────────────────────────
+    return fallback_files
 
-"""
-                        await f.write(error_header + e.code)
-                    saved_failure_path = str(failure_path)
-                    logger.debug(f"Saved failed code to {failure_path}")
-                except Exception as save_error:
-                    logger.debug(f"Could not save failed code: {save_error}")
 
-            # Use pre-generated pre-LLM templates as fallback
-            fallback_files = []
-            for scenario_type in ["positive", "negative", "security"]:
-                fallback_content = pre_llm_templates.get(
-                    (id(endpoint), scenario_type), ""
-                )
-                if not fallback_content:
-                    fallback_content = generate_pre_llm_workflow(
-                        endpoint, scenario_type
-                    )
-                filename = f"{scenario_type}_workflow.py"
-                file_path = endpoint_dir / filename
-                try:
-                    async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
-                        await f.write(fallback_content)
-                    fallback_files.append(
-                        {
-                            "path": str(file_path),
-                            "size": len(fallback_content),
-                            "tag": tag_name,
-                            "operation_id": operation_id,
-                            "scenario": scenario_type,
-                            "fallback": True,
-                        }
-                    )
-                except Exception as write_error:
-                    logger.error(
-                        f"Failed to write fallback file {file_path}: {write_error}"
-                    )
-
-            async with file_write_lock:
-                failed_count += 1
-                failed_endpoints.append(
-                    {
-                        "endpoint": endpoint_info,
-                        "operation_id": operation_id,
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                        "saved_code": saved_failure_path,
-                    }
-                )
-                created_files.extend(fallback_files)
-
-            progress.endpoint_failed(endpoint_info, e)
-            return fallback_files
-
-    # Process all endpoints in parallel with live progress
-    with progress:
-        tasks = [process_and_save_endpoint(ep) for ep in endpoints]
-        await asyncio.gather(*tasks)
-
-    # Generate orchestrator for each tag
+async def _generate_orchestrators(
+    grouped_endpoints: Dict[str, List[Endpoint]],
+    successful_endpoints: set,
+    scenario_gen: Any,
+    workflows_dir: Path,
+    base_workflow_content: str,
+    test_data_content: str,
+    auth_endpoints: Optional[List[Any]],
+    custom_requirement: Optional[str],
+    db_type: str,
+    progress: Any,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Generate orchestrator workflows for each tag."""
+    num_tags = len(grouped_endpoints)
     console.print(f"\n→ Generating orchestrators ({num_tags} tags)...")
-    orchestrator_files = []
-    orchestrator_failures = []
+
+    orchestrator_files: List[Dict[str, Any]] = []
+    orchestrator_failures: List[Dict[str, Any]] = []
 
     for tag_name, tag_endpoints in grouped_endpoints.items():
-        tag_dir_name = sanitize_dir_name(tag_name)
-        tag_dir = workflows_dir / tag_dir_name
-
-        # Filter to only endpoints that successfully generated workflows
-        # This prevents orchestrator from referencing non-existent endpoints
-        valid_endpoints = [ep for ep in tag_endpoints if id(ep) in successful_endpoints]
+        tag_dir_name = _sanitize_dir_name(tag_name)
+        valid_endpoints = [
+            ep for ep in tag_endpoints if id(ep) in successful_endpoints
+        ]
 
         if not valid_endpoints:
             progress.orchestrator_skipped(tag_dir_name, "no valid endpoints")
@@ -672,39 +897,39 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
         try:
             orchestrator_code = await scenario_gen.generate_tag_orchestrator(
                 tag_name=tag_name,
-                tag_endpoints=valid_endpoints,  # Only pass successfully generated endpoints
+                tag_endpoints=valid_endpoints,
                 base_workflow_content=base_workflow_content,
                 test_data_content=test_data_content,
-                auth_endpoints=auth_endpoints if auth else None,
+                auth_endpoints=auth_endpoints,
                 custom_requirement=custom_requirement,
                 db_type=db_type,
             )
 
-            # Save orchestrator file (ensure directory exists as safety net)
+            tag_dir = workflows_dir / tag_dir_name
             tag_dir.mkdir(parents=True, exist_ok=True)
             orchestrator_path = tag_dir / "orchestrator_workflow.py"
             async with aiofiles.open(orchestrator_path, "w", encoding="utf-8") as f:
                 await f.write(orchestrator_code)
-            orchestrator_files.append(
-                {
-                    "path": str(orchestrator_path),
-                    "size": len(orchestrator_code),
-                    "tag": tag_name,
-                }
-            )
+            orchestrator_files.append({
+                "path": str(orchestrator_path),
+                "size": len(orchestrator_code),
+                "tag": tag_name,
+            })
             progress.orchestrator_done(tag_dir_name)
 
         except Exception as e:
-            orchestrator_failures.append(
-                {
-                    "tag": tag_name,
-                    "error": str(e),
-                }
-            )
+            orchestrator_failures.append({"tag": tag_name, "error": str(e)})
             progress.orchestrator_failed(tag_dir_name, e)
 
-    created_files.extend(orchestrator_files)
+    return orchestrator_files, orchestrator_failures
 
+
+def _report_orchestrator_results(
+    orchestrator_files: List[Dict[str, Any]],
+    orchestrator_failures: List[Dict[str, Any]],
+    num_tags: int,
+) -> None:
+    """Print orchestrator generation results."""
     if orchestrator_failures:
         console.print(
             f"[yellow]⚠[/yellow] Orchestrators: {len(orchestrator_files)}/{num_tags} succeeded"
@@ -712,14 +937,21 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
     else:
         console.print(f"[green]✓[/green] All {num_tags} orchestrators generated")
 
-    # Show summary
+
+def _report_generation_summary(
+    scenario_gen: Any,
+    failed_endpoints: List[Dict[str, Any]],
+    completed_count: int,
+    failed_count: int,
+    num_endpoints: int,
+) -> None:
+    """Print final generation summary with rate limit info and failure details."""
     rate_info = scenario_gen.get_rate_limit_info()
     console.print(
         f"\n[dim]Final rate limit: {rate_info.requests_per_minute} RPM, "
         f"Concurrency used: {scenario_gen.current_concurrency}[/dim]"
     )
 
-    # Report results
     if failed_endpoints:
         console.print(
             f"\n[bold yellow]⚠ Generation completed with {failed_count} failures[/bold yellow]"
@@ -728,79 +960,105 @@ class {class_name}{scenario_type.capitalize()}Workflow(BaseWorkflow):
             f"   [green]✓ Succeeded:[/green] {completed_count}/{num_endpoints}"
         )
         console.print(f"   [red]✗ Failed:[/red] {failed_count}/{num_endpoints}")
-
-        # Show failure details
-        console.print("\n[bold red]Failed Endpoints:[/bold red]")
-        for failure in failed_endpoints[:10]:  # Show first 10
-            console.print(f"   • {failure.get('endpoint', 'unknown')}")
-            error_msg = failure.get("error", "Unknown error") or "Unknown error"
-            error_type = failure.get("error_type", "Error")
-            console.print(f"     [dim]{error_type}: {error_msg[:200]}[/dim]")
-
-        if len(failed_endpoints) > 10:
-            console.print(f"   ... and {len(failed_endpoints) - 10} more failures")
+        _print_failure_details(failed_endpoints)
     else:
         console.print(
             f"\n[bold green]✓ All {num_endpoints} endpoints generated successfully[/bold green]"
         )
 
-    # Generate __init__.py files for each tag directory to enable imports
-    console.print("→ Creating workflow __init__.py files...")
-    # Create main workflows/__init__.py
-    workflows_init = workflows_dir / "__init__.py"
-    tag_imports = []
-    for tag_name in grouped_endpoints.keys():
-        tag_dir_name = sanitize_dir_name(tag_name)
-        tag_imports.append(f"from .{tag_dir_name} import *")
-    workflows_init.write_text("\n".join(tag_imports) + "\n", encoding="utf-8")
 
-    # Create __init__.py for each tag directory
-    # Only import workflows that actually exist (handles partial failures gracefully)
+def _print_failure_details(failed_endpoints: List[Dict[str, Any]]) -> None:
+    """Print details of failed endpoints."""
+    console.print("\n[bold red]Failed Endpoints:[/bold red]")
+    for failure in failed_endpoints[:10]:
+        console.print(f"   • {failure.get('endpoint', 'unknown')}")
+        error_msg = failure.get("error", "Unknown error") or "Unknown error"
+        error_type = failure.get("error_type", "Error")
+        console.print(f"     [dim]{error_type}: {error_msg[:200]}[/dim]")
+    if len(failed_endpoints) > 10:
+        console.print(f"   ... and {len(failed_endpoints) - 10} more failures")
+
+
+def _create_init_files(
+    workflows_dir: Path,
+    grouped_endpoints: Dict[str, List[Endpoint]],
+    scenario_gen: Any,
+) -> None:
+    """Generate __init__.py files for workflow directories."""
+    console.print("→ Creating workflow __init__.py files...")
+
+    # Main workflows/__init__.py
+    tag_imports = [
+        f"from .{_sanitize_dir_name(tag)} import *"
+        for tag in grouped_endpoints.keys()
+    ]
+    (workflows_dir / "__init__.py").write_text(
+        "\n".join(tag_imports) + "\n", encoding="utf-8"
+    )
+
+    # Per-tag __init__.py
     for tag_name, tag_endpoints in grouped_endpoints.items():
-        tag_dir_name = sanitize_dir_name(tag_name)
+        tag_dir_name = _sanitize_dir_name(tag_name)
         tag_dir = workflows_dir / tag_dir_name
-        if tag_dir.exists():
-            init_lines = ['"""Auto-generated workflow exports"""']
-            for ep in tag_endpoints:
-                op_id = scenario_gen.get_endpoint_dir_name(ep)
-                class_name = to_class_name(op_id)
-                endpoint_dir = tag_dir / op_id
-                # Only import scenario types that actually exist
-                for scenario in ["positive", "negative", "security"]:
-                    workflow_file = endpoint_dir / f"{scenario}_workflow.py"
-                    if workflow_file.exists():
-                        init_lines.append(
-                            f"from .{op_id}.{scenario}_workflow import {class_name}{scenario.capitalize()}Workflow"
-                        )
-            # Import orchestrator if it exists
-            orchestrator_path = tag_dir / "orchestrator_workflow.py"
-            if orchestrator_path.exists():
-                orchestrator_class = to_class_name(tag_dir_name) + "Orchestrator"
-                init_lines.append(
-                    f"from .orchestrator_workflow import {orchestrator_class}"
-                )
-            tag_init = tag_dir / "__init__.py"
-            tag_init.write_text("\n".join(init_lines) + "\n", encoding="utf-8")
+        if not tag_dir.exists():
+            continue
+
+        init_lines = _build_tag_init_lines(
+            tag_dir, tag_dir_name, tag_endpoints, scenario_gen
+        )
+        (tag_dir / "__init__.py").write_text(
+            "\n".join(init_lines) + "\n", encoding="utf-8"
+        )
+
     console.print("[green]✓[/green] Workflow __init__.py files created")
 
-    # Write base files
+
+def _build_tag_init_lines(
+    tag_dir: Path,
+    tag_dir_name: str,
+    tag_endpoints: List[Endpoint],
+    scenario_gen: Any,
+) -> List[str]:
+    """Build import lines for a tag's __init__.py."""
+    init_lines = ['"""Auto-generated workflow exports"""']
+
+    for ep in tag_endpoints:
+        op_id = scenario_gen.get_endpoint_dir_name(ep)
+        class_name = _to_class_name(op_id)
+        endpoint_dir = tag_dir / op_id
+        for scenario in ["positive", "negative", "security"]:
+            if (endpoint_dir / f"{scenario}_workflow.py").exists():
+                init_lines.append(
+                    f"from .{op_id}.{scenario}_workflow "
+                    f"import {class_name}{scenario.capitalize()}Workflow"
+                )
+
+    orchestrator_path = tag_dir / "orchestrator_workflow.py"
+    if orchestrator_path.exists():
+        orchestrator_class = _to_class_name(tag_dir_name) + "Orchestrator"
+        init_lines.append(
+            f"from .orchestrator_workflow import {orchestrator_class}"
+        )
+
+    return init_lines
+
+
+def _write_base_files(
+    base_files: Dict[str, str],
+    output_dir: Path,
+    workflows_dir: Path,
+    created_files: List[Dict[str, Any]],
+) -> None:
+    """Write base template files to the output directory."""
     console.print("→ Creating base files...")
     for filename, content in base_files.items():
-        # base_workflow.py goes in workflows/ to match locustfile.py import
         if filename == "base_workflow.py":
             file_path = workflows_dir / filename
         else:
             file_path = output_dir / filename
         file_path.write_text(content, encoding="utf-8")
-        created_files.append(
-            {
-                "path": str(file_path),
-                "size": len(content),
-            }
-        )
+        created_files.append({"path": str(file_path), "size": len(content)})
     console.print(f"[green]✓[/green] Base files created ({len(base_files)} files)")
-
-    return created_files
 
 
 @click.group()
@@ -943,7 +1201,7 @@ def generate(
 async def _async_generate(
     ctx: click.Context,
     swagger_url: str,
-    output_dir: Path,  # Accept already-created output directory
+    output_dir: Path,
     users: int,
     spawn_rate: float,
     run_time: str,
@@ -963,110 +1221,119 @@ async def _async_generate(
 
     try:
         _, api_key = _initialize_config(together_api_key)
-
-        # Initialize debug recorder
         debug_recorder = DebugRecorder(output_dir, enabled=debug)
 
-        if debug:
-            console.print(
-                "[blue]🔍 Debug mode enabled[/blue] - recording intermediate states"
-            )
-            # Record CLI args
-            debug_recorder.record_cli_args(
-                {
-                    "swagger_url": swagger_url,
-                    "output": str(output_dir),
-                    "users": users,
-                    "spawn_rate": spawn_rate,
-                    "run_time": run_time,
-                    "host": host,
-                    "auth": auth,
-                    "db_type": db_type,
-                    "dry_run": dry_run,
-                    "custom_requirement": custom_requirement,
-                    "timeout": timeout,
-                    "schema_timeout": schema_timeout,
-                    "max_llm_workers": max_llm_workers,
-                }
-            )
+        _record_debug_cli_args(
+            debug, debug_recorder, swagger_url, output_dir, users, spawn_rate,
+            run_time, host, auth, db_type, dry_run, custom_requirement,
+            timeout, schema_timeout, max_llm_workers,
+        )
 
-        # Display configuration
         _display_configuration(
-            swagger_url,
-            output_dir,
-            users,
-            spawn_rate,
-            run_time,
-            host,
-            auth,
-            custom_requirement,
-            dry_run,
-            db_type=db_type,
-            timeout=timeout,
-            debug=debug,
+            swagger_url, output_dir, users, spawn_rate, run_time, host,
+            auth, custom_requirement, dry_run, db_type=db_type,
+            timeout=timeout, debug=debug,
         )
 
         raw_schema, endpoints, api_info = await _process_api_schema(
             swagger_url, ctx.obj["verbose"], schema_timeout
         )
 
-        # Record parsed OpenAPI data
-        if debug:
-            debug_recorder.record_openapi_raw(raw_schema)
-            debug_recorder.record_openapi_parsed(endpoints, api_info)
-            debug_recorder.record_resolved_config(
-                {
-                    "api_info": api_info,
-                    "host": host,
-                    "auth": auth,
-                    "db_type": db_type,
-                    "timeout": timeout,
-                    "custom_requirement": custom_requirement,
-                }
-            )
-
-        created_files = await _generate_and_create_tests(
-            api_key,
-            endpoints,
-            api_info,
-            output_dir,
-            custom_requirement,
-            host,
-            auth,
-            db_type,
-            timeout,
-            max_llm_workers,
-            debug_recorder,
-            verbose=ctx.obj["verbose"],
+        _record_debug_parsed_schema(
+            debug, debug_recorder, raw_schema, endpoints, api_info,
+            host, auth, db_type, timeout, custom_requirement,
         )
 
-        # Finalize debug recording
+        created_files = await _generate_and_create_tests(
+            api_key, endpoints, api_info, output_dir, custom_requirement,
+            host, auth, db_type, timeout, max_llm_workers,
+            debug_recorder, verbose=ctx.obj["verbose"],
+        )
+
         if debug:
             await debug_recorder.finalize()
             console.print(
                 f"[blue]🔍 Debug info saved to:[/blue] {debug_recorder.debug_root}"
             )
 
-        # Show results
         _show_results(
-            created_files,
-            output_dir,
-            start_time,
-            ctx.obj["verbose"],
-            dry_run,
-            users,
-            spawn_rate,
-            run_time,
-            host,
+            created_files, output_dir, start_time, ctx.obj["verbose"],
+            dry_run, users, spawn_rate, run_time, host,
         )
 
     except Exception as e:
-        end_time = datetime.now(timezone.utc)
-        processing_time = (end_time - start_time).total_seconds()
+        processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         console.print(
             f"[red]✗[/red] Generation failed after {processing_time:.2f}s: {e}"
         )
         raise
+
+
+def _record_debug_cli_args(
+    debug: bool,
+    debug_recorder: DebugRecorder,
+    swagger_url: str,
+    output_dir: Path,
+    users: int,
+    spawn_rate: float,
+    run_time: str,
+    host: Optional[str],
+    auth: bool,
+    db_type: str,
+    dry_run: bool,
+    custom_requirement: Optional[str],
+    timeout: int,
+    schema_timeout: int,
+    max_llm_workers: int,
+) -> None:
+    """Record CLI arguments to debug recorder if debug mode is enabled."""
+    if not debug:
+        return
+    console.print(
+        "[blue]🔍 Debug mode enabled[/blue] - recording intermediate states"
+    )
+    debug_recorder.record_cli_args({
+        "swagger_url": swagger_url,
+        "output": str(output_dir),
+        "users": users,
+        "spawn_rate": spawn_rate,
+        "run_time": run_time,
+        "host": host,
+        "auth": auth,
+        "db_type": db_type,
+        "dry_run": dry_run,
+        "custom_requirement": custom_requirement,
+        "timeout": timeout,
+        "schema_timeout": schema_timeout,
+        "max_llm_workers": max_llm_workers,
+    })
+
+
+def _record_debug_parsed_schema(
+    debug: bool,
+    debug_recorder: DebugRecorder,
+    raw_schema: Any,
+    endpoints: List[Endpoint],
+    api_info: Dict[str, Any],
+    host: Optional[str],
+    auth: bool,
+    db_type: str,
+    timeout: int,
+    custom_requirement: Optional[str],
+) -> None:
+    """Record parsed OpenAPI data to debug recorder if debug mode is enabled."""
+    if not debug:
+        return
+    debug_recorder.record_openapi_raw(raw_schema)
+    debug_recorder.record_openapi_parsed(endpoints, api_info)
+    debug_recorder.record_resolved_config({
+        "api_info": api_info,
+        "host": host,
+        "auth": auth,
+        "db_type": db_type,
+        "timeout": timeout,
+        "custom_requirement": custom_requirement,
+    })
 
 
 @cli.command()

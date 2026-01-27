@@ -416,11 +416,28 @@ class GenerationProgress:
     ) -> None:
         """Print detailed verbose output for an endpoint."""
         c = self.console
-
-        # Header with full path
         c.print(f"\n[bold]→ {analysis.method} {analysis.path}[/bold]")
 
-        # OpenAPI Analysis
+        self._print_endpoint_openapi(c, analysis)
+        self._print_endpoint_schema(c, analysis.schema)
+        self._print_endpoint_setup(c, analysis.setup)
+        self._print_endpoint_injection(c, analysis.injection)
+        self._print_endpoint_precomputed(c, analysis)
+        self._print_warnings(c, analysis.warnings)
+
+        # Scenario Results
+        c.print("  [dim]│[/dim]")
+        for scenario_name in ["positive", "negative", "security"]:
+            result = analysis.scenarios.get(scenario_name)
+            if result:
+                self._print_scenario_result(scenario_name, result)
+            else:
+                c.print(f"  [dim]├─[/dim] {scenario_name}  [dim]○ not generated[/dim]")
+
+        c.print()  # Blank line after endpoint
+
+    def _print_endpoint_openapi(self, c: Console, analysis: EndpointAnalysis) -> None:
+        """Print OpenAPI analysis section."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── OpenAPI Analysis ──[/cyan]")
         responses_str = (
@@ -432,8 +449,8 @@ class GenerationProgress:
         c.print(f"  [dim]│[/dim] source_of_truth: {analysis.source_of_truth}")
         c.print(f"  [dim]│[/dim] content_type: {analysis.content_type}")
 
-        # Schema Analysis
-        schema = analysis.schema
+    def _print_endpoint_schema(self, c: Console, schema: SchemaAnalysis) -> None:
+        """Print schema analysis section."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── Schema Analysis ──[/cyan]")
         c.print(f"  [dim]│[/dim] schema_type: {schema.schema_type}")
@@ -454,71 +471,66 @@ class GenerationProgress:
                 constraints.append(f"formats={schema.formats_found}")
             c.print(f"  [dim]│[/dim] constraints: {', '.join(constraints)}")
 
-        # Setup Analysis (only if relevant)
-        setup = analysis.setup
-        if setup.needs_setup or setup.setup_endpoints_found > 0:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [cyan]── Setup Analysis ──[/cyan]")
-            c.print(f"  [dim]│[/dim] needs_setup: {setup.needs_setup}")
-            if setup.parent_resources:
-                c.print(
-                    f"  [dim]│[/dim] parent_resources: {', '.join(setup.parent_resources)}"
-                )
+    def _print_endpoint_setup(self, c: Console, setup: SetupAnalysis) -> None:
+        """Print setup analysis section if relevant."""
+        if not setup.needs_setup and setup.setup_endpoints_found <= 0:
+            return
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Setup Analysis ──[/cyan]")
+        c.print(f"  [dim]│[/dim] needs_setup: {setup.needs_setup}")
+        if setup.parent_resources:
             c.print(
-                f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}"
+                f"  [dim]│[/dim] parent_resources: {', '.join(setup.parent_resources)}"
+            )
+        c.print(
+            f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}"
+        )
+
+    def _print_endpoint_injection(self, c: Console, inj: InjectionAnalysis) -> None:
+        """Print injection analysis section if relevant."""
+        if inj.total_injectable <= 0:
+            return
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Injection Analysis ──[/cyan]")
+        c.print(f"  [dim]│[/dim] injectable_fields: {inj.total_injectable}")
+        if inj.high_risk_fields:
+            c.print(
+                f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}"
+            )
+        if inj.injection_locations:
+            c.print(
+                f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}"
             )
 
-        # Injection Analysis (only if has injectable fields)
-        inj = analysis.injection
-        if inj.total_injectable > 0:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [cyan]── Injection Analysis ──[/cyan]")
-            c.print(f"  [dim]│[/dim] injectable_fields: {inj.total_injectable}")
-            if inj.high_risk_fields:
-                c.print(
-                    f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}"
-                )
-            if inj.injection_locations:
-                c.print(
-                    f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}"
-                )
-
-        # Pre-computation
+    def _print_endpoint_precomputed(self, c: Console, analysis: EndpointAnalysis) -> None:
+        """Print pre-computation section if relevant."""
         if (
-            analysis.positive_fields_precomputed > 0
-            or analysis.negative_scenarios_precomputed > 0
+            analysis.positive_fields_precomputed <= 0
+            and analysis.negative_scenarios_precomputed <= 0
         ):
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [cyan]── Pre-computed ──[/cyan]")
-            if analysis.positive_fields_precomputed > 0:
-                c.print(
-                    f"  [dim]│[/dim] positive_fields: {analysis.positive_fields_precomputed} generators ready"
-                )
-            if analysis.negative_scenarios_precomputed > 0:
-                c.print(
-                    f"  [dim]│[/dim] negative_scenarios: {analysis.negative_scenarios_precomputed} identified"
-                )
-                if analysis.negative_scenario_types:
-                    for scenario_type in analysis.negative_scenario_types[:5]:
-                        c.print(f"  [dim]│[/dim]   • {scenario_type}")
-
-        # Warnings
-        if analysis.warnings:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
-            for warning in analysis.warnings[:3]:
-                c.print(f"  [dim]│[/dim]   • {warning}")
-
-        # Scenario Results
+            return
         c.print("  [dim]│[/dim]")
-        for scenario_name in ["positive", "negative", "security"]:
-            result = analysis.scenarios.get(scenario_name)
-            if result:
-                self._print_scenario_result(scenario_name, result)
-            else:
-                c.print(f"  [dim]├─[/dim] {scenario_name}  [dim]○ not generated[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Pre-computed ──[/cyan]")
+        if analysis.positive_fields_precomputed > 0:
+            c.print(
+                f"  [dim]│[/dim] positive_fields: {analysis.positive_fields_precomputed} generators ready"
+            )
+        if analysis.negative_scenarios_precomputed > 0:
+            c.print(
+                f"  [dim]│[/dim] negative_scenarios: {analysis.negative_scenarios_precomputed} identified"
+            )
+            if analysis.negative_scenario_types:
+                for scenario_type in analysis.negative_scenario_types[:5]:
+                    c.print(f"  [dim]│[/dim]   • {scenario_type}")
 
-        c.print()  # Blank line after endpoint
+    def _print_warnings(self, c: Console, warnings: List[str]) -> None:
+        """Print warnings section if any."""
+        if not warnings:
+            return
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
+        for warning in warnings[:3]:
+            c.print(f"  [dim]│[/dim]   • {warning}")
 
     def _print_scenario_result(self, name: str, result: ScenarioResult) -> None:
         """Print a single scenario result."""
@@ -672,11 +684,22 @@ class GenerationProgress:
     ) -> None:
         """Print detailed verbose output for an orchestrator."""
         c = self.console
-
-        # Header
         c.print(f"\n[bold]→ Orchestrator: {tag_name}[/bold]")
 
-        # Basic Info
+        self._print_orchestrator_info(c, analysis)
+        self._print_orchestrator_endpoints(c, analysis.endpoints)
+        self._print_orchestrator_crud(c, analysis)
+        self._print_orchestrator_auth(c, analysis)
+        self._print_orchestrator_capabilities(c, analysis)
+        self._print_orchestrator_stats(c, analysis)
+        self._print_warnings(c, analysis.warnings)
+
+        c.print("  [dim]│[/dim]")
+        c.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py generated")
+        c.print()  # Blank line after orchestrator
+
+    def _print_orchestrator_info(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+        """Print orchestrator basic info."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── Orchestrator Info ──[/cyan]")
         c.print(f"  [dim]│[/dim] class_name: {analysis.class_name}")
@@ -684,24 +707,27 @@ class GenerationProgress:
             f"  [dim]│[/dim] endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)"
         )
 
-        # Endpoint Composition
-        if analysis.endpoints:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [cyan]── Endpoint Composition ──[/cyan]")
-            for ep in analysis.endpoints[:5]:  # Show first 5
-                scenarios = []
-                if ep.has_positive:
-                    scenarios.append("pos")
-                if ep.has_negative:
-                    scenarios.append("neg")
-                if ep.has_security:
-                    scenarios.append("sec")
-                scenarios_str = f"[{', '.join(scenarios)}]" if scenarios else "[none]"
-                c.print(f"  [dim]│[/dim]   {ep.method} {ep.path} {scenarios_str}")
-            if len(analysis.endpoints) > 5:
-                c.print(f"  [dim]│[/dim]   ... and {len(analysis.endpoints) - 5} more")
+    def _print_orchestrator_endpoints(self, c: Console, endpoints: List[OrchestratorEndpointInfo]) -> None:
+        """Print endpoint composition section."""
+        if not endpoints:
+            return
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Endpoint Composition ──[/cyan]")
+        for ep in endpoints[:5]:
+            scenarios = []
+            if ep.has_positive:
+                scenarios.append("pos")
+            if ep.has_negative:
+                scenarios.append("neg")
+            if ep.has_security:
+                scenarios.append("sec")
+            scenarios_str = f"[{', '.join(scenarios)}]" if scenarios else "[none]"
+            c.print(f"  [dim]│[/dim]   {ep.method} {ep.path} {scenarios_str}")
+        if len(endpoints) > 5:
+            c.print(f"  [dim]│[/dim]   ... and {len(endpoints) - 5} more")
 
-        # CRUD Detection
+    def _print_orchestrator_crud(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+        """Print CRUD detection section."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── CRUD Detection ──[/cyan]")
         crud_ops = []
@@ -719,18 +745,21 @@ class GenerationProgress:
             f"  [dim]│[/dim] crud_lifecycle_possible: {analysis.crud_lifecycle_possible}"
         )
 
-        # Auth Detection
-        if analysis.auth_endpoints_found > 0 or analysis.auth_tests_possible:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
-            c.print(
-                f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}"
-            )
-            c.print(
-                f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}"
-            )
+    def _print_orchestrator_auth(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+        """Print auth detection section if relevant."""
+        if analysis.auth_endpoints_found <= 0 and not analysis.auth_tests_possible:
+            return
+        c.print("  [dim]│[/dim]")
+        c.print("  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
+        c.print(
+            f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}"
+        )
+        c.print(
+            f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}"
+        )
 
-        # Orchestration Capabilities
+    def _print_orchestrator_capabilities(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+        """Print orchestration capabilities section."""
         c.print("  [dim]│[/dim]")
         c.print("  [dim]│[/dim] [cyan]── Orchestration Capabilities ──[/cyan]")
         if analysis.state_dependent_tests:
@@ -744,29 +773,20 @@ class GenerationProgress:
         )
         c.print(f"  [dim]│[/dim] resource_limit_tests: {analysis.resource_limit_tests}")
 
-        # Generation Stats
-        if analysis.time_seconds > 0 or analysis.prompt_tokens > 0:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [cyan]── Generation Stats ──[/cyan]")
-            if analysis.time_seconds > 0:
-                c.print(f"  [dim]│[/dim] time: {analysis.time_seconds:.1f}s")
-            if analysis.prompt_tokens > 0 or analysis.completion_tokens > 0:
-                c.print(
-                    f"  [dim]│[/dim] tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion"
-                )
-            if analysis.retries > 0:
-                c.print(f"  [dim]│[/dim] [yellow]retries: {analysis.retries}[/yellow]")
-
-        # Warnings
-        if analysis.warnings:
-            c.print("  [dim]│[/dim]")
-            c.print("  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
-            for warning in analysis.warnings[:3]:
-                c.print(f"  [dim]│[/dim]   • {warning}")
-
+    def _print_orchestrator_stats(self, c: Console, analysis: OrchestratorAnalysis) -> None:
+        """Print generation stats section if relevant."""
+        if analysis.time_seconds <= 0 and analysis.prompt_tokens <= 0:
+            return
         c.print("  [dim]│[/dim]")
-        c.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py generated")
-        c.print()  # Blank line after orchestrator
+        c.print("  [dim]│[/dim] [cyan]── Generation Stats ──[/cyan]")
+        if analysis.time_seconds > 0:
+            c.print(f"  [dim]│[/dim] time: {analysis.time_seconds:.1f}s")
+        if analysis.prompt_tokens > 0 or analysis.completion_tokens > 0:
+            c.print(
+                f"  [dim]│[/dim] tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion"
+            )
+        if analysis.retries > 0:
+            c.print(f"  [dim]│[/dim] [yellow]retries: {analysis.retries}[/yellow]")
 
     def __enter__(self):
         self.start()

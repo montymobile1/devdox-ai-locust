@@ -225,72 +225,62 @@ class CodeValidator:
 
         return violations
 
-    def _check_empty_setup_dicts(self, code: str) -> List[ValidationViolation]:
-        """Check for empty setup data dicts that should have generated fields.
+    # Suffixes that indicate setup data variables
+    _SETUP_VAR_SUFFIXES = ["_data", "_payload", "_body", "_request"]
 
-        Catches patterns like:
-            user_data = {}
-            user_data = {
-                # Generate user data here if needed
-            }
-        """
+    def _check_empty_setup_dicts(self, code: str) -> List[ValidationViolation]:
+        """Check for empty setup data dicts that should have generated fields."""
         violations = []
         lines = code.split("\n")
 
-        # Track variable names that are likely setup data
-        setup_var_patterns = ["_data", "_payload", "_body", "_request"]
-
         for i, line in enumerate(lines, 1):
-            # Check for empty dict assignment pattern
-            for pattern in setup_var_patterns:
-                if pattern in line and "=" in line:
-                    # Check if it's an empty dict (with optional comment inside)
-                    match = re.search(
-                        r"(\w+"
-                        + re.escape(pattern)
-                        + r")\s*=\s*\{\s*(?:#[^\n]*)?\s*\}",
-                        line,
-                    )
-                    if match:
-                        var_name = match.group(1)
-                        violations.append(
-                            ValidationViolation(
-                                rule="empty_setup_dict",
-                                message=f"Empty setup data dict '{var_name}'. "
-                                f"You MUST generate actual field values for setup API calls. "
-                                f"Do NOT leave empty dicts with placeholder comments.",
-                                line_number=i,
-                                severity="error",
-                            )
-                        )
-                        break
-
-            # Also check for multi-line empty dicts (opening brace only on this line)
-            if re.match(r"\s*(\w+_data|\w+_payload|\w+_body)\s*=\s*\{\s*$", line):
-                # Check next line for closing brace with only comment
-                if i < len(lines):
-                    next_line = lines[i].strip() if i < len(lines) else ""
-                    # If next line is just "}" or "# comment" followed by "}"
-                    if next_line == "}" or (
-                        next_line.startswith("#")
-                        and i + 1 < len(lines)
-                        and lines[i + 1].strip() == "}"
-                    ):
-                        var_match = re.match(
-                            r"\s*(\w+_data|\w+_payload|\w+_body)", line
-                        )
-                        if var_match:
-                            violations.append(
-                                ValidationViolation(
-                                    rule="empty_setup_dict",
-                                    message=f"Empty setup data dict '{var_match.group(1)}'. "
-                                    f"You MUST generate actual field values for setup API calls.",
-                                    line_number=i,
-                                    severity="error",
-                                )
-                            )
+            violations.extend(self._check_inline_empty_dict(line, i))
+            violations.extend(self._check_multiline_empty_dict(lines, line, i))
 
         return violations
+
+    def _check_inline_empty_dict(self, line: str, line_num: int) -> List[ValidationViolation]:
+        """Check for single-line empty dict assignments like `user_data = {}`."""
+        for pattern in self._SETUP_VAR_SUFFIXES:
+            if pattern in line and "=" in line:
+                match = re.search(
+                    r"(\w+" + re.escape(pattern) + r")\s*=\s*\{\s*(?:#[^\n]*)?\s*\}",
+                    line,
+                )
+                if match:
+                    return [ValidationViolation(
+                        rule="empty_setup_dict",
+                        message=f"Empty setup data dict '{match.group(1)}'. "
+                        f"You MUST generate actual field values for setup API calls. "
+                        f"Do NOT leave empty dicts with placeholder comments.",
+                        line_number=line_num,
+                        severity="error",
+                    )]
+        return []
+
+    def _check_multiline_empty_dict(
+        self, lines: List[str], line: str, line_num: int
+    ) -> List[ValidationViolation]:
+        """Check for multi-line empty dict assignments."""
+        if not re.match(r"\s*(\w+_data|\w+_payload|\w+_body)\s*=\s*\{\s*$", line):
+            return []
+        if line_num < len(lines):
+            next_line = lines[line_num].strip() if line_num < len(lines) else ""
+            if next_line == "}" or (
+                next_line.startswith("#")
+                and line_num + 1 < len(lines)
+                and lines[line_num + 1].strip() == "}"
+            ):
+                var_match = re.match(r"\s*(\w+_data|\w+_payload|\w+_body)", line)
+                if var_match:
+                    return [ValidationViolation(
+                        rule="empty_setup_dict",
+                        message=f"Empty setup data dict '{var_match.group(1)}'. "
+                        f"You MUST generate actual field values for setup API calls.",
+                        line_number=line_num,
+                        severity="error",
+                    )]
+        return []
 
     def _check_security_path_injection(self, code: str) -> List[ValidationViolation]:
         """Check for security payloads injected into URL path parameters (Classification D)."""

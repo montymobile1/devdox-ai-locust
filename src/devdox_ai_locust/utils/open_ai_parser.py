@@ -255,80 +255,83 @@ class OpenAPIParser:
         all_params = (path_parameters or []) + operation.get("parameters", [])
 
         for param in all_params:
-            # Resolve reference if needed
             param = self._resolve_reference(param)
-
             if not param:
                 continue
 
-            # Extract parameter type from schema
-            param_schema = param.get("schema", {})
-
-            # Resolve $ref in schema if present (e.g., {"$ref": "#/components/schemas/SortOrder"})
-            if param_schema.get("$ref"):
-                resolved_schema = self._resolve_reference(param_schema)
-                if resolved_schema:
-                    # Merge any additional properties from param_schema (like default, description)
-                    param_schema = {
-                        **resolved_schema,
-                        **{k: v for k, v in param_schema.items() if k != "$ref"},
-                    }
-
-            # Unwrap OpenAPI 3.1 anyOf nullable pattern
-            effective_schema = param_schema
-            any_of = param_schema.get("anyOf") or param_schema.get("oneOf")
-            if any_of and isinstance(any_of, list):
-                # Resolve $refs within anyOf variants before filtering
-                resolved_variants = []
-                for v in any_of:
-                    if isinstance(v, dict) and "$ref" in v:
-                        resolved_variants.append(self._resolve_reference(v) or v)
-                    elif isinstance(v, dict):
-                        resolved_variants.append(v)
-                real_variants = [
-                    v for v in resolved_variants if v.get("type") != "null"
-                ]
-                if len(real_variants) == 1:
-                    effective_schema = real_variants[0]
-
-            param_type = effective_schema.get("type", "string")
-            param_format = effective_schema.get("format")
-
-            # Handle array types
-            if param_type == "array":
-                items = effective_schema.get("items", {})
-                param_type = f"array[{items.get('type', 'string')}]"
-
-            param_in = param.get("in", "query")
-            try:
-                location = ParameterType(param_in)
-            except ValueError:
-                logger.warning(
-                    f"Invalid parameter location '{param_in}' for parameter "
-                    f"'{param.get('name', '')}' - skipping (only OpenAPI 3.x locations supported)"
-                )
-                continue
-
-            parameter = Parameter(
-                name=param.get("name", ""),
-                location=location,
-                required=param.get("required", False),
-                type=param_type,
-                description=param.get("description"),
-                example=param.get("example") or effective_schema.get("example"),
-                enum=effective_schema.get("enum"),
-                default=effective_schema.get("default"),
-                format=param_format,
-                pattern=effective_schema.get("pattern"),
-                min_length=effective_schema.get("minLength"),
-                max_length=effective_schema.get("maxLength"),
-                minimum=effective_schema.get("minimum"),
-                maximum=effective_schema.get("maximum"),
-            )
-
-            parameters.append(parameter)
+            parsed = self._parse_single_parameter(param)
+            if parsed is not None:
+                parameters.append(parsed)
 
         return parameters
+
+    def _resolve_param_schema(self, param: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve and unwrap a parameter's schema including $ref and anyOf."""
+        param_schema = param.get("schema", {})
+
+        if param_schema.get("$ref"):
+            resolved_schema = self._resolve_reference(param_schema)
+            if resolved_schema:
+                param_schema = {
+                    **resolved_schema,
+                    **{k: v for k, v in param_schema.items() if k != "$ref"},
+                }
+
+        # Unwrap OpenAPI 3.1 anyOf nullable pattern
+        effective_schema = param_schema
+        any_of = param_schema.get("anyOf") or param_schema.get("oneOf")
+        if any_of and isinstance(any_of, list):
+            resolved_variants = []
+            for v in any_of:
+                if isinstance(v, dict) and "$ref" in v:
+                    resolved_variants.append(self._resolve_reference(v) or v)
+                elif isinstance(v, dict):
+                    resolved_variants.append(v)
+            real_variants = [
+                v for v in resolved_variants if v.get("type") != "null"
+            ]
+            if len(real_variants) == 1:
+                effective_schema = real_variants[0]
+
+        return effective_schema
+
+    def _parse_single_parameter(self, param: Dict[str, Any]) -> Optional[Parameter]:
+        """Parse a single resolved parameter dict into a Parameter object."""
+        effective_schema = self._resolve_param_schema(param)
+
+        param_type = effective_schema.get("type", "string")
+        param_format = effective_schema.get("format")
+
+        if param_type == "array":
+            items = effective_schema.get("items", {})
+            param_type = f"array[{items.get('type', 'string')}]"
+
+        param_in = param.get("in", "query")
+        try:
+            location = ParameterType(param_in)
+        except ValueError:
+            logger.warning(
+                f"Invalid parameter location '{param_in}' for parameter "
+                f"'{param.get('name', '')}' - skipping (only OpenAPI 3.x locations supported)"
+            )
+            return None
+
+        return Parameter(
+            name=param.get("name", ""),
+            location=location,
+            required=param.get("required", False),
+            type=param_type,
+            description=param.get("description"),
+            example=param.get("example") or effective_schema.get("example"),
+            enum=effective_schema.get("enum"),
+            default=effective_schema.get("default"),
+            format=param_format,
+            pattern=effective_schema.get("pattern"),
+            min_length=effective_schema.get("minLength"),
+            max_length=effective_schema.get("maxLength"),
+            minimum=effective_schema.get("minimum"),
+            maximum=effective_schema.get("maximum"),
+        )
 
     def _extract_request_body(self, operation: Dict[str, Any]) -> Optional[RequestBody]:
         """
@@ -531,8 +534,13 @@ class OpenAPIParser:
 
         # Not a $ref - recursively resolve nested structures
         result = dict(schema)
+        self._resolve_nested_schemas(result, _ancestors)
+        return result
 
-        # Resolve properties
+    def _resolve_nested_schemas(
+        self, result: Dict[str, Any], _ancestors: set
+    ) -> None:
+        """Resolve nested $refs within properties, items, and composition keywords."""
         if "properties" in result and isinstance(result["properties"], dict):
             resolved_props = {}
             for prop_name, prop_schema in result["properties"].items():
@@ -541,7 +549,6 @@ class OpenAPIParser:
                 )
             result["properties"] = resolved_props
 
-        # Resolve additionalProperties
         if "additionalProperties" in result and isinstance(
             result["additionalProperties"], dict
         ):
@@ -550,14 +557,12 @@ class OpenAPIParser:
                 or result["additionalProperties"]
             )
 
-        # Resolve items (for arrays)
         if "items" in result and isinstance(result["items"], dict):
             result["items"] = (
                 self._resolve_schema_deep(result["items"], _ancestors)
                 or result["items"]
             )
 
-        # Resolve allOf, oneOf, anyOf
         for keyword in ("allOf", "oneOf", "anyOf"):
             if keyword in result and isinstance(result[keyword], list):
                 resolved_list = []
@@ -565,8 +570,6 @@ class OpenAPIParser:
                     resolved_item = self._resolve_schema_deep(item, _ancestors)
                     resolved_list.append(resolved_item or item)
                 result[keyword] = resolved_list
-
-        return result
 
     def get_schema_info(self) -> Dict[str, Any]:
         """

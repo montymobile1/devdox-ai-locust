@@ -121,55 +121,21 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
 
             # Detect traceback blocks
             if _TRACEBACK_START.match(line):
-                tb_lines = [line]
-                for next_line in line_iter:
-                    total_lines += 1
-                    if next_line.startswith((" ", "\t")) or not next_line.strip():
-                        tb_lines.append(next_line)
-                    else:
-                        # Exception line
-                        tb_lines.append(next_line)
-                        sig = _normalize_exception(next_line)
-                        exception_signatures[sig] += 1
-
-                        # Extract API from context + traceback
-                        api = _extract_api_path(context_buffer + tb_lines)
-                        if api:
-                            exception_apis[sig].add(api)
-
-                        if sig not in exception_samples:
-                            # Include context before the traceback
-                            relevant_ctx = [
-                                ctx_line
-                                for ctx_line in context_buffer
-                                if _CONTEXT_PATTERN.search(ctx_line)
-                            ]
-                            exception_samples[sig] = relevant_ctx + tb_lines
-                        else:
-                            duplicates_removed += len(tb_lines)
-                        break
+                tb_dup = _collect_traceback(
+                    line, line_iter, context_buffer,
+                    exception_signatures, exception_samples, exception_apis,
+                )
+                total_lines += tb_dup[0]
+                duplicates_removed += tb_dup[1]
                 context_buffer.clear()
                 continue
 
             # Detect error lines
             if _ERROR_PATTERN.search(line):
-                sig = _normalize_error(line)
-                error_signatures[sig] += 1
-
-                # Extract API from context + error line
-                api = _extract_api_path(context_buffer + [line])
-                if api:
-                    error_apis[sig].add(api)
-
-                if sig not in error_samples:
-                    relevant_ctx = [
-                        ctx_line
-                        for ctx_line in context_buffer
-                        if _CONTEXT_PATTERN.search(ctx_line)
-                    ]
-                    error_samples[sig] = relevant_ctx + [line]
-                else:
-                    duplicates_removed += 1
+                duplicates_removed += _record_error(
+                    line, context_buffer,
+                    error_signatures, error_samples, error_apis,
+                )
                 context_buffer.clear()
                 continue
 
@@ -197,6 +163,61 @@ def analyze_log(log_path: str, output_path: str = None) -> Dict[str, int]:
         "unique_exceptions": len(exception_signatures),
         "duplicates_removed": duplicates_removed,
     }
+
+
+def _relevant_context(context_buffer: List[str]) -> List[str]:
+    """Filter context buffer to lines relevant to errors."""
+    return [line for line in context_buffer if _CONTEXT_PATTERN.search(line)]
+
+
+def _collect_traceback(
+    first_line: str,
+    line_iter,
+    context_buffer: List[str],
+    exception_signatures: Counter,
+    exception_samples: Dict[str, List[str]],
+    exception_apis: Dict[str, set],
+) -> tuple:
+    """Collect a traceback block and record the exception. Returns (extra_lines, duplicates)."""
+    extra_lines = 0
+    duplicates = 0
+    tb_lines = [first_line]
+    for next_line in line_iter:
+        extra_lines += 1
+        if next_line.startswith((" ", "\t")) or not next_line.strip():
+            tb_lines.append(next_line)
+        else:
+            tb_lines.append(next_line)
+            sig = _normalize_exception(next_line)
+            exception_signatures[sig] += 1
+            api = _extract_api_path(context_buffer + tb_lines)
+            if api:
+                exception_apis[sig].add(api)
+            if sig not in exception_samples:
+                exception_samples[sig] = _relevant_context(context_buffer) + tb_lines
+            else:
+                duplicates = len(tb_lines)
+            break
+    return extra_lines, duplicates
+
+
+def _record_error(
+    line: str,
+    context_buffer: List[str],
+    error_signatures: Counter,
+    error_samples: Dict[str, List[str]],
+    error_apis: Dict[str, set],
+) -> int:
+    """Record an error line. Returns number of duplicates (0 or 1)."""
+    sig = _normalize_error(line)
+    error_signatures[sig] += 1
+    api = _extract_api_path(context_buffer + [line])
+    if api:
+        error_apis[sig].add(api)
+    if sig not in error_samples:
+        error_samples[sig] = _relevant_context(context_buffer) + [line]
+        return 0
+    return 1
 
 
 def _line_iterator(f: TextIO):
