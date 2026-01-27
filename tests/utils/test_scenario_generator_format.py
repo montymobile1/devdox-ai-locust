@@ -779,3 +779,626 @@ class TestFormatSetupCallPattern:
         assert any("SETUP CALL PATTERN" in ln for ln in lines)
         assert any("make_request" in ln for ln in lines)
         assert any("/users" in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# 26. _format_discriminated_union
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDiscriminatedUnion:
+    def test_with_discriminator_mapping(self, generator):
+        one_of = [
+            {
+                "$ref": "#/components/schemas/Cat",
+                "properties": {
+                    "pet_type": {"type": "string", "const": "cat"},
+                    "color": {"type": "string"},
+                },
+                "required": ["pet_type", "color"],
+            },
+            {
+                "$ref": "#/components/schemas/Dog",
+                "properties": {
+                    "pet_type": {"type": "string", "const": "dog"},
+                    "breed": {"type": "string"},
+                },
+                "required": ["pet_type", "breed"],
+            },
+        ]
+        discriminator = {
+            "propertyName": "pet_type",
+            "mapping": {
+                "cat": "#/components/schemas/Cat",
+                "dog": "#/components/schemas/Dog",
+            },
+        }
+        lines = generator._format_discriminated_union(one_of, discriminator, "")
+        text = "\n".join(lines)
+        assert "DISCRIMINATED UNION" in text
+        assert "pet_type" in text
+        assert 'pet_type="cat"' in text
+        assert 'pet_type="dog"' in text
+
+    def test_empty_mapping(self, generator):
+        one_of = [{"properties": {"a": {"type": "string"}}}]
+        discriminator = {"propertyName": "type", "mapping": {}}
+        lines = generator._format_discriminated_union(one_of, discriminator, "")
+        text = "\n".join(lines)
+        assert "DISCRIMINATED UNION" in text
+        assert "Valid" not in text
+
+
+# ---------------------------------------------------------------------------
+# 27. _format_variant_properties
+# ---------------------------------------------------------------------------
+
+
+class TestFormatVariantProperties:
+    def test_with_properties_and_required(self, generator):
+        variant_schema = {
+            "properties": {
+                "type": {"type": "string"},
+                "name": {"type": "string"},
+                "age": {"type": "integer"},
+            },
+            "required": ["name"],
+        }
+        lines = generator._format_variant_properties(variant_schema, "type", "  ")
+        text = "\n".join(lines)
+        assert "name" in text
+        assert "(REQUIRED)" in text
+        assert "age" in text
+        # discriminator prop should be skipped
+        assert text.count("type") == 0 or "type:" not in text.split("\n")[0]
+
+    def test_empty_properties(self, generator):
+        variant_schema = {"properties": {}, "required": []}
+        lines = generator._format_variant_properties(variant_schema, "type", "  ")
+        assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# 28. _format_union_without_discriminator
+# ---------------------------------------------------------------------------
+
+
+class TestFormatUnionWithoutDiscriminator:
+    def test_with_ref_variants(self, generator):
+        one_of = [
+            {"$ref": "#/components/schemas/Cat"},
+            {"$ref": "#/components/schemas/Dog"},
+        ]
+        lines = generator._format_union_without_discriminator(one_of, "")
+        text = "\n".join(lines)
+        assert "UNION TYPE" in text
+        assert "Option 1" in text
+        assert "#/components/schemas/Cat" in text
+        assert "Option 2" in text
+
+    def test_with_inline_properties(self, generator):
+        one_of = [
+            {"properties": {"name": {"type": "string"}, "age": {"type": "integer"}}},
+            {"properties": {"title": {"type": "string"}}},
+        ]
+        lines = generator._format_union_without_discriminator(one_of, "")
+        text = "\n".join(lines)
+        assert "Option 1" in text
+        assert "name" in text
+        assert "Option 2" in text
+        assert "title" in text
+
+
+# ---------------------------------------------------------------------------
+# 29. _format_schema
+# ---------------------------------------------------------------------------
+
+
+class TestFormatSchema:
+    def test_simple_schema_with_properties(self, generator):
+        schema = {
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"},
+            },
+            "required": ["id"],
+        }
+        lines = generator._format_schema(schema)
+        text = "\n".join(lines)
+        assert "Schema:" in text
+        assert "id" in text
+        assert "REQUIRED" in text
+        assert "name" in text
+
+    def test_schema_with_discriminated_union(self, generator):
+        schema = {
+            "oneOf": [
+                {
+                    "$ref": "#/components/schemas/A",
+                    "properties": {"t": {"type": "string"}},
+                    "required": ["t"],
+                },
+            ],
+            "discriminator": {
+                "propertyName": "t",
+                "mapping": {"a": "#/components/schemas/A"},
+            },
+        }
+        lines = generator._format_schema(schema)
+        text = "\n".join(lines)
+        assert "DISCRIMINATED UNION" in text
+
+    def test_schema_with_union_no_discriminator(self, generator):
+        schema = {
+            "oneOf": [
+                {"$ref": "#/components/schemas/X"},
+                {"$ref": "#/components/schemas/Y"},
+            ]
+        }
+        lines = generator._format_schema(schema)
+        text = "\n".join(lines)
+        assert "UNION TYPE" in text
+
+    def test_empty_schema(self, generator):
+        lines = generator._format_schema({})
+        assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# 30. _format_nested_type
+# ---------------------------------------------------------------------------
+
+
+class TestFormatNestedType:
+    def test_object_type_with_properties(self, generator):
+        unwrapped = {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+        }
+        lines = generator._format_nested_type(unwrapped, "", 0)
+        assert any("nested object" in ln for ln in lines)
+
+    def test_array_type_with_items(self, generator):
+        unwrapped = {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+        lines = generator._format_nested_type(unwrapped, "", 0)
+        assert any("array items type" in ln for ln in lines)
+
+    def test_other_type(self, generator):
+        unwrapped = {"type": "string"}
+        lines = generator._format_nested_type(unwrapped, "", 0)
+        assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# 31. _format_nested_object
+# ---------------------------------------------------------------------------
+
+
+class TestFormatNestedObject:
+    def test_with_properties(self, generator):
+        unwrapped = {
+            "type": "object",
+            "properties": {"foo": {"type": "integer"}},
+        }
+        lines = generator._format_nested_object(unwrapped, "", 0)
+        assert any("nested object" in ln for ln in lines)
+
+    def test_with_additional_properties(self, generator):
+        unwrapped = {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        }
+        lines = generator._format_nested_object(unwrapped, "", 0)
+        assert any("map type" in ln for ln in lines)
+        assert any("string" in ln for ln in lines)
+
+    def test_empty_object(self, generator):
+        unwrapped = {"type": "object"}
+        lines = generator._format_nested_object(unwrapped, "", 0)
+        assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# 32. _format_array_items
+# ---------------------------------------------------------------------------
+
+
+class TestFormatArrayItems:
+    def test_simple_items_type(self, generator):
+        unwrapped = {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+        lines = generator._format_array_items(unwrapped, "", 0)
+        assert any("array items type: string" in ln for ln in lines)
+
+    def test_items_with_properties(self, generator):
+        unwrapped = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}},
+            },
+        }
+        lines = generator._format_array_items(unwrapped, "", 0)
+        assert any("array item properties" in ln for ln in lines)
+
+    def test_items_with_one_of(self, generator):
+        unwrapped = {
+            "type": "array",
+            "items": {
+                "oneOf": [
+                    {"$ref": "#/components/schemas/A"},
+                    {"$ref": "#/components/schemas/B"},
+                ]
+            },
+        }
+        lines = generator._format_array_items(unwrapped, "", 0)
+        assert any("oneOf" in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# 33. _format_union_array_items
+# ---------------------------------------------------------------------------
+
+
+class TestFormatUnionArrayItems:
+    def test_with_ref_variants(self, generator):
+        items_one_of = [
+            {"$ref": "#/components/schemas/Cat"},
+            {"$ref": "#/components/schemas/Dog"},
+        ]
+        lines = generator._format_union_array_items(items_one_of, "", 0)
+        text = "\n".join(lines)
+        assert "Cat" in text
+        assert "Dog" in text
+
+    def test_unnamed_variants(self, generator):
+        items_one_of = [
+            {"type": "string"},
+            {"type": "integer"},
+        ]
+        lines = generator._format_union_array_items(items_one_of, "", 0)
+        text = "\n".join(lines)
+        assert "union of 2 variants" in text
+
+
+# ---------------------------------------------------------------------------
+# 34. _get_variant_name
+# ---------------------------------------------------------------------------
+
+
+class TestGetVariantName:
+    def test_with_ref(self, generator):
+        variant = {"$ref": "#/components/schemas/MyModel"}
+        assert generator._get_variant_name(variant) == "MyModel"
+
+    def test_with_const_property(self, generator):
+        variant = {
+            "properties": {
+                "type": {"type": "string", "const": "cat"},
+            }
+        }
+        assert generator._get_variant_name(variant) == "cat"
+
+    def test_no_match(self, generator):
+        variant = {"type": "string"}
+        assert generator._get_variant_name(variant) is None
+
+
+# ---------------------------------------------------------------------------
+# 35. _format_array_constraints
+# ---------------------------------------------------------------------------
+
+
+class TestFormatArrayConstraints:
+    def test_both_min_and_max(self, generator):
+        unwrapped = {"type": "array", "minItems": 1, "maxItems": 10}
+        lines = generator._format_array_constraints(unwrapped, "")
+        assert len(lines) == 1
+        assert "minItems=1" in lines[0]
+        assert "maxItems=10" in lines[0]
+
+    def test_only_min(self, generator):
+        unwrapped = {"type": "array", "minItems": 1}
+        lines = generator._format_array_constraints(unwrapped, "")
+        assert len(lines) == 1
+        assert "minItems=1" in lines[0]
+        assert "maxItems" not in lines[0]
+
+    def test_neither(self, generator):
+        unwrapped = {"type": "array"}
+        lines = generator._format_array_constraints(unwrapped, "")
+        assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# 36. _resolve_ref_in_union
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRefInUnion:
+    def test_direct_ref_match(self, generator):
+        one_of = [
+            {
+                "$ref": "#/components/schemas/Cat",
+                "properties": {"name": {"type": "string"}},
+            },
+        ]
+        result = generator._resolve_ref_in_union("#/components/schemas/Cat", one_of)
+        assert result is not None
+        assert "name" in result.get("properties", {})
+
+    def test_no_match(self, generator):
+        one_of = [
+            {
+                "$ref": "#/components/schemas/Dog",
+                "properties": {"breed": {"type": "string"}},
+            },
+        ]
+        result = generator._resolve_ref_in_union("#/components/schemas/Cat", one_of)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 37. _try_resolve_variant_by_ref
+# ---------------------------------------------------------------------------
+
+
+class TestTryResolveVariantByRef:
+    def test_direct_ref_with_properties(self, generator):
+        variant = {
+            "$ref": "#/components/schemas/Cat",
+            "properties": {"name": {"type": "string"}},
+        }
+        result = generator._try_resolve_variant_by_ref(
+            variant, "#/components/schemas/Cat"
+        )
+        assert result is not None
+        assert "name" in result["properties"]
+
+    def test_ref_with_allof(self, generator):
+        variant = {
+            "$ref": "#/components/schemas/Cat",
+            "allOf": [
+                {"properties": {"name": {"type": "string"}}, "required": ["name"]},
+            ],
+        }
+        result = generator._try_resolve_variant_by_ref(
+            variant, "#/components/schemas/Cat"
+        )
+        assert result is not None
+        assert "name" in result["properties"]
+
+    def test_allof_sub_matches_ref(self, generator):
+        variant = {
+            "allOf": [
+                {"$ref": "#/components/schemas/Cat"},
+                {"properties": {"color": {"type": "string"}}},
+            ],
+        }
+        result = generator._try_resolve_variant_by_ref(
+            variant, "#/components/schemas/Cat"
+        )
+        assert result is not None
+        assert "color" in result["properties"]
+
+    def test_no_match(self, generator):
+        variant = {
+            "$ref": "#/components/schemas/Dog",
+            "properties": {"breed": {"type": "string"}},
+        }
+        result = generator._try_resolve_variant_by_ref(
+            variant, "#/components/schemas/Cat"
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 38. _format_schema_property
+# ---------------------------------------------------------------------------
+
+
+class TestFormatSchemaProperty:
+    def test_required_string_property(self, generator):
+        lines = generator._format_schema_property(
+            "name", {"type": "string"}, ["name"], "", 0
+        )
+        text = "\n".join(lines)
+        assert "name" in text
+        assert "REQUIRED" in text
+
+    def test_optional_integer_property(self, generator):
+        lines = generator._format_schema_property("age", {"type": "integer"}, [], "", 0)
+        text = "\n".join(lines)
+        assert "age" in text
+        assert "optional" in text
+
+    def test_property_with_description(self, generator):
+        lines = generator._format_schema_property(
+            "email",
+            {"type": "string", "description": "User email address"},
+            [],
+            "",
+            0,
+        )
+        text = "\n".join(lines)
+        assert "User email address" in text
+
+    def test_nested_object_property(self, generator):
+        lines = generator._format_schema_property(
+            "address",
+            {"type": "object", "properties": {"street": {"type": "string"}}},
+            [],
+            "",
+            0,
+        )
+        text = "\n".join(lines)
+        assert "nested object" in text
+
+
+# ---------------------------------------------------------------------------
+# 39. _format_property_constraints
+# ---------------------------------------------------------------------------
+
+
+class TestFormatPropertyConstraints:
+    def test_min_max_length(self, generator):
+        result = generator._format_property_constraints(
+            {"minLength": 1, "maxLength": 100}
+        )
+        assert "minLength=1" in result
+        assert "maxLength=100" in result
+
+    def test_min_max_numeric(self, generator):
+        result = generator._format_property_constraints({"minimum": 0, "maximum": 999})
+        assert "min=0" in result
+        assert "max=999" in result
+
+    def test_pattern(self, generator):
+        result = generator._format_property_constraints({"pattern": "^[a-z]+$"})
+        assert any("pattern=" in c for c in result)
+
+    def test_multiple_of(self, generator):
+        result = generator._format_property_constraints({"multipleOf": 5})
+        assert "multipleOf=5" in result
+
+    def test_no_constraints(self, generator):
+        result = generator._format_property_constraints({"type": "string"})
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# 40. _resolve_variant_properties
+# ---------------------------------------------------------------------------
+
+
+class TestResolveVariantProperties:
+    def test_variant_with_properties(self, generator):
+        variant = {
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        }
+        props, req = generator._resolve_variant_properties(variant)
+        assert "name" in props
+        assert "name" in req
+
+    def test_variant_with_allof(self, generator):
+        variant = {
+            "allOf": [
+                {"properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"properties": {"b": {"type": "integer"}}},
+            ]
+        }
+        props, req = generator._resolve_variant_properties(variant)
+        assert "a" in props
+        assert "b" in props
+        assert "a" in req
+
+
+# ---------------------------------------------------------------------------
+# 41. _format_variant_fields
+# ---------------------------------------------------------------------------
+
+
+class TestFormatVariantFields:
+    def test_formats_variant_fields(self, generator):
+        v_props = {
+            "name": {"type": "string"},
+            "age": {"type": "integer"},
+        }
+        v_required = ["name"]
+        lines = generator._format_variant_fields(v_props, v_required, "Person")
+        text = "\n".join(lines)
+        assert "Person" in text
+        assert '"name"' in text
+        assert '"age"' in text
+
+
+# ---------------------------------------------------------------------------
+# 42. _format_union_field_instructions
+# ---------------------------------------------------------------------------
+
+
+class TestFormatUnionFieldInstructions:
+    def test_with_discriminator(self, generator):
+        one_of = [
+            {
+                "title": "Cat",
+                "properties": {
+                    "type": {"type": "string", "const": "cat"},
+                    "color": {"type": "string"},
+                },
+                "required": ["type", "color"],
+            },
+        ]
+        discriminator = {"propertyName": "type"}
+        result = generator._format_union_field_instructions(one_of, discriminator)
+        assert "DISCRIMINATED UNION" in result
+        assert "type" in result
+        assert "Cat" in result
+
+
+# ---------------------------------------------------------------------------
+# 43. _format_field_instruction_line
+# ---------------------------------------------------------------------------
+
+
+class TestFormatFieldInstructionLine:
+    def test_required_field(self, generator):
+        result = generator._format_field_instruction_line(
+            "name", {"type": "string"}, ["name"]
+        )
+        assert result is not None
+        assert "[REQUIRED]" in result
+        assert '"name"' in result
+
+    def test_optional_field_with_format(self, generator):
+        result = generator._format_field_instruction_line(
+            "created_at", {"type": "string", "format": "date-time"}, []
+        )
+        assert result is not None
+        assert "[REQUIRED]" not in result
+        assert "format=date-time" in result
+
+    def test_non_dict_schema(self, generator):
+        result = generator._format_field_instruction_line("x", "string", [])
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 44. _format_endpoints_list
+# ---------------------------------------------------------------------------
+
+
+class TestFormatEndpointsList:
+    def test_empty_list(self, generator):
+        result = generator._format_endpoints_list([])
+        assert result == ""
+
+    def test_multiple_endpoints(self, generator):
+        ep1 = Mock()
+        ep1.method = "get"
+        ep1.path = "/users"
+        ep1.summary = "Get users"
+        ep2 = Mock()
+        ep2.method = "post"
+        ep2.path = "/users"
+        ep2.summary = "Create user"
+        result = generator._format_endpoints_list([ep1, ep2])
+        assert "GET /users" in result
+        assert "POST /users" in result
+        assert "Get users" in result
+        assert "Create user" in result
+
+    def test_endpoint_without_summary(self, generator):
+        ep = Mock()
+        ep.method = "delete"
+        ep.path = "/items"
+        ep.summary = None
+        result = generator._format_endpoints_list([ep])
+        assert "DELETE /items" in result
+        assert "No summary" in result
