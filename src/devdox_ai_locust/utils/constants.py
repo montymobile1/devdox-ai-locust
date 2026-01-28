@@ -239,3 +239,21 @@ INIT_FILE: str = "__init__.py"
 # ---------------------------------------------------------------------------
 SCENARIO_TYPES: tuple[str, ...] = ("positive", "negative", "security")
 AUTH_KEYWORDS: tuple[str, ...] = ("auth", "login", "token", "session")
+
+# ---------------------------------------------------------------------------
+# OpenAPI schema types
+# ---------------------------------------------------------------------------
+TYPE_STRING: str = "string"
+TYPE_INTEGER: str = "integer"
+TYPE_NUMBER: str = "number"
+TYPE_BOOLEAN: str = "boolean"
+TYPE_ARRAY: str = "array"
+TYPE_OBJECT: str = "object"
+
+# Type mapping for validation
+OPENAPI_TYPE_TO_PYTHON: dict[str, type] = {
+    TYPE_STRING: str,
+    TYPE_INTEGER: int,
+    TYPE_NUMBER: float,
+    TYPE_BOOLEAN: bool,
+}

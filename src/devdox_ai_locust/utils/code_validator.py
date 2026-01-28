@@ -22,11 +22,16 @@ from typing import Any, Dict, List, Optional, Set
 from devdox_ai_locust.utils.constants import (
     LITERAL_PATH_PARAM_RE,
     MAKE_REQUEST_CALL_RE,
+    OPENAPI_TYPE_TO_PYTHON,
     PLACEHOLDER_PATTERNS,
     SEVERITY_ERROR,
     SEVERITY_WARNING,
     SUCCESS_IN_EXPECTED_STATUS_RE,
     TEMPLATE_BOILERPLATE_PATTERNS,
+    TYPE_ARRAY,
+    TYPE_BOOLEAN,
+    TYPE_INTEGER,
+    TYPE_STRING,
     URL_ARG_RE,
 )
 
@@ -567,7 +572,7 @@ class CodeValidator:
                     violations.append(violation)
 
             # Check 2: String format with wrong generator
-            elif field_type == "string" and field_format:
+            elif field_type == TYPE_STRING and field_format:
                 violation = self._check_format_usage(
                     field_name, value_node, field_format, line_num
                 )
@@ -575,7 +580,7 @@ class CodeValidator:
                     violations.append(violation)
 
             # Check 3: Array with mixed types
-            if field_type == "array":
+            if field_type == TYPE_ARRAY:
                 items_schema = field_schema.get("items", {})
                 violation = self._check_array_types(
                     field_name, value_node, items_schema, line_num
@@ -722,12 +727,10 @@ class CodeValidator:
         if not value_node.elts:
             return None  # Empty list is fine
 
-        # Map schema types to Python constant types
-        type_map = {
-            "string": str,
-            "integer": int,
-            "number": (int, float),
-            "boolean": bool,
+        # Map schema types to Python constant types (number accepts both int and float)
+        type_map: dict[str, type | tuple[type, ...]] = {
+            **OPENAPI_TYPE_TO_PYTHON,
+            "number": (int, float),  # Override to accept both
         }
 
         expected_python_type = type_map.get(items_type)
@@ -740,13 +743,13 @@ class CodeValidator:
             if isinstance(elt, ast.Constant):
                 # Bool is a subclass of int in Python, handle explicitly
                 is_wrong_type = (
-                    (items_type == "integer" and isinstance(elt.value, bool))
+                    (items_type == TYPE_INTEGER and isinstance(elt.value, bool))
                     or (
-                        items_type == "boolean"
+                        items_type == TYPE_BOOLEAN
                         and isinstance(elt.value, int)
                         and not isinstance(elt.value, bool)
                     )
-                    or not isinstance(elt.value, expected_python_type)  # type: ignore[arg-type]
+                    or not isinstance(elt.value, expected_python_type)
                 )
                 if is_wrong_type:
                     wrong_elements.append((i, type(elt.value).__name__))

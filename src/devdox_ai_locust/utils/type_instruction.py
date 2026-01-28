@@ -7,6 +7,14 @@ Used by ScenarioGenerator to produce valid test values.
 
 from typing import Any, Callable, Dict, Optional
 
+from devdox_ai_locust.utils.constants import (
+    TYPE_ARRAY,
+    TYPE_BOOLEAN,
+    TYPE_INTEGER,
+    TYPE_NUMBER,
+    TYPE_OBJECT,
+    TYPE_STRING,
+)
 from devdox_ai_locust.utils.schema_utils import (
     extract_all_properties,
 )
@@ -215,11 +223,11 @@ def get_object_instruction(
 
     add_props = field_schema.get("additionalProperties")
     if add_props and isinstance(add_props, dict):
-        val_type = add_props.get("type", "string")
+        val_type = add_props.get("type", TYPE_STRING)
         type_generators = {
-            "integer": "test_data_generator.generate_integer()",
-            "number": "test_data_generator.generate_float()",
-            "boolean": "test_data_generator.generate_boolean()",
+            TYPE_INTEGER: "test_data_generator.generate_integer()",
+            TYPE_NUMBER: "test_data_generator.generate_float()",
+            TYPE_BOOLEAN: "test_data_generator.generate_boolean()",
         }
         val_gen = type_generators.get(val_type, "test_data_generator.generate_string()")
         return '{f"key_{i}": ' + val_gen + " for i in range(3)}"
@@ -243,10 +251,10 @@ def _compute_array_length(field_schema: dict) -> int:
 def _get_array_items_info(field_items: Any) -> Dict[str, Any]:
     """Extract type information from array items schema."""
     if not isinstance(field_items, dict):
-        return {"type": "string", "enum": None, "ref": None, "one_of": None}
+        return {"type": TYPE_STRING, "enum": None, "ref": None, "one_of": None}
 
     return {
-        "type": field_items.get("type", "string"),
+        "type": field_items.get("type", TYPE_STRING),
         "enum": field_items.get("enum"),
         "ref": field_items.get("$ref"),
         "one_of": field_items.get("oneOf") or field_items.get("anyOf"),
@@ -295,7 +303,7 @@ def get_array_instruction(
         return "[{}]"
 
     # Object items
-    if items_info["type"] == "object" or items_info["ref"]:
+    if items_info["type"] == TYPE_OBJECT or items_info["ref"]:
         if items_info.get("properties"):
             obj_instr = object_instruction_fn(field_items, ancestors)
             return f"[{obj_instr} for _ in range({array_len})]"
@@ -314,22 +322,22 @@ def _get_primitive_array_instruction(
     field_name_lower: str,
 ) -> str:
     """Get instruction for arrays of primitive types."""
-    if items_type == "string":
+    if items_type == TYPE_STRING:
         return f"[test_data_generator.generate_string() for _ in range({array_len})]"
 
-    if items_type == "integer":
+    if items_type == TYPE_INTEGER:
         color_keywords = ["rgb", "color", "colour"]
         if field_name_lower and any(kw in field_name_lower for kw in color_keywords):
             return f"[test_data_generator.generate_integer(min_val=0, max_val=255) for _ in range({array_len})]"
         return f"[test_data_generator.generate_integer() for _ in range({array_len})]"
 
-    if items_type == "number":
+    if items_type == TYPE_NUMBER:
         return f"[test_data_generator.generate_float() for _ in range({array_len})]"
 
-    if items_type == "boolean":
+    if items_type == TYPE_BOOLEAN:
         return f"[test_data_generator.generate_boolean() for _ in range({array_len})]"
 
-    if items_type == "array":
+    if items_type == TYPE_ARRAY:
         return _get_nested_array_instruction(field_items, array_len)
 
     # Default to string array
@@ -340,13 +348,13 @@ def _get_nested_array_instruction(field_items: dict, array_len: int) -> str:
     """Get instruction for nested arrays (array of arrays)."""
     inner_items = field_items.get("items", {}) if isinstance(field_items, dict) else {}
     inner_type = (
-        inner_items.get("type", "string") if isinstance(inner_items, dict) else "string"
+        inner_items.get("type", TYPE_STRING) if isinstance(inner_items, dict) else TYPE_STRING
     )
 
     type_generators = {
-        "integer": "test_data_generator.generate_integer()",
-        "number": "test_data_generator.generate_float()",
-        "boolean": "test_data_generator.generate_boolean()",
+        TYPE_INTEGER: "test_data_generator.generate_integer()",
+        TYPE_NUMBER: "test_data_generator.generate_float()",
+        TYPE_BOOLEAN: "test_data_generator.generate_boolean()",
     }
     inner_gen = type_generators.get(inner_type, "test_data_generator.generate_string()")
 

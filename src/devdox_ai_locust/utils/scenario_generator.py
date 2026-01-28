@@ -16,7 +16,15 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader
 
-from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON
+from devdox_ai_locust.utils.constants import (
+    CONTENT_TYPE_JSON,
+    TYPE_ARRAY,
+    TYPE_BOOLEAN,
+    TYPE_INTEGER,
+    TYPE_NUMBER,
+    TYPE_OBJECT,
+    TYPE_STRING,
+)
 from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
 from devdox_ai_locust.utils.code_validator import CodeValidator
 from devdox_ai_locust.utils.code_processor import CodeProcessor
@@ -2102,7 +2110,7 @@ class ScenarioWorkflowGenerator:
         if not isinstance(field_schema, dict):
             return "test_data_generator.generate_string(length=10)"  # type: ignore[unreachable]
 
-        field_type = field_schema.get("type", "string")
+        field_type = field_schema.get("type", TYPE_STRING)
         field_format = field_schema.get("format", "")
         field_enum = field_schema.get("enum")
         field_pattern = field_schema.get("pattern")
@@ -2113,7 +2121,7 @@ class ScenarioWorkflowGenerator:
             return f"random.choice({field_enum})"
 
         # IPv4 early detection (before pattern check)
-        if field_name_lower and field_type == "string":
+        if field_name_lower and field_type == TYPE_STRING:
             if "ipv4" in field_name_lower or field_name_lower == "ip_address":
                 return "test_data_generator.random_ipv4()"
 
@@ -2128,26 +2136,26 @@ class ScenarioWorkflowGenerator:
             return format_instr
 
         # Type-specific generators
-        if field_type == "string":
+        if field_type == TYPE_STRING:
             return get_string_instruction(field_schema, field_name)
 
-        if field_type == "integer":
+        if field_type == TYPE_INTEGER:
             return get_integer_instruction(field_schema, field_name)
 
-        if field_type == "number":
+        if field_type == TYPE_NUMBER:
             return get_number_instruction(field_schema)
 
-        if field_type == "boolean":
+        if field_type == TYPE_BOOLEAN:
             return "test_data_generator.generate_boolean()"
 
-        if field_type == "object":
+        if field_type == TYPE_OBJECT:
             return get_object_instruction(
                 field_schema,
                 self._precompute_object_instruction,
                 _object_ancestors,
             )
 
-        if field_type == "array":
+        if field_type == TYPE_ARRAY:
             return get_array_instruction(
                 field_schema,
                 self._precompute_object_instruction,
