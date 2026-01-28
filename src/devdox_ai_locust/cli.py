@@ -237,11 +237,16 @@ async def _process_api_schema(
         verbose: Enable verbose output
         schema_timeout: Timeout in seconds for fetching the schema (default: 30)
     """
-    source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
+    from devdox_ai_locust.utils.constants import is_url
+
+    if is_url(swagger_url):
+        source_request = SwaggerProcessingRequest(swagger_url=swagger_url)
+    else:
+        source_request = SwaggerProcessingRequest(swagger_file_path=swagger_url)
     api_schema = None
 
     # Fetch API schema
-    source_type = "URL" if swagger_url.startswith(("http://", "https://")) else "file"
+    source_type = "URL" if is_url(swagger_url) else "file"
     console.print(f"→ Fetching API schema from {source_type}...")
     try:
         async with asyncio.timeout(schema_timeout):

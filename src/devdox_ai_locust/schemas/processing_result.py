@@ -1,11 +1,18 @@
-from pydantic import BaseModel, field_validator, ValidationInfo
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, Type
 
 
 class SwaggerProcessingRequest(BaseModel):
-    swagger_url: Optional[str] = None
+    """Request model for processing an OpenAPI/Swagger schema.
 
-    @field_validator("swagger_url", mode="before")
+    Exactly one of ``swagger_url`` or ``swagger_file_path`` must be provided.
+    Supplying both or neither raises a ``ValueError`` at construction time.
+    """
+
+    swagger_url: Optional[str] = None
+    swagger_file_path: Optional[str] = None
+
+    @field_validator("swagger_url", "swagger_file_path", mode="before")
     @classmethod
     def coerce_to_string(
         cls: Type["SwaggerProcessingRequest"], v: Optional[str]
@@ -14,11 +21,15 @@ class SwaggerProcessingRequest(BaseModel):
             return v
         return str(v)
 
-    @field_validator("swagger_url")
-    @classmethod
-    def validate_url_when_source_is_url(
-        cls: Type["SwaggerProcessingRequest"], v: Optional[str], info: ValidationInfo
-    ) -> Optional[str]:
-        if info.data.get("swagger_source") == "url" and not v:
-            raise ValueError("swagger_url is required when source is url")
-        return v
+    @model_validator(mode="after")
+    def validate_single_source(self) -> "SwaggerProcessingRequest":
+        """Exactly one of swagger_url or swagger_file_path must be provided."""
+        has_url = bool(self.swagger_url)
+        has_file = bool(self.swagger_file_path)
+        if has_url and has_file:
+            raise ValueError(
+                "Provide either swagger_url or swagger_file_path, not both"
+            )
+        if not has_url and not has_file:
+            raise ValueError("Either swagger_url or swagger_file_path is required")
+        return self

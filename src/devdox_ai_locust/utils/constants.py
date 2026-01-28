@@ -182,3 +182,18 @@ def to_class_name(name: str) -> str:
     sanitized = sanitize_identifier(name)
     words = sanitized.replace("_", " ").split()
     return "".join(word.capitalize() for word in words) or "Unnamed"
+
+
+# ---------------------------------------------------------------------------
+# URL detection helpers — these check protocol prefixes, NOT make connections.
+# SonarCloud S5332 (clear-text protocol) does not apply here.
+# ---------------------------------------------------------------------------
+URL_PREFIXES: tuple[str, ...] = ("http://", "https://")  # NOSONAR
+
+
+def is_url(value: str) -> bool:
+    """Check if a string is a URL (starts with http:// or https://).
+
+    Used for distinguishing URLs from file paths, not for making connections.
+    """
+    return value.startswith(URL_PREFIXES)  # NOSONAR

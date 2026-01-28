@@ -29,8 +29,10 @@ from devdox_ai_locust.utils.constants import (
     TIMESTAMP_RE,
     TRACEBACK_START,
     URL_ARG_RE,
+    URL_PREFIXES,
     UUID_RE,
     WORKFLOW_CLASS_RE,
+    is_url,
     sanitize_identifier,
     to_class_name,
 )
@@ -451,3 +453,38 @@ def test_redos_workflow_class_re():
 def test_redos_allowed_imports_re():
     adversarial = "=== ALLOWED IMPORTS ===" + "x" * 1000 + "```python\nimport os\n```"
     _assert_fast(ALLOWED_IMPORTS_RE, adversarial)
+
+
+# ---- URL_PREFIXES and is_url ----
+
+
+def test_url_prefixes_tuple():
+    assert URL_PREFIXES == ("http://", "https://")
+
+
+def test_is_url_https():
+    assert is_url("https://example.com/api") is True
+
+
+def test_is_url_http():
+    assert is_url("http://example.com/api") is True
+
+
+def test_is_url_file_path():
+    assert is_url("/path/to/file.json") is False
+
+
+def test_is_url_windows_path():
+    assert is_url("C:\\Users\\file.json") is False
+
+
+def test_is_url_relative_path():
+    assert is_url("swagger.json") is False
+
+
+def test_is_url_empty():
+    assert is_url("") is False
+
+
+def test_is_url_ftp():
+    assert is_url("ftp://server/file") is False

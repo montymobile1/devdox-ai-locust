@@ -773,7 +773,9 @@ class CodeValidator:
                 )
             )
         if field_format in ("uri", "url"):
-            return value.startswith("http://") or value.startswith("https://")
+            from devdox_ai_locust.utils.constants import is_url
+
+            return is_url(value)
         if field_format == "ipv4":
             return bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", value))
         if field_format == "hostname":

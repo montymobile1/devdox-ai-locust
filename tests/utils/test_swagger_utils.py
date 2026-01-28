@@ -6,8 +6,13 @@ import pytest
 import asyncio
 import httpx
 from unittest.mock import Mock, AsyncMock, patch
+from pydantic import ValidationError
 
-from devdox_ai_locust.utils.swagger_utils import get_api_schema, _fetch_from_url
+from devdox_ai_locust.utils.swagger_utils import (
+    get_api_schema,
+    _fetch_from_url,
+    _read_from_file,
+)
 from devdox_ai_locust.schemas.processing_result import SwaggerProcessingRequest
 
 
@@ -29,20 +34,17 @@ class TestGetApiSchema:
         assert result == '{"openapi": "3.0.0"}'
         mock_fetch_url.assert_called_once_with("https://api.example.com/swagger.json")
 
-    @pytest.mark.asyncio
-    async def test_get_api_schema_empty_url(self):
-        """Test get_api_schema with empty URL."""
-        source = SwaggerProcessingRequest(swagger_url="")
-
-        with pytest.raises(ValueError, match="Missing or empty 'swagger_url'"):
-            await get_api_schema(source)
+    def test_model_rejects_empty_url(self):
+        """Test that SwaggerProcessingRequest rejects empty URL (neither field truthy)."""
+        with pytest.raises(ValidationError):
+            SwaggerProcessingRequest(swagger_url="")
 
     @pytest.mark.asyncio
-    async def test_get_api_schema_whitespace_url(self):
-        """Test get_api_schema with whitespace-only URL."""
+    async def test_get_api_schema_whitespace_only_url(self):
+        """Test get_api_schema with whitespace-only URL raises ValueError."""
         source = SwaggerProcessingRequest(swagger_url="   ")
 
-        with pytest.raises(ValueError, match="Missing 'swagger_url'"):
+        with pytest.raises(ValueError, match="swagger_url is empty after stripping"):
             await get_api_schema(source)
 
     @pytest.mark.asyncio
@@ -71,6 +73,114 @@ class TestGetApiSchema:
         await get_api_schema(source)
 
         mock_fetch_url.assert_called_once_with("https://api.example.com/swagger.json")
+
+    @pytest.mark.asyncio
+    @patch("devdox_ai_locust.utils.swagger_utils._read_from_file")
+    async def test_get_api_schema_from_file(self, mock_read_file):
+        """Test fetching API schema from a local file path."""
+        mock_read_file.return_value = '{"openapi": "3.0.0"}'
+
+        source = SwaggerProcessingRequest(swagger_file_path="path/to/swagger.json")
+
+        result = await get_api_schema(source)
+
+        assert result == '{"openapi": "3.0.0"}'
+        mock_read_file.assert_called_once_with("path/to/swagger.json")
+
+    @pytest.mark.asyncio
+    @patch("devdox_ai_locust.utils.swagger_utils._read_from_file")
+    async def test_get_api_schema_file_not_found(self, mock_read_file):
+        """Test get_api_schema with non-existent file."""
+        mock_read_file.side_effect = FileNotFoundError(
+            "Schema file not found: missing.json"
+        )
+
+        source = SwaggerProcessingRequest(swagger_file_path="missing.json")
+
+        with pytest.raises(FileNotFoundError):
+            await get_api_schema(source)
+
+
+class TestSwaggerProcessingRequestModel:
+    """Test SwaggerProcessingRequest model validation."""
+
+    def test_model_rejects_no_args(self):
+        """Test that model rejects construction with no arguments."""
+        with pytest.raises(ValidationError):
+            SwaggerProcessingRequest()
+
+    def test_model_rejects_both_fields(self):
+        """Test that model rejects both swagger_url and swagger_file_path."""
+        with pytest.raises(ValidationError):
+            SwaggerProcessingRequest(
+                swagger_url="https://example.com/swagger.json",
+                swagger_file_path="path/to/file.json",
+            )
+
+    def test_model_rejects_none_url_none_file(self):
+        """Test that model rejects None for both fields."""
+        with pytest.raises(ValidationError):
+            SwaggerProcessingRequest(swagger_url=None, swagger_file_path=None)
+
+    def test_model_accepts_url_only(self):
+        """Test model accepts swagger_url only."""
+        req = SwaggerProcessingRequest(swagger_url="https://example.com/swagger.json")
+        assert req.swagger_url == "https://example.com/swagger.json"
+        assert req.swagger_file_path is None
+
+    def test_model_accepts_file_path_only(self):
+        """Test model accepts swagger_file_path only."""
+        req = SwaggerProcessingRequest(swagger_file_path="path/to/file.json")
+        assert req.swagger_file_path == "path/to/file.json"
+        assert req.swagger_url is None
+
+
+class TestReadFromFile:
+    """Test _read_from_file function."""
+
+    def test_read_from_file_success(self, tmp_path):
+        """Test successful file read."""
+        schema_file = tmp_path / "swagger.json"
+        schema_file.write_text('{"openapi": "3.0.0"}', encoding="utf-8")
+
+        result = _read_from_file(str(schema_file))
+
+        assert result == '{"openapi": "3.0.0"}'
+
+    def test_read_from_file_not_found(self):
+        """Test file not found."""
+        with pytest.raises(FileNotFoundError, match="Schema file not found"):
+            _read_from_file("nonexistent/path/swagger.json")
+
+    def test_read_from_file_empty(self, tmp_path):
+        """Test empty file."""
+        schema_file = tmp_path / "empty.json"
+        schema_file.write_text("", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Empty schema file"):
+            _read_from_file(str(schema_file))
+
+    def test_read_from_file_whitespace_only(self, tmp_path):
+        """Test whitespace-only file."""
+        schema_file = tmp_path / "whitespace.json"
+        schema_file.write_text("   \n\t   ", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Empty schema file"):
+            _read_from_file(str(schema_file))
+
+    def test_read_from_file_directory(self, tmp_path):
+        """Test that passing a directory raises ValueError."""
+        with pytest.raises(ValueError, match="Path is not a file"):
+            _read_from_file(str(tmp_path))
+
+    def test_read_from_file_strips_content(self, tmp_path):
+        """Test that content is stripped."""
+        schema_file = tmp_path / "swagger.json"
+        schema_file.write_text('  {"openapi": "3.0.0"}  \n', encoding="utf-8")
+
+        result = _read_from_file(str(schema_file))
+
+        assert result == '{"openapi": "3.0.0"}'
 
 
 class TestFetchFromUrl:
@@ -218,13 +328,10 @@ class TestFetchFromUrl:
 class TestEdgeCases:
     """Test edge cases and error scenarios."""
 
-    @pytest.mark.asyncio
-    async def test_get_api_schema_none_url(self):
-        """Test get_api_schema with None URL."""
-        source = SwaggerProcessingRequest(swagger_url=None)
-
-        with pytest.raises(ValueError, match="Missing or empty 'swagger_url'"):
-            await get_api_schema(source)
+    def test_model_rejects_none_url_no_file(self):
+        """Test that model rejects None URL with no file path."""
+        with pytest.raises(ValidationError):
+            SwaggerProcessingRequest(swagger_url=None)
 
     @pytest.mark.asyncio
     @patch("devdox_ai_locust.utils.swagger_utils._fetch_from_url")
