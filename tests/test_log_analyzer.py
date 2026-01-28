@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 
 from devdox_ai_locust.log_analyzer import (
+    PatternData,
     _extract_api_path,
     _line_iterator,
     _normalize_error,
@@ -106,36 +107,28 @@ class TestRecordError:
 
     def test_first_occurrence_returns_zero(self):
         """Test that first occurrence of an error returns 0 duplicates."""
-        sigs = Counter()
-        samples = {}
-        apis = {}
-        result = _record_error("ERROR: something broke", [], sigs, samples, apis)
+        errors = PatternData()
+        result = _record_error("ERROR: something broke", [], errors)
         assert result == 0
-        assert len(sigs) == 1
-        assert len(samples) == 1
+        assert len(errors.signatures) == 1
+        assert len(errors.samples) == 1
 
     def test_duplicate_returns_one(self):
         """Test that duplicate error returns 1."""
-        sigs = Counter()
-        samples = {}
-        apis = {}
-        _record_error("ERROR: something broke", [], sigs, samples, apis)
-        result = _record_error("ERROR: something broke", [], sigs, samples, apis)
+        errors = PatternData()
+        _record_error("ERROR: something broke", [], errors)
+        result = _record_error("ERROR: something broke", [], errors)
         assert result == 1
-        assert sigs.most_common(1)[0][1] == 2
+        assert errors.signatures.most_common(1)[0][1] == 2
 
     def test_context_with_api_path_tracked(self):
         """Test that API paths from context are tracked."""
-        from collections import defaultdict
-
-        sigs = Counter()
-        samples = {}
-        apis = defaultdict(set)
+        errors = PatternData()
         context = ["REQUEST: GET /users", "Response status: 500"]
-        _record_error("ERROR: server error", context, sigs, samples, apis)
+        _record_error("ERROR: server error", context, errors)
         # Should have tracked the API path
-        sig = list(apis.keys())[0]
-        assert len(apis[sig]) > 0
+        sig = list(errors.apis.keys())[0]
+        assert len(errors.apis[sig]) > 0
 
 
 class TestWriteReducedLog:
@@ -144,7 +137,7 @@ class TestWriteReducedLog:
     def test_writes_header(self, tmp_path):
         """Test that the header is written correctly."""
         output = str(tmp_path / "reduced.log")
-        _write_reduced_log(output, Counter(), {}, {}, Counter(), {}, {}, 100, 50)
+        _write_reduced_log(output, PatternData(), PatternData(), 100, 50)
         content = Path(output).read_text()
         assert "# Reduced Locust Log" in content
         assert "100 lines" in content
@@ -153,20 +146,12 @@ class TestWriteReducedLog:
     def test_writes_errors_section(self, tmp_path):
         """Test that errors section is written."""
         output = str(tmp_path / "reduced.log")
-        error_sigs = Counter({"normalized error": 3})
-        error_samples = {"normalized error": ["ERROR: the actual error line"]}
-        error_apis = {"normalized error": {"GET /users"}}
-        _write_reduced_log(
-            output,
-            error_sigs,
-            error_samples,
-            error_apis,
-            Counter(),
-            {},
-            {},
-            100,
-            10,
+        errors = PatternData(
+            signatures=Counter({"normalized error": 3}),
+            samples={"normalized error": ["ERROR: the actual error line"]},
+            apis={"normalized error": {"GET /users"}},
         )
+        _write_reduced_log(output, errors, PatternData(), 100, 10)
         content = Path(output).read_text()
         assert "ERRORS" in content
         assert "[3x]" in content
@@ -176,25 +161,17 @@ class TestWriteReducedLog:
     def test_writes_exceptions_section(self, tmp_path):
         """Test that exceptions section is written."""
         output = str(tmp_path / "reduced.log")
-        exc_sigs = Counter({"KeyError: 'id'": 5})
-        exc_samples = {
-            "KeyError: 'id'": [
-                "Traceback (most recent call last):",
-                "  File 'test.py', line 10",
-                "KeyError: 'id'",
-            ]
-        }
-        _write_reduced_log(
-            output,
-            Counter(),
-            {},
-            {},
-            exc_sigs,
-            exc_samples,
-            {},
-            200,
-            20,
+        exceptions = PatternData(
+            signatures=Counter({"KeyError: 'id'": 5}),
+            samples={
+                "KeyError: 'id'": [
+                    "Traceback (most recent call last):",
+                    "  File 'test.py', line 10",
+                    "KeyError: 'id'",
+                ]
+            },
         )
+        _write_reduced_log(output, PatternData(), exceptions, 200, 20)
         content = Path(output).read_text()
         assert "EXCEPTIONS" in content
         assert "[5x]" in content

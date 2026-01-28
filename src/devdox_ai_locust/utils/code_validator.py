@@ -45,7 +45,7 @@ class ValidationViolation:
     rule: str
     message: str
     line_number: Optional[int] = None
-    severity: str = "error"  # "error" or "warning"
+    severity: str = SEVERITY_ERROR
 
 
 @dataclass
@@ -145,7 +145,7 @@ class CodeValidator:
             violations.extend(self._check_schema_compliance(code, request_body_schema))
 
         # Only errors (not warnings) make validation fail
-        has_errors = any(v.severity == "error" for v in violations)
+        has_errors = any(v.severity == SEVERITY_ERROR for v in violations)
         return ValidationResult(
             is_valid=not has_errors,
             violations=violations,

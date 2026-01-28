@@ -16,8 +16,19 @@ Usage:
 import re
 import sys
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, TextIO
+
+
+@dataclass
+class PatternData:
+    """Data structure for tracking pattern signatures, samples, and affected APIs."""
+
+    signatures: "Counter[str]" = field(default_factory=Counter)
+    samples: Dict[str, List[str]] = field(default_factory=dict)
+    apis: Dict[str, set] = field(default_factory=lambda: defaultdict(set))
+
 
 from devdox_ai_locust.utils.constants import (
     ADDR_RE as _ADDR_RE,
@@ -83,17 +94,9 @@ def analyze_log(log_path: str, output_path: Optional[str] = None) -> Dict[str, i
     if output_path is None:
         output_path = str(src.with_suffix("")) + "_reduced.log"
 
-    # Track signatures
-    error_signatures: Counter = Counter()
-    exception_signatures: Counter = Counter()
-
-    # First-seen samples: signature -> (context_lines + error_line)
-    error_samples: Dict[str, List[str]] = {}
-    exception_samples: Dict[str, List[str]] = {}
-
-    # All API paths that hit each signature
-    error_apis: Dict[str, set] = defaultdict(set)
-    exception_apis: Dict[str, set] = defaultdict(set)
+    # Track error and exception patterns using DTOs
+    errors = PatternData()
+    exceptions = PatternData()
 
     total_lines = 0
     duplicates_removed = 0
@@ -108,14 +111,7 @@ def analyze_log(log_path: str, output_path: Optional[str] = None) -> Dict[str, i
 
             # Detect traceback blocks
             if _TRACEBACK_START.match(line):
-                tb_dup = _collect_traceback(
-                    line,
-                    line_iter,
-                    context_buffer,
-                    exception_signatures,
-                    exception_samples,
-                    exception_apis,
-                )
+                tb_dup = _collect_traceback(line, line_iter, context_buffer, exceptions)
                 total_lines += tb_dup[0]
                 duplicates_removed += tb_dup[1]
                 context_buffer.clear()
@@ -123,13 +119,7 @@ def analyze_log(log_path: str, output_path: Optional[str] = None) -> Dict[str, i
 
             # Detect error lines
             if _ERROR_PATTERN.search(line):
-                duplicates_removed += _record_error(
-                    line,
-                    context_buffer,
-                    error_signatures,
-                    error_samples,
-                    error_apis,
-                )
+                duplicates_removed += _record_error(line, context_buffer, errors)
                 context_buffer.clear()
                 continue
 
@@ -139,22 +129,12 @@ def analyze_log(log_path: str, output_path: Optional[str] = None) -> Dict[str, i
                 context_buffer.pop(0)
 
     # Write reduced log
-    _write_reduced_log(
-        output_path,
-        error_signatures,
-        error_samples,
-        error_apis,
-        exception_signatures,
-        exception_samples,
-        exception_apis,
-        total_lines,
-        duplicates_removed,
-    )
+    _write_reduced_log(output_path, errors, exceptions, total_lines, duplicates_removed)
 
     return {
         "total_lines": total_lines,
-        "unique_errors": len(error_signatures),
-        "unique_exceptions": len(exception_signatures),
+        "unique_errors": len(errors.signatures),
+        "unique_exceptions": len(exceptions.signatures),
         "duplicates_removed": duplicates_removed,
     }
 
@@ -168,9 +148,7 @@ def _collect_traceback(
     first_line: str,
     line_iter: Iterator[str],
     context_buffer: List[str],
-    exception_signatures: Counter,
-    exception_samples: Dict[str, List[str]],
-    exception_apis: Dict[str, set],
+    exceptions: PatternData,
 ) -> tuple:
     """Collect a traceback block and record the exception. Returns (extra_lines, duplicates)."""
     extra_lines = 0
@@ -183,12 +161,12 @@ def _collect_traceback(
         else:
             tb_lines.append(next_line)
             sig = _normalize_exception(next_line)
-            exception_signatures[sig] += 1
+            exceptions.signatures[sig] += 1
             api = _extract_api_path(context_buffer + tb_lines)
             if api:
-                exception_apis[sig].add(api)
-            if sig not in exception_samples:
-                exception_samples[sig] = _relevant_context(context_buffer) + tb_lines
+                exceptions.apis[sig].add(api)
+            if sig not in exceptions.samples:
+                exceptions.samples[sig] = _relevant_context(context_buffer) + tb_lines
             else:
                 duplicates = len(tb_lines)
             break
@@ -198,18 +176,16 @@ def _collect_traceback(
 def _record_error(
     line: str,
     context_buffer: List[str],
-    error_signatures: Counter,
-    error_samples: Dict[str, List[str]],
-    error_apis: Dict[str, set],
+    errors: PatternData,
 ) -> int:
     """Record an error line. Returns number of duplicates (0 or 1)."""
     sig = _normalize_error(line)
-    error_signatures[sig] += 1
+    errors.signatures[sig] += 1
     api = _extract_api_path(context_buffer + [line])
     if api:
-        error_apis[sig].add(api)
-    if sig not in error_samples:
-        error_samples[sig] = _relevant_context(context_buffer) + [line]
+        errors.apis[sig].add(api)
+    if sig not in errors.samples:
+        errors.samples[sig] = _relevant_context(context_buffer) + [line]
         return 0
     return 1
 
@@ -222,12 +198,8 @@ def _line_iterator(f: TextIO) -> Iterator[str]:
 
 def _write_reduced_log(
     output_path: str,
-    error_signatures: "Counter[str]",
-    error_samples: Dict[str, List[str]],
-    error_apis: Dict[str, set],
-    exception_signatures: "Counter[str]",
-    exception_samples: Dict[str, List[str]],
-    exception_apis: Dict[str, set],
+    errors: PatternData,
+    exceptions: PatternData,
     total_lines: int,
     duplicates_removed: int,
 ) -> None:
@@ -238,18 +210,18 @@ def _write_reduced_log(
             f"# Original: {total_lines} lines | Duplicates removed: {duplicates_removed}\n"
         )
         out.write(
-            f"# Unique errors: {len(error_signatures)} | Unique exceptions: {len(exception_signatures)}\n"
+            f"# Unique errors: {len(errors.signatures)} | Unique exceptions: {len(exceptions.signatures)}\n"
         )
         out.write(f"#{'=' * 69}\n\n")
 
         # Exceptions (most important)
-        if exception_signatures:
+        if exceptions.signatures:
             out.write(
-                f"# {'=' * 30} EXCEPTIONS ({len(exception_signatures)}) {'=' * 30}\n\n"
+                f"# {'=' * 30} EXCEPTIONS ({len(exceptions.signatures)}) {'=' * 30}\n\n"
             )
-            for sig, count in exception_signatures.most_common():
-                sample_lines = exception_samples.get(sig, [])
-                apis = exception_apis.get(sig, set())
+            for sig, count in exceptions.signatures.most_common():
+                sample_lines = exceptions.samples.get(sig, [])
+                apis = exceptions.apis.get(sig, set())
 
                 out.write(f"# [{count}x]")
                 if apis:
@@ -261,11 +233,11 @@ def _write_reduced_log(
                 out.write("\n")
 
         # Error lines
-        if error_signatures:
-            out.write(f"# {'=' * 30} ERRORS ({len(error_signatures)}) {'=' * 30}\n\n")
-            for sig, count in error_signatures.most_common():
-                sample_lines = error_samples.get(sig, [])
-                apis = error_apis.get(sig, set())
+        if errors.signatures:
+            out.write(f"# {'=' * 30} ERRORS ({len(errors.signatures)}) {'=' * 30}\n\n")
+            for sig, count in errors.signatures.most_common():
+                sample_lines = errors.samples.get(sig, [])
+                apis = errors.apis.get(sig, set())
 
                 out.write(f"# [{count}x]")
                 if apis:
