@@ -17,6 +17,7 @@ from datetime import datetime
 
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint, Parameter
+from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON, CONTENT_TYPE_FORM
 
 logger = logging.getLogger(__name__)
 
@@ -570,11 +571,11 @@ def {method_name}(self):
         if not endpoint.request_body:
             return "json_data = None"
 
-        if endpoint.request_body.content_type == "application/json":
+        if endpoint.request_body.content_type == CONTENT_TYPE_JSON:
             return f"""json_data = test_data_generator.generate_json_data(
                 schema={json.dumps(endpoint.request_body.schema, indent=16)}
             )"""
-        elif endpoint.request_body.content_type == "application/x-www-form-urlencoded":
+        elif endpoint.request_body.content_type == CONTENT_TYPE_FORM:
             return "data = test_data_generator.generate_form_data()"
         else:
             return "json_data = {}"
@@ -590,12 +591,9 @@ def {method_name}(self):
 
         # Add request body
         if endpoint.request_body:
-            if endpoint.request_body.content_type == "application/json":
+            if endpoint.request_body.content_type == CONTENT_TYPE_JSON:
                 kwargs.append("json=json_data")
-            elif (
-                endpoint.request_body.content_type
-                == "application/x-www-form-urlencoded"
-            ):
+            elif endpoint.request_body.content_type == CONTENT_TYPE_FORM:
                 kwargs.append("data=data")
 
         # Add headers if needed

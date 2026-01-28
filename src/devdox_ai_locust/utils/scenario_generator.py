@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader
 
+from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON
 from devdox_ai_locust.utils.http_fallback_presets import FallbackHttpResponseRegistry
 from devdox_ai_locust.utils.code_validator import CodeValidator
 from devdox_ai_locust.utils.code_processor import CodeProcessor
@@ -555,7 +556,7 @@ class ScenarioWorkflowGenerator:
             ct = getattr(endpoint.request_body, "content_type", None)
             if ct:
                 return str(ct)
-        return "application/json"
+        return CONTENT_TYPE_JSON
 
     def _build_setup_analysis(
         self,
@@ -2259,7 +2260,7 @@ class ScenarioWorkflowGenerator:
             return lines
 
         rb = endpoint.request_body
-        content_type = getattr(rb, "content_type", "application/json")
+        content_type = getattr(rb, "content_type", CONTENT_TYPE_JSON)
         schema = getattr(rb, "schema", {})
 
         lines.append("\nRequest Body:")

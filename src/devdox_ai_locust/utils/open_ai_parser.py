@@ -12,9 +12,12 @@ from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 from enum import Enum
 
+from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON
+
 logger = logging.getLogger(__name__)
 
-application_json_type = "application/json"
+# Alias for backward compatibility (used internally in this module)
+application_json_type = CONTENT_TYPE_JSON
 localhost_url = "http://localhost"
 
 
@@ -370,7 +373,7 @@ class OpenAPIParser:
                 break
 
         if not content_type:
-            content_type = content_types[0] if content_types else "application/json"
+            content_type = content_types[0] if content_types else application_json_type
 
         media_type = content[content_type]
         schema = media_type.get("schema", {})
@@ -418,7 +421,7 @@ class OpenAPIParser:
                 else:
                     content_keys = list(content.keys())
                     content_type = (
-                        content_keys[0] if content_keys else "application/json"
+                        content_keys[0] if content_keys else application_json_type
                     )
                     media_type = content.get(content_type, {})
 

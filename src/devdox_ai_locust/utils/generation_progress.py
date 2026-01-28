@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from rich.console import Console
 
+from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON
+
 
 @dataclass
 class FailureInfo:
@@ -97,7 +99,7 @@ class EndpointAnalysis:
     # OpenAPI Analysis
     responses_defined: List[int] = field(default_factory=list)
     source_of_truth: str = "spec"  # spec, fallback
-    content_type: str = "application/json"
+    content_type: str = CONTENT_TYPE_JSON
 
     # Schema Analysis
     schema: SchemaAnalysis = field(default_factory=SchemaAnalysis)

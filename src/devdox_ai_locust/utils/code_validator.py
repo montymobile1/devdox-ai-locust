@@ -23,6 +23,8 @@ from devdox_ai_locust.utils.constants import (
     LITERAL_PATH_PARAM_RE,
     MAKE_REQUEST_CALL_RE,
     PLACEHOLDER_PATTERNS,
+    SEVERITY_ERROR,
+    SEVERITY_WARNING,
     SUCCESS_IN_EXPECTED_STATUS_RE,
     TEMPLATE_BOILERPLATE_PATTERNS,
     URL_ARG_RE,
@@ -157,7 +159,7 @@ class CodeValidator:
                             rule="template_boilerplate",
                             message=f"Template comment copied verbatim: {line.strip()}",
                             line_number=i,
-                            severity="error",
+                            severity=SEVERITY_ERROR,
                         )
                     )
                     break  # One violation per line
@@ -178,7 +180,7 @@ class CodeValidator:
                             message=f"Placeholder comment instead of code: {line.strip()}. "
                             f"You MUST generate ALL required fields.",
                             line_number=i,
-                            severity="error",
+                            severity=SEVERITY_ERROR,
                         )
                     )
                     break
@@ -217,7 +219,7 @@ class CodeValidator:
                             f"You MUST generate actual field values for setup API calls. "
                             f"Do NOT leave empty dicts with placeholder comments.",
                             line_number=line_num,
-                            severity="error",
+                            severity=SEVERITY_ERROR,
                         )
                     ]
         return []
@@ -243,7 +245,7 @@ class CodeValidator:
                             message=f"Empty setup data dict '{var_match.group(1)}'. "
                             f"You MUST generate actual field values for setup API calls.",
                             line_number=line_num,
-                            severity="error",
+                            severity=SEVERITY_ERROR,
                         )
                     ]
         return []
@@ -266,7 +268,7 @@ class CodeValidator:
                         message="Security payload injected into URL path parameter. "
                         "Path params are URL routing - inject into body/query/headers instead.",
                         line_number=i,
-                        severity="error",
+                        severity=SEVERITY_ERROR,
                     )
                 )
 
@@ -292,7 +294,7 @@ class CodeValidator:
                                 message=f"Empty path segment (double slash) in URL: {url}. "
                                 f"Use a present but invalid value instead of empty segment.",
                                 line_number=i,
-                                severity="error",
+                                severity=SEVERITY_ERROR,
                             )
                         )
 
@@ -319,7 +321,7 @@ class CodeValidator:
                             message=f"Path contains literal '{{param}}' without f-string: \"{url}\". "
                             f'Use f-string like f"{url}" to substitute variables.',
                             line_number=i,
-                            severity="error",
+                            severity=SEVERITY_ERROR,
                         )
                     )
 
@@ -390,7 +392,7 @@ class CodeValidator:
                             message=f"Negative workflow has success codes {success_codes} in expected_status. "
                             f"Negative tests must ONLY expect 4xx error codes.",
                             line_number=i,
-                            severity="error",
+                            severity=SEVERITY_ERROR,
                         )
                     )
                 except (ValueError, TypeError):
@@ -430,7 +432,7 @@ class CodeValidator:
                     message=f"Endpoint '{used_path}' not found in OpenAPI spec. "
                     f"Use ONLY endpoints from ENDPOINT TO TEST or SETUP ENDPOINTS sections.",
                     line_number=i,
-                    severity="error",
+                    severity=SEVERITY_ERROR,
                 )
             )
 
@@ -612,7 +614,7 @@ class CodeValidator:
                     message=f"Field '{field_name}' has enum constraint {enum_values} but uses "
                     f"{func_name}() instead of random.choice({enum_values}).",
                     line_number=line_num,
-                    severity="error",
+                    severity=SEVERITY_ERROR,
                 )
 
         return None
@@ -645,7 +647,7 @@ class CodeValidator:
                         f"generate_string(). Use an appropriate literal value or generator "
                         f"for '{field_format}' format.",
                         line_number=line_num,
-                        severity="error",
+                        severity=SEVERITY_ERROR,
                     )
             return None
 
@@ -670,7 +672,7 @@ class CodeValidator:
                     message=f"Field '{field_name}' has format '{field_format}' but uses "
                     f"generate_string(). Use {expected_list}() instead.",
                     line_number=line_num,
-                    severity="error",
+                    severity=SEVERITY_ERROR,
                 )
 
         return None
@@ -730,7 +732,7 @@ class CodeValidator:
                 message=f"Field '{field_name}' is a {items_type} array but contains mixed types: "
                 f"{wrong_types}. ALL elements must be {items_type}.",
                 line_number=line_num,
-                severity="error",
+                severity=SEVERITY_ERROR,
             )
 
         return None

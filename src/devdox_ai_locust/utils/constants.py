@@ -200,10 +200,20 @@ def is_url(value: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Content types
+# ---------------------------------------------------------------------------
+CONTENT_TYPE_JSON: str = "application/json"
+CONTENT_TYPE_FORM: str = "application/x-www-form-urlencoded"
+
+# Validation severity levels
+SEVERITY_ERROR: str = "error"
+SEVERITY_WARNING: str = "warning"
+
+# ---------------------------------------------------------------------------
 # CLI / generation defaults
 # ---------------------------------------------------------------------------
 DEFAULT_HOST: str = "http://localhost:8000"  # NOSONAR — display/config string
-DEFAULT_CONTENT_TYPE: str = "application/json"
+DEFAULT_CONTENT_TYPE: str = CONTENT_TYPE_JSON
 DEFAULT_SCHEMA_TIMEOUT: int = 30
 DEFAULT_LLM_TIMEOUT: int = 120
 DEFAULT_RUN_TIME: str = "5m"
