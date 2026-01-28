@@ -197,3 +197,35 @@ def is_url(value: str) -> bool:
     Used for distinguishing URLs from file paths, not for making connections.
     """
     return value.startswith(URL_PREFIXES)  # NOSONAR
+
+
+# ---------------------------------------------------------------------------
+# CLI / generation defaults
+# ---------------------------------------------------------------------------
+DEFAULT_HOST: str = "http://localhost:8000"  # NOSONAR — display/config string
+DEFAULT_CONTENT_TYPE: str = "application/json"
+DEFAULT_SCHEMA_TIMEOUT: int = 30
+DEFAULT_LLM_TIMEOUT: int = 120
+DEFAULT_RUN_TIME: str = "5m"
+DEFAULT_USERS: int = 10
+DEFAULT_SPAWN_RATE: float = 2.0
+DEFAULT_MAX_LLM_WORKERS: int = 1
+MAX_LLM_WORKERS_LIMIT: int = 10
+DEFAULT_OUTPUT_DIR: str = "output"
+
+# ---------------------------------------------------------------------------
+# Directory and file names
+# ---------------------------------------------------------------------------
+WORKFLOWS_DIR_NAME: str = "workflows"
+FAILURES_DIR_NAME: str = ".failures"
+LOCUSTFILE_NAME: str = "locustfile.py"
+BASE_WORKFLOW_FILE: str = "base_workflow.py"
+TEST_DATA_FILE: str = "test_data.py"
+ORCHESTRATOR_FILE: str = "orchestrator_workflow.py"
+INIT_FILE: str = "__init__.py"
+
+# ---------------------------------------------------------------------------
+# Scenario types and auth keywords
+# ---------------------------------------------------------------------------
+SCENARIO_TYPES: tuple[str, ...] = ("positive", "negative", "security")
+AUTH_KEYWORDS: tuple[str, ...] = ("auth", "login", "token", "session")
