@@ -404,11 +404,10 @@ class LocustTestGenerator:
         try:
             method_name = self._generate_method_name(endpoint)
             path_with_params = self._generate_path_with_params(endpoint)
-            weight = self._get_task_weight(getattr(endpoint, "method", "GET"))
 
             # Build the task method with proper error handling
             # All lines at 0-indent level (caller adds class-body indentation)
-            task_method = f'''@task({weight})
+            task_method = f'''@task
 def {method_name}(self):
     """
     {getattr(endpoint, "summary", f"{getattr(endpoint, 'method', 'GET')} {getattr(endpoint, 'path', '')}")}
@@ -606,19 +605,6 @@ def {method_name}(self):
 
         return ",\n                ".join(kwargs)
 
-    def _get_task_weight(self, method: str) -> int:
-        """Get task weight based on HTTP method"""
-        weights = {
-            "GET": 5,  # Most frequent
-            "POST": 2,  # Common
-            "PUT": 1,  # Less frequent
-            "PATCH": 1,  # Less frequent
-            "DELETE": 1,  # Least frequent
-            "HEAD": 3,  # Moderate
-            "OPTIONS": 1,  # Rare
-        }
-        return weights.get(method.upper(), 1)
-
     def _group_endpoints_by_tag(
         self,
         endpoints: List[Endpoint],
@@ -752,8 +738,6 @@ def {method_name}(self):
                 "DATA_SEED": "42",
                 "REQUEST_TIMEOUT": "30",
                 "MAX_RETRIES": "3",
-                "# Set LOCUST_WEIGHT_OVERRIDE to override all @task weights at runtime (e.g., 1 for equal distribution)": "",
-                "LOCUST_WEIGHT_OVERRIDE": "",
             }
 
             if db_type == DatabaseType.MONGO.value:

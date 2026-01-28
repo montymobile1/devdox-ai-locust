@@ -35,7 +35,6 @@ from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
-from utils import get_task_weight
 {% if db_type == "mongo" %}
 from data_provider import mongo_data_provider
 {% endif %}
@@ -86,13 +85,13 @@ This provides automatic logging with full traceback when the API unexpectedly AC
 
 **CORRECT PATTERN for negative tests (DO NOT copy these paths/codes literally!):**
 ```python
-@task(get_task_weight(3))
+@task
 def test_missing_required_field(self):
     data = {"optional_field": "value"}  # Missing required field
     # Use expected_status={{ endpoint_expected_status }} for the ACTUAL test endpoint
     self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, json=data)
 
-@task(get_task_weight(2))
+@task
 def test_nonexistent_id(self):
     # Use expected_status={{ endpoint_expected_status }} - contains the 4xx codes from OpenAPI spec
     self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }})
@@ -146,13 +145,13 @@ If you output ANY non-ASCII character, the code will FAIL to parse.
 **ALL @task methods MUST have ONLY `self` as a parameter:**
 ```python
 # CORRECT - only self parameter
-@task(get_task_weight(3))
+@task
 def test_missing_required(self):
     data = {"optional_field": "value"}  # Missing required field
     self.make_request("POST", "/items", expected_status=[400, 422], json=data)
 
 # WRONG - extra parameters cause TypeError at runtime!
-@task(get_task_weight(3))
+@task
 def test_invalid_input(self, invalid_value):  # WRONG! No extra params!
     ...
 ```

@@ -354,16 +354,6 @@ def test_function():
 
         assert code == "json_data = None"
 
-    def test_get_task_weight(self):
-        """Test getting task weights for different HTTP methods."""
-        generator = LocustTestGenerator()
-
-        assert generator._get_task_weight("GET") == 5
-        assert generator._get_task_weight("POST") == 2
-        assert generator._get_task_weight("PUT") == 1
-        assert generator._get_task_weight("DELETE") == 1
-        assert generator._get_task_weight("UNKNOWN") == 1
-
     def test_generate_task_method(self, sample_endpoints):
         """Test generating a complete task method."""
         generator = LocustTestGenerator()
@@ -372,7 +362,7 @@ def test_function():
 
         task_method = generator._generate_task_method(endpoint)
 
-        assert "@task(" in task_method
+        assert "@task" in task_method
         assert "def " in task_method
         assert "make_request" in task_method
         assert endpoint.summary in task_method or "GET /users" in task_method

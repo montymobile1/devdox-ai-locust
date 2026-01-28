@@ -22,35 +22,6 @@ from locust.runners import MasterRunner
 logger = logging.getLogger(__name__)
 
 
-def get_task_weight(default_weight: int) -> int:
-    """Get task weight, allowing runtime override via environment variable.
-
-    When LOCUST_WEIGHT_OVERRIDE is set in the environment, ALL tasks will use
-    that weight instead of their calculated defaults. This is useful for:
-    - Debugging: Set to 1 for equal distribution across all tests
-    - Load profiling: Override to focus on specific endpoint patterns
-
-    Args:
-        default_weight: The calculated weight based on HTTP method (e.g., GET=10, POST=3)
-
-    Returns:
-        int: The override weight if LOCUST_WEIGHT_OVERRIDE is set, otherwise the default_weight
-
-    Example:
-        @task(get_task_weight(10))  # Will use 10 unless LOCUST_WEIGHT_OVERRIDE is set
-        def test_get_items(self):
-            ...
-    """
-    override = os.environ.get("LOCUST_WEIGHT_OVERRIDE", "").strip()
-    if override:
-        try:
-            return int(override)
-        except ValueError:
-            logger.warning(f"Invalid LOCUST_WEIGHT_OVERRIDE value: {override!r}, using default {default_weight}")
-            return default_weight
-    return default_weight
-
-
 def log_request_failure(
     error_message: str = None,
     request_body: Any = None,

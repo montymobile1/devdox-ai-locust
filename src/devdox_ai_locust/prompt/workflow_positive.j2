@@ -54,7 +54,6 @@ from datetime import datetime
 from locust import task
 from workflows.base_workflow import BaseWorkflow
 from test_data import test_data_generator
-from utils import get_task_weight
 {% if db_type == "mongo" %}
 from data_provider import mongo_data_provider
 {% endif %}
@@ -216,18 +215,18 @@ If you output ANY non-ASCII character, the code will FAIL to parse.
 **ALL @task methods MUST have ONLY `self` as a parameter:**
 ```python
 # CORRECT - only self parameter
-@task(get_task_weight(10))
+@task
 def test_valid_request(self):
     data = {"field": "value"}
     self.make_request("POST", "/items", expected_status=[201], json=data)
 
 # WRONG - extra parameters cause TypeError at runtime!
-@task(get_task_weight(10))
+@task
 def test_valid_request(self, item_id):  # WRONG! No extra params!
     ...
 
 # WRONG - default parameters still cause issues
-@task(get_task_weight(10))
+@task
 def test_valid_request(self, count=5):  # WRONG! No extra params!
     ...
 ```
@@ -319,7 +318,7 @@ RULES (violations will cause test failures):
 
 **DELETE tasks MUST create AND delete the resource WITHIN THE SAME TASK METHOD:**
 ```python
-@task(get_task_weight(1))
+@task
 def test_delete_item(self):
     # STEP 1: Create a resource specifically for this delete operation
     # Use expected_status from SETUP ENDPOINTS section, NOT from main endpoint
@@ -344,18 +343,18 @@ def test_delete_item(self):
 **NEVER split create and delete into separate tasks:**
 ```python
 # WRONG - This pattern causes 404 errors!
-@task(get_task_weight(1))  # Runs 1x
+@task  # Runs 1x
 def create_resource(self):
     result = self.make_request("POST", "/items", json=data)
     self.item_id = result.get("id")  # Stored, never cleared
 
-@task(get_task_weight(10))  # Runs 10x - will try to delete same ID 10 times!
+@task  # Runs 10x - will try to delete same ID 10 times!
 def delete_resource(self):
     if self.item_id:
         self.make_request("DELETE", f"/items/{self.item_id}")  # 1st: 204, 2nd-10th: 404!
 
 # CORRECT - Create and delete in SAME task
-@task(get_task_weight(1))
+@task
 def test_delete_item(self):
     result = self.make_request("POST", "/items", json=data)
     if result:
@@ -371,52 +370,14 @@ def on_start(self):
     result = self.make_request("POST", "...", ...)
     self.item_id = result.get("id")  # BAD - will be deleted once, then 404 forever
 
-@task(get_task_weight(1))
+@task
 def test_delete_item(self):
     # DON'T rely on shared state
     self.make_request("DELETE", f".../{self.item_id}", ...)  # WRONG!
 ```
 
-**STEP 4 - SET TASK WEIGHTS:**
-Set @task weights to reflect realistic traffic patterns using `get_task_weight()`:
-- **GET endpoints**: weight=10 (most common - read operations)
-- **POST endpoints**: weight=3 (moderate - create operations)
-- **PUT/PATCH endpoints**: weight=2 (less common - update operations)
-- **DELETE endpoints**: weight=1 (rare - delete operations)
-
-**IMPORTANT:** Always wrap weights with `get_task_weight()` to allow runtime override via LOCUST_WEIGHT_OVERRIDE environment variable.
-
-Example:
-```python
-@task(get_task_weight(10))  # GET - high weight, can be overridden at runtime
-def test_list_items(self):
-    ...
-
-@task(get_task_weight(3))   # POST - moderate weight, can be overridden at runtime
-def test_create_item(self):
-    ...
-```
-
-**STEP 5 - WRITE THE CODE:**
+**STEP 4 - WRITE THE CODE:**
 Based on your analysis, write the complete workflow class.
-
-=== WEIGHT GUIDANCE ===
-
-Task weights control how often each test runs relative to others.
-Higher weights = more frequent execution. Typical patterns:
-
-| Operation Type | Default Weight | Rationale |
-|----------------|----------------|-----------|
-| GET (list)     | 10             | Most APIs are read-heavy |
-| GET (detail)   | 8              | Individual reads common |
-| POST           | 3              | Creates less frequent |
-| PUT/PATCH      | 2              | Updates less frequent |
-| DELETE         | 1              | Deletes rare |
-
-Adjust weights based on:
-- Expected real-world usage patterns
-- What you want to stress test most
-- User's custom requirements (if specified)
 
 === ERROR HANDLING AND RECOVERY ===
 
@@ -516,13 +477,13 @@ Failure and error handling tests belong in the NEGATIVE workflow, not here.
 
 ```python
 # WRONG - this is a failure test, belongs in negative workflow
-@task(get_task_weight(1))
+@task
 def test_failure_with_missing_param(self):
     data = b"binary_data"  # Missing required parameter
     self.make_request("{{ method }}", "{{ path }}", expected_status={{ endpoint_expected_status }}, data=data)  # NO! Missing params!
 
 # CORRECT - positive tests use ALL required parameters with valid values
-@task(get_task_weight(10))
+@task
 def test_success_with_valid_data(self):
     param_value = test_data_generator.generate_string(length=10)
     data = b"binary_data"
@@ -707,16 +668,16 @@ def test_success_with_valid_data(self):
 18. **NEVER split DELETE into separate "create" and "delete" tasks** - this causes repeated 404s:
     ```python
     # WRONG - DELETE runs 10x more than CREATE, causing 404s after first delete
-    @task(get_task_weight(1))
+    @task
     def create_resource(self):
         self.item_id = result.get("id")  # Stored once
 
-    @task(get_task_weight(10))
+    @task
     def delete_resource(self):
         self.make_request("DELETE", f"/items/{self.item_id}")  # Tries to delete same ID 10x!
 
     # CORRECT - create and delete in SAME task method
-    @task(get_task_weight(1))
+    @task
     def test_delete_item(self):
         result = self.make_request("POST", "/items", json=data)
         if result and result.get("id"):
