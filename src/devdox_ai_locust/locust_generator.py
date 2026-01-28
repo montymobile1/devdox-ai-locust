@@ -478,35 +478,23 @@ def {method_name}(self):
 
         return path
 
+    def _generate_path_param_code(self, param: Parameter) -> str:
+        """Generate code for a single path parameter."""
+        if param.type.startswith("integer"):
+            return f"{param.name} = test_data_generator.generate_integer()"
+        if param.type == "string":
+            generator = (
+                "generate_id" if "id" in param.name.lower() else "generate_string"
+            )
+            return f"{param.name} = test_data_generator.{generator}()"
+        return f'{param.name} = test_data_generator.generate_value("{param.type}")'
+
     def _generate_path_params_code(self, endpoint: Endpoint) -> str:
         """Generate code for path parameters"""
         path_params = [p for p in endpoint.parameters if p.location.value == "path"]
-
         if not path_params:
             return "# No path parameters"
-
-        code_lines = []
-        for param in path_params:
-            if param.type.startswith("integer"):
-                code_lines.append(
-                    f"{param.name} = test_data_generator.generate_integer()"
-                )
-            elif param.type == "string":
-                if "id" in param.name.lower():
-                    code_lines.append(
-                        f"{param.name} = test_data_generator.generate_id()"
-                    )
-                else:
-                    code_lines.append(
-                        f"{param.name} = test_data_generator.generate_string()"
-                    )
-
-            else:
-                code_lines.append(
-                    f'{param.name} = test_data_generator.generate_value("{param.type}")'
-                )
-
-        return "\n".join(code_lines)
+        return "\n".join(self._generate_path_param_code(p) for p in path_params)
 
     def _generate_query_params_code(self, endpoint: Endpoint) -> str:
         """Generate code for query parameters"""

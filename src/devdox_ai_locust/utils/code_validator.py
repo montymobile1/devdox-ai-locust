@@ -619,6 +619,16 @@ class CodeValidator:
 
         return None
 
+    def _is_wrong_generator_for_format(self, func_name: str) -> bool:
+        """Check if function name is a generic string generator."""
+        return func_name in ("generate_string", "test_data_generator.generate_string")
+
+    def _uses_expected_generator(
+        self, func_name: str, expected_generators: Set[str]
+    ) -> bool:
+        """Check if function uses any of the expected generators."""
+        return any(gen in func_name for gen in expected_generators)
+
     def _check_format_usage(
         self,
         field_name: str,
@@ -631,51 +641,67 @@ class CodeValidator:
         if expected_generators is None:
             return None  # Unknown format, skip
 
-        # If format has no specific generator requirement (uri, ipv4, etc.),
-        # just ensure it's NOT using generate_string()
+        # Handle formats without specific generator requirements (uri, ipv4, etc.)
         if not expected_generators:
-            # These formats accept literal strings, just reject generate_string
-            if isinstance(value_node, ast.Call):
-                func_name = self._get_call_name(value_node)
-                if func_name in (
-                    "generate_string",
-                    "test_data_generator.generate_string",
-                ):
-                    return ValidationViolation(
-                        rule="wrong_format_generator",
-                        message=f"Field '{field_name}' has format '{field_format}' but uses "
-                        f"generate_string(). Use an appropriate literal value or generator "
-                        f"for '{field_format}' format.",
-                        line_number=line_num,
-                        severity=SEVERITY_ERROR,
-                    )
-            return None
+            return self._check_no_generate_string(
+                value_node, field_name, field_format, line_num
+            )
 
-        # Format has specific required generators
+        # Check if valid literal string for this format
         if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
-            # Literal string - check if it looks valid for the format
             if self._literal_matches_format(value_node.value, field_format):
-                return None  # Valid literal
+                return None
 
+        # Check if using correct generator
         if isinstance(value_node, ast.Call):
             func_name = self._get_call_name(value_node)
-            # Check if any expected generator is in the function name
-            for gen in expected_generators:
-                if gen in func_name:
-                    return None  # Correct generator used
-
-            # Wrong generator used
+            if self._uses_expected_generator(func_name, expected_generators):
+                return None
             if "generate_string" in func_name:
-                expected_list = " or ".join(expected_generators)
-                return ValidationViolation(
-                    rule="wrong_format_generator",
-                    message=f"Field '{field_name}' has format '{field_format}' but uses "
-                    f"generate_string(). Use {expected_list}() instead.",
-                    line_number=line_num,
-                    severity=SEVERITY_ERROR,
+                return self._wrong_generator_violation(
+                    field_name, field_format, expected_generators, line_num
                 )
 
         return None
+
+    def _check_no_generate_string(
+        self,
+        value_node: ast.AST,
+        field_name: str,
+        field_format: str,
+        line_num: Optional[int],
+    ) -> Optional[ValidationViolation]:
+        """Check that generate_string is not used for format-specific fields."""
+        if not isinstance(value_node, ast.Call):
+            return None
+        func_name = self._get_call_name(value_node)
+        if not self._is_wrong_generator_for_format(func_name):
+            return None
+        return ValidationViolation(
+            rule="wrong_format_generator",
+            message=f"Field '{field_name}' has format '{field_format}' but uses "
+            f"generate_string(). Use an appropriate literal value or generator "
+            f"for '{field_format}' format.",
+            line_number=line_num,
+            severity=SEVERITY_ERROR,
+        )
+
+    def _wrong_generator_violation(
+        self,
+        field_name: str,
+        field_format: str,
+        expected_generators: Set[str],
+        line_num: Optional[int],
+    ) -> ValidationViolation:
+        """Create violation for wrong generator usage."""
+        expected_list = " or ".join(expected_generators)
+        return ValidationViolation(
+            rule="wrong_format_generator",
+            message=f"Field '{field_name}' has format '{field_format}' but uses "
+            f"generate_string(). Use {expected_list}() instead.",
+            line_number=line_num,
+            severity=SEVERITY_ERROR,
+        )
 
     def _check_array_types(
         self,
