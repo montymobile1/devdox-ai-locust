@@ -113,6 +113,7 @@ class OpenAPIParser:
         # Sanitize: replace common separators with underscores
         raw_id = raw_id.replace("-", "_").replace(".", "_")
         # Remove non-alphanumeric chars except underscore
+        # Note: Using [^a-zA-Z0-9_] instead of \W to ensure ASCII-only identifiers
         raw_id = re.sub(r"[^a-zA-Z0-9_]", "", raw_id)
         # Remove consecutive underscores
         raw_id = re.sub(r"_+", "_", raw_id)

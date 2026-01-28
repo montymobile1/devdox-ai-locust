@@ -406,13 +406,12 @@ class CodeProcessor:
                             f"import {alias.name} - module '{module_name}' not in allowed list"
                         )
 
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    module_name = node.module.split(".")[0]
-                    if module_name not in self._allowed_imports:
-                        warnings.append(
-                            f"from {node.module} import ... - module '{module_name}' not in allowed list"
-                        )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                module_name = node.module.split(".")[0]
+                if module_name not in self._allowed_imports:
+                    warnings.append(
+                        f"from {node.module} import ... - module '{module_name}' not in allowed list"
+                    )
 
         return warnings
 

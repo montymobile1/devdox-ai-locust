@@ -367,17 +367,14 @@ class ScenarioWorkflowGenerator:
         endpoint_info: str,
     ) -> Dict[ScenarioType, str]:
         """Handle mixed success/failure results from parallel scenario generation."""
-        if errors and results:
+        if errors:
+            if not results:
+                raise errors[0][1]
             for scenario_type, error in errors:
                 logger.debug(
                     f"Scenario {scenario_type.value} failed for [{endpoint_info}], "
                     f"but other scenarios succeeded: {error}"
                 )
-            return results
-
-        if errors and not results:
-            raise errors[0][1]
-
         return results
 
     def _record_scenario_verbose_result(

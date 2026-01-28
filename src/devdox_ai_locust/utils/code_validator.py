@@ -229,7 +229,7 @@ class CodeValidator:
         if not re.match(r"\s*(\w+_data|\w+_payload|\w+_body)\s*=\s*\{\s*$", line):
             return []
         if line_num < len(lines):
-            next_line = lines[line_num].strip() if line_num < len(lines) else ""
+            next_line = lines[line_num].strip()
             if next_line == "}" or (
                 next_line.startswith("#")
                 and line_num + 1 < len(lines)
@@ -711,19 +711,20 @@ class CodeValidator:
         for i, elt in enumerate(value_node.elts):
             if isinstance(elt, ast.Constant):
                 # Bool is a subclass of int in Python, handle explicitly
-                if items_type == "integer" and isinstance(elt.value, bool):
-                    wrong_elements.append((i, type(elt.value).__name__))
-                elif (
-                    items_type == "boolean"
-                    and isinstance(elt.value, int)
-                    and not isinstance(elt.value, bool)
-                ):
-                    wrong_elements.append((i, type(elt.value).__name__))
-                elif not isinstance(elt.value, expected_python_type):  # type: ignore[arg-type]
+                is_wrong_type = (
+                    (items_type == "integer" and isinstance(elt.value, bool))
+                    or (
+                        items_type == "boolean"
+                        and isinstance(elt.value, int)
+                        and not isinstance(elt.value, bool)
+                    )
+                    or not isinstance(elt.value, expected_python_type)  # type: ignore[arg-type]
+                )
+                if is_wrong_type:
                     wrong_elements.append((i, type(elt.value).__name__))
 
         if wrong_elements:
-            wrong_types = set(t for _, t in wrong_elements)
+            wrong_types = {t for _, t in wrong_elements}
             return ValidationViolation(
                 rule="mixed_array_types",
                 message=f"Field '{field_name}' is a {items_type} array but contains mixed types: "

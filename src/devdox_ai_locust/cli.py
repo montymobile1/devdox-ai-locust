@@ -145,6 +145,15 @@ def _handle_cli_error(e: Exception, verbose: bool) -> None:
     sys.exit(1)
 
 
+def _get_llm_mode_label(dto: GenerateParams) -> str:
+    """Get the display label for LLM mode status."""
+    if dto.llm_enabled:
+        return "[green]enabled[/green]"
+    if dto.replay_dir:
+        return f"[cyan]replay[/cyan] ({dto.replay_dir})"
+    return "[yellow]disabled[/yellow]"
+
+
 def _display_configuration(dto: GenerateParams, output_dir: Path) -> None:
     from rich.panel import Panel
 
@@ -163,18 +172,7 @@ def _display_configuration(dto: GenerateParams, output_dir: Path) -> None:
     table.add_row("Locust Users", str(dto.users))
     table.add_row("Spawn Rate", f"{dto.spawn_rate}/s")
     table.add_row("Run Time", dto.run_time)
-    table.add_row(
-        "LLM",
-        (
-            "[green]enabled[/green]"
-            if dto.llm_enabled
-            else (
-                f"[cyan]replay[/cyan] ({dto.replay_dir})"
-                if dto.replay_dir
-                else "[yellow]disabled[/yellow]"
-            )
-        ),
-    )
+    table.add_row("LLM", _get_llm_mode_label(dto))
     if dto.llm_enabled:
         table.add_row("LLM Timeout", f"{dto.timeout}s")
     if dto.custom_requirement:
@@ -635,6 +633,7 @@ def _sanitize_dir_name(name: str) -> str:
         .replace(".", "_")
         .replace("/", "_")
     )
+    # Note: Using [^a-z0-9_] instead of \W to ensure ASCII-only identifiers
     name = re.sub(r"[^a-z0-9_]", "", name)
     name = re.sub(r"_+", "_", name).strip("_")
     return name or "unnamed"
@@ -1509,7 +1508,7 @@ def _record_debug_parsed_schema(
     "-r",
     type=float,
     default=2,
-    help=("How quickly new virtual users are added per second. " "Defaults to 2."),
+    help="How quickly new virtual users are added per second. Defaults to 2.",
 )
 @click.option(
     "--run-time",
