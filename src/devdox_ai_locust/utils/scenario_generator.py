@@ -808,7 +808,7 @@ class ScenarioWorkflowGenerator:
         prompt: str,
     ) -> str:
         """Execute LLM call with validation retry for orchestrator generation."""
-        max_retries = 2
+        max_retries = 1 if self.replay_dir else 2
         last_error = None
         last_code = None
         current_prompt = prompt
@@ -1846,7 +1846,7 @@ class ScenarioWorkflowGenerator:
         prompt: str,
     ) -> str:
         """Execute the LLM call with validation retry loop."""
-        max_retries = 2
+        max_retries = 1 if self.replay_dir else 2
         last_error = None
         last_code = None
         last_is_semantic = False
