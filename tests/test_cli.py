@@ -134,13 +134,13 @@ class TestCLI:
         """Test generate command help."""
         result = cli_runner.invoke(cli, ["generate", "--help"])
         assert result.exit_code == 0
-        assert "Generate Locust test files" in result.output
+        assert "Generate load test files from an API specification" in result.output
 
     def test_run_command_help(self, cli_runner):
         """Test run command help."""
         result = cli_runner.invoke(cli, ["run", "--help"])
         assert result.exit_code == 0
-        assert "Run generated Locust tests" in result.output
+        assert "Run previously generated Locust load tests" in result.output
 
     @patch("devdox_ai_locust.cli.Settings")
     def test_initialize_config_with_api_key(self, mock_settings_class):

@@ -1171,10 +1171,15 @@ def _write_base_files(
 
 @click.group()
 @click.version_option(version="0.1.9")
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show detailed progress and extra information while running.",
+)
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool) -> None:
-    """DevDox AI LoadTest - Generate Locust tests from API documentation"""
+    """DevDox AI LoadTest - Automatically generate and run load tests from your API documentation."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
 
@@ -1189,60 +1194,145 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     "-o",
     type=click.Path(),
     default="output",
-    help="Output directory for generated tests (default: output)",
+    help=(
+        "Where to save the generated test files. "
+        "A folder will be created at this path if it does not exist. "
+        "Defaults to 'output' in the current directory."
+    ),
 )
-@click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
+@click.option(
+    "--users",
+    "-u",
+    type=int,
+    default=10,
+    help=(
+        "How many virtual users to simulate during the load test. "
+        "Each user runs the generated test scenarios independently. "
+        "Defaults to 10."
+    ),
+)
 @click.option(
     "--spawn-rate",
     "-r",
     type=float,
     default=2,
-    help="Rate to spawn users (users per second)",
+    help=(
+        "How quickly new virtual users are added per second when the test starts. "
+        "For example, a rate of 2 means 2 new users join every second "
+        "until the total number of users is reached. Defaults to 2."
+    ),
 )
 @click.option(
-    "--run-time", "-t", type=str, default="5m", help="Test run time (e.g., 5m, 1h)"
+    "--run-time",
+    "-t",
+    type=str,
+    default="5m",
+    help=(
+        "How long the load test should run. "
+        "Use a number followed by 's' for seconds, 'm' for minutes, or 'h' for hours. "
+        "Examples: '30s', '5m', '1h'. Defaults to '5m'."
+    ),
 )
-@click.option("--host", "-H", type=str, help="Target host URL")
-@click.option("--auth/--no-auth", default=True, help="Include authentication in tests")
+@click.option(
+    "--host",
+    "-H",
+    type=str,
+    help=(
+        "The base URL of the API server to test against "
+        "(e.g., 'http://localhost:8000'). "
+        "If not provided, the tool will try to detect it from the API specification."
+    ),
+)
+@click.option(
+    "--auth/--no-auth",
+    default=True,
+    help=(
+        "Whether to include authentication handling in the generated tests. "
+        "When enabled, the tool detects login/token endpoints in your API "
+        "and adds authentication flows to the tests. "
+        "Use --no-auth if your API does not require authentication."
+    ),
+)
 @click.option(
     "--db-type",
     type=click.Choice(["", "mongo", "postgresql"], case_sensitive=False),
     default="",
-    help="Database type for testing (empty for no database, mongo, or postgresql)",
+    help=(
+        "If your API uses a database, specify the type here so the generated tests "
+        "can include appropriate setup and teardown logic. "
+        "Leave empty if your API does not use a database or you do not need "
+        "database-aware tests."
+    ),
 )
-@click.option("--dry-run", is_flag=True, help="Generate tests without running them")
 @click.option(
-    "--custom-requirement", type=str, help="Custom requirements for test generation"
+    "--dry-run",
+    is_flag=True,
+    help=(
+        "Generate the test files but do not show run instructions afterwards. "
+        "Useful when you only want to inspect the generated code without running it."
+    ),
+)
+@click.option(
+    "--custom-requirement",
+    type=str,
+    help=(
+        "A plain-text instruction that guides how the AI generates tests. "
+        "For example: 'Focus on pagination edge cases' or "
+        "'All POST requests should include an authorization header'. "
+        "The AI will incorporate this into every generated test scenario."
+    ),
 )
 @click.option(
     "--together-api-key",
     type=str,
     envvar="TOGETHER_API_KEY",
-    help="Together AI API key (can also be set via TOGETHER_API_KEY env var)",
+    help=(
+        "Your Together AI API key, used to power the AI-based test generation. "
+        "You can pass it here or set the TOGETHER_API_KEY environment variable. "
+        "Required unless --no-llm is used."
+    ),
 )
 @click.option(
     "--timeout",
     type=int,
     default=120,
-    help="Timeout in seconds for AI API calls (default: 120, increase for large APIs)",
+    help=(
+        "Maximum number of seconds to wait for each AI response. "
+        "Increase this if you have a large API with many endpoints, "
+        "as the AI may need more time to generate complex test scenarios. "
+        "Defaults to 120 seconds."
+    ),
 )
 @click.option(
     "--schema-timeout",
     type=int,
     default=30,
-    help="Timeout in seconds for fetching/parsing OpenAPI schema (default: 30)",
+    help=(
+        "Maximum number of seconds to wait when fetching your API specification. "
+        "Increase this if your spec is hosted on a slow server "
+        "or is a very large file. Defaults to 30 seconds."
+    ),
 )
 @click.option(
     "--max-llm-workers",
     type=int,
     default=1,
-    help="Number of concurrent LLM requests (default: 1, max: 10).",
+    help=(
+        "How many AI requests to run at the same time. "
+        "Higher values speed up generation but use more API credits. "
+        "Maximum allowed is 10. Defaults to 1."
+    ),
 )
 @click.option(
     "--debug",
     is_flag=True,
     default=False,
-    help="Enable debug mode to record all intermediate states for auditing",
+    help=(
+        "Save every intermediate step of the generation process to disk. "
+        "This includes the raw AI prompts, responses, extracted code, "
+        "and validation results. Useful for troubleshooting or auditing "
+        "how the tests were generated."
+    ),
 )
 @click.option(
     "--no-llm",
@@ -1250,11 +1340,26 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     required=False,
     is_flag=False,
     flag_value="",
-    help="Disable LLM. Optionally pass a replay directory path for recorded responses.",
+    help=(
+        "Skip all AI calls. When used without a value (--no-llm), "
+        "generates basic template-only tests from the API schema — "
+        "no API key is needed. When used with a directory path "
+        "(--no-llm ./fixtures), replays pre-recorded AI responses "
+        "from that folder, running the full generation pipeline "
+        "without making any real AI requests."
+    ),
 )
 @click.pass_context
 def generate(ctx: click.Context, **kwargs: Any) -> None:
-    """Generate Locust test files from API documentation URL or file"""
+    """Generate load test files from an API specification.
+
+    SWAGGER_URL is the URL or local file path to your OpenAPI/Swagger specification
+    (e.g., 'http://localhost:8000/openapi.json' or './spec.yaml').
+
+    The tool reads your API specification, uses AI to create realistic test
+    scenarios (positive, negative, and security), and outputs ready-to-run
+    Locust test files.
+    """
     ctx.ensure_object(dict)
     params = {**kwargs, "verbose": ctx.obj.get("verbose", False)}
     dto = GenerateParams(**params)
@@ -1389,14 +1494,62 @@ def _record_debug_parsed_schema(
 
 @cli.command()
 @click.argument("test_file", type=click.Path(exists=True))
-@click.option("--users", "-u", type=int, default=10, help="Number of simulated users")
-@click.option("--spawn-rate", "-r", type=float, default=2, help="Rate to spawn users")
-@click.option("--run-time", "-t", type=str, default="5m", help="Test run time")
-@click.option("--host", "-H", type=str, required=True, help="Target host URL")
-@click.option("--headless", is_flag=True, help="Run in headless mode (no web UI)")
+@click.option(
+    "--users",
+    "-u",
+    type=int,
+    default=10,
+    help=(
+        "How many virtual users to simulate during the load test. "
+        "Each user runs the test scenarios independently. Defaults to 10."
+    ),
+)
+@click.option(
+    "--spawn-rate",
+    "-r",
+    type=float,
+    default=2,
+    help=("How quickly new virtual users are added per second. " "Defaults to 2."),
+)
+@click.option(
+    "--run-time",
+    "-t",
+    type=str,
+    default="5m",
+    help=(
+        "How long the load test should run. "
+        "Examples: '30s', '5m', '1h'. Defaults to '5m'."
+    ),
+)
+@click.option(
+    "--host",
+    "-H",
+    type=str,
+    required=True,
+    help=(
+        "The base URL of the API server to test against "
+        "(e.g., 'http://localhost:8000'). Required."
+    ),
+)
+@click.option(
+    "--headless",
+    is_flag=True,
+    help=(
+        "Run the load test without the Locust web dashboard. "
+        "Results are printed to the terminal instead. "
+        "Useful for CI/CD pipelines or automated testing."
+    ),
+)
 @click.pass_context
 def run(ctx: click.Context, **kwargs: Any) -> None:
-    """Run generated Locust tests with automatic logging"""
+    """Run previously generated Locust load tests against your API.
+
+    TEST_FILE is the path to the generated locustfile.py
+    (e.g., 'output/locustfile.py').
+
+    This command starts Locust with the specified test file and
+    automatically captures logs for later analysis.
+    """
     ctx.ensure_object(dict)
     params = {**kwargs, "verbose": ctx.obj.get("verbose", False)}
     dto = RunParams(**params)
