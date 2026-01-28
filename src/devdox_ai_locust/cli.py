@@ -163,7 +163,20 @@ def _display_configuration(dto: GenerateParams, output_dir: Path) -> None:
     table.add_row("Locust Users", str(dto.users))
     table.add_row("Spawn Rate", f"{dto.spawn_rate}/s")
     table.add_row("Run Time", dto.run_time)
-    table.add_row("LLM Timeout", f"{dto.timeout}s")
+    table.add_row(
+        "LLM",
+        (
+            "[green]enabled[/green]"
+            if dto.llm_enabled
+            else (
+                f"[cyan]replay[/cyan] ({dto.replay_dir})"
+                if dto.replay_dir
+                else "[yellow]disabled[/yellow]"
+            )
+        ),
+    )
+    if dto.llm_enabled:
+        table.add_row("LLM Timeout", f"{dto.timeout}s")
     if dto.custom_requirement:
         req_display = (
             dto.custom_requirement[:80] + "..."
@@ -335,7 +348,9 @@ async def _generate_and_create_tests(
     debug_recorder: Optional[DebugRecorder] = None,
 ) -> List[Dict[str, Any]]:
     """Generate tests using scenario-based approach (positive/negative/security per tag)"""
-    together_client = AsyncTogether(api_key=dto.together_api_key)
+    together_client = (
+        AsyncTogether(api_key=dto.together_api_key) if dto.llm_enabled else None
+    )
 
     # Create AI config with custom timeout
     ai_config = AIEnhancementConfig(timeout=dto.timeout)
@@ -354,7 +369,7 @@ async def _generate_and_create_tests(
 
 async def _generate_scenario_based_tests(
     dto: GenerateParams,
-    ai_client: AsyncTogether,
+    ai_client: Optional[AsyncTogether],
     ai_config: AIEnhancementConfig,
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
@@ -379,7 +394,7 @@ async def _generate_scenario_based_tests(
 
 def _setup_generation_context(
     dto: GenerateParams,
-    ai_client: AsyncTogether,
+    ai_client: Optional[AsyncTogether],
     ai_config: AIEnhancementConfig,
     endpoints: List[Endpoint],
     api_info: Dict[str, Any],
@@ -393,6 +408,8 @@ def _setup_generation_context(
     scenario_gen = _init_scenario_generator(
         ai_client, ai_config, dto.max_llm_workers, debug_recorder
     )
+    if dto.replay_dir:
+        scenario_gen.replay_dir = Path(dto.replay_dir)
     _print_generation_plan(ai_config, scenario_gen, len(endpoints), num_tags)
 
     template_gen = LocustTestGenerator()
@@ -429,6 +446,7 @@ def _setup_generation_context(
         db_type=dto.db_type,
         pre_llm_templates=pre_llm_templates,
         endpoint_to_tag=endpoint_to_tag,
+        no_llm=dto.no_llm,
     )
 
     return endpoint_ctx, base_files
@@ -467,21 +485,26 @@ async def _finalize_generation(
     grouped_endpoints = _group_endpoints_by_tag(endpoints)
     num_tags = len(grouped_endpoints)
 
-    orchestrator_files, orchestrator_failures = await _generate_orchestrators(
-        grouped_endpoints=grouped_endpoints,
-        successful_endpoints=state.successful_endpoints,
-        scenario_gen=ctx.scenario_gen,
-        workflows_dir=ctx.workflows_dir,
-        base_workflow_content=ctx.base_workflow_content,
-        test_data_content=ctx.test_data_content,
-        auth_endpoints=ctx.auth_endpoints,
-        custom_requirement=ctx.custom_requirement,
-        db_type=ctx.db_type,
-        progress=progress,
-    )
-    state.created_files.extend(orchestrator_files)
+    if ctx.llm_enabled or ctx.replay_dir:
+        orchestrator_files, orchestrator_failures = await _generate_orchestrators(
+            grouped_endpoints=grouped_endpoints,
+            successful_endpoints=state.successful_endpoints,
+            scenario_gen=ctx.scenario_gen,
+            workflows_dir=ctx.workflows_dir,
+            base_workflow_content=ctx.base_workflow_content,
+            test_data_content=ctx.test_data_content,
+            auth_endpoints=ctx.auth_endpoints,
+            custom_requirement=ctx.custom_requirement,
+            db_type=ctx.db_type,
+            progress=progress,
+        )
+        state.created_files.extend(orchestrator_files)
+        _report_orchestrator_results(
+            orchestrator_files, orchestrator_failures, num_tags
+        )
+    else:
+        console.print("[dim]→ Skipping orchestrator generation (LLM disabled)[/dim]")
 
-    _report_orchestrator_results(orchestrator_files, orchestrator_failures, num_tags)
     _report_generation_summary(
         ctx.scenario_gen,
         state.failed_endpoints,
@@ -509,7 +532,7 @@ def _group_endpoints_by_tag(endpoints: List[Endpoint]) -> Dict[str, List[Endpoin
 
 
 def _init_scenario_generator(
-    ai_client: AsyncTogether,
+    ai_client: Optional[AsyncTogether],
     ai_config: AIEnhancementConfig,
     max_llm_workers: int,
     debug_recorder: Optional[DebugRecorder],
@@ -760,6 +783,17 @@ async def _save_generated_scenarios(
     endpoint_info = f"{endpoint.method} {endpoint.path}"
 
     endpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    if not ctx.llm_enabled and not ctx.replay_dir:
+        return await _write_fallback_files(
+            endpoint=endpoint,
+            endpoint_dir=endpoint_dir,
+            tag_name=tag_name,
+            operation_id=operation_id,
+            pre_llm_templates=ctx.pre_llm_templates,
+            scenario_gen=ctx.scenario_gen,
+            template_gen=ctx.template_gen,
+        )
 
     scenarios = await ctx.scenario_gen.generate_endpoint_workflows(
         endpoint=endpoint,
@@ -1210,6 +1244,14 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     default=False,
     help="Enable debug mode to record all intermediate states for auditing",
 )
+@click.option(
+    "--no-llm",
+    default=None,
+    required=False,
+    is_flag=False,
+    flag_value="",
+    help="Disable LLM. Optionally pass a replay directory path for recorded responses.",
+)
 @click.pass_context
 def generate(ctx: click.Context, **kwargs: Any) -> None:
     """Generate Locust test files from API documentation URL or file"""
@@ -1254,9 +1296,12 @@ async def run_generate(dto: GenerateParams, output_dir: Path) -> None:
             dto.custom_requirement,
         )
 
-        # Resolve API key
-        _, api_key = _initialize_config(dto.together_api_key)
-        resolved_dto = dto.model_copy(update={"together_api_key": api_key})
+        # Resolve API key (skip when LLM is disabled)
+        if dto.llm_enabled:
+            _, api_key = _initialize_config(dto.together_api_key)
+            resolved_dto = dto.model_copy(update={"together_api_key": api_key})
+        else:
+            resolved_dto = dto
 
         created_files = await _generate_and_create_tests(
             resolved_dto,

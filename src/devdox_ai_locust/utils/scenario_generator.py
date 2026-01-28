@@ -142,6 +142,7 @@ class ScenarioWorkflowGenerator:
         self._api_semaphore = asyncio.Semaphore(self._current_concurrency)
         self.debug_recorder = debug_recorder
         self.progress: Optional["GenerationProgress"] = progress
+        self.replay_dir: Optional[Path] = None
         self._fallback_registry = FallbackHttpResponseRegistry()
         self._code_validator = CodeValidator()
 
@@ -851,8 +852,17 @@ class ScenarioWorkflowGenerator:
         attempt: int,
     ) -> str:
         """Execute a single orchestrator LLM call and process the response."""
-        await self._record_orchestrator_llm_call(tag_name, attempt)
-        content = await self._call_ai_service(prompt, f"orchestrator_{tag_name}")
+        if self.replay_dir:
+            response_path = (
+                self.replay_dir / tag_name / "orchestrator" / "llm_response.txt"
+            )
+            if not response_path.exists():
+                raise FileNotFoundError(f"Replay fixture not found: {response_path}")
+            content = response_path.read_text(encoding="utf-8")
+            logger.info("Replay: loaded orchestrator for %s", tag_name)
+        else:
+            await self._record_orchestrator_llm_call(tag_name, attempt)
+            content = await self._call_ai_service(prompt, f"orchestrator_{tag_name}")
 
         if self.debug_recorder and self.debug_recorder.enabled:
             await self.debug_recorder.record_orchestrator_llm_response(
@@ -1921,6 +1931,22 @@ class ScenarioWorkflowGenerator:
             endpoint_info=f"{endpoint.method} {endpoint.path}",
         )
 
+    def _load_replay_response(
+        self, tag_name: str, endpoint_dir_name: str, scenario_name: str
+    ) -> str:
+        """Load a recorded LLM response from the replay directory."""
+        assert self.replay_dir is not None
+        response_path = (
+            self.replay_dir
+            / tag_name
+            / endpoint_dir_name
+            / scenario_name
+            / "llm_response.txt"
+        )
+        if not response_path.exists():
+            raise FileNotFoundError(f"Replay fixture not found: {response_path}")
+        return response_path.read_text(encoding="utf-8")
+
     async def _fetch_llm_response(
         self,
         tag_name: str,
@@ -1933,6 +1959,13 @@ class ScenarioWorkflowGenerator:
         max_retries: int,
     ) -> str:
         """Record, call LLM, and validate the raw response."""
+        if self.replay_dir:
+            raw = self._load_replay_response(tag_name, endpoint_dir_name, scenario_name)
+            logger.info(
+                "Replay: loaded %s/%s/%s", tag_name, endpoint_dir_name, scenario_name
+            )
+            return raw
+
         await self._record_llm_request(
             tag_name, endpoint_dir_name, scenario_name, attempt
         )

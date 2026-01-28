@@ -33,8 +33,19 @@ class GenerateParams(BaseModel):
     timeout: int = DEFAULT_LLM_TIMEOUT
     schema_timeout: int = DEFAULT_SCHEMA_TIMEOUT
     max_llm_workers: int = DEFAULT_MAX_LLM_WORKERS
+    no_llm: Optional[str] = None
     debug: bool = False
     verbose: bool = False
+
+    @property
+    def llm_enabled(self) -> bool:
+        """True when LLM is active (--no-llm was NOT passed)."""
+        return self.no_llm is None
+
+    @property
+    def replay_dir(self) -> Optional[str]:
+        """Non-empty path when replay mode is active."""
+        return self.no_llm if self.no_llm else None
 
 
 class RunParams(BaseModel):
@@ -65,3 +76,14 @@ class EndpointProcessingContext(BaseModel):
     db_type: str = ""
     pre_llm_templates: Dict[Tuple[int, str], str]
     endpoint_to_tag: Dict[int, str]
+    no_llm: Optional[str] = None
+
+    @property
+    def llm_enabled(self) -> bool:
+        """True when LLM is active."""
+        return self.no_llm is None
+
+    @property
+    def replay_dir(self) -> Optional[str]:
+        """Non-empty path when replay mode is active."""
+        return self.no_llm if self.no_llm else None
