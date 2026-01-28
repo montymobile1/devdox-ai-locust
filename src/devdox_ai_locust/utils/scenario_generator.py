@@ -1096,8 +1096,6 @@ class ScenarioWorkflowGenerator:
         scenario_type: ScenarioType,
         expected_status_codes: List[int],
         all_status_codes: List[int],
-        endpoint_info: str,
-        scenario_name: str,
     ) -> Optional[str]:
         """Check if scenario should be skipped. Returns skip reason or None."""
         if (
@@ -1128,8 +1126,6 @@ class ScenarioWorkflowGenerator:
         self,
         scenario_type: ScenarioType,
         endpoint: "Endpoint",
-        endpoint_info: str,
-        scenario_name: str,
     ) -> Tuple[str, str, str, Optional[str]]:
         """Pre-compute scenario-specific data. Returns (injection_points, negative_scenarios, positive_fields, skip_reason)."""
         injection_points = ""
@@ -1563,9 +1559,7 @@ class ScenarioWorkflowGenerator:
         status_info = self._format_status_codes_for_prompt(codes_with_desc)
         all_codes = self._extract_expected_status_codes(endpoint)
 
-        skip = self._should_skip_scenario(
-            scenario_type, expected_codes, all_codes, endpoint_info, scenario_name
-        )
+        skip = self._should_skip_scenario(scenario_type, expected_codes, all_codes)
         if skip:
             self._skip_scenario(endpoint_info, scenario_name, skip)
             return None
@@ -1783,9 +1777,7 @@ class ScenarioWorkflowGenerator:
 
         # Pre-compute scenario-specific data
         injection_points, negative_scenarios, positive_fields, skip_reason = (
-            self._precompute_scenario_specific_data(
-                scenario_type, endpoint, endpoint_info, scenario_name
-            )
+            self._precompute_scenario_specific_data(scenario_type, endpoint)
         )
         if skip_reason:
             self._skip_scenario(endpoint_info, scenario_name, skip_reason)
@@ -2544,9 +2536,7 @@ class ScenarioWorkflowGenerator:
                 prop_name, unwrapped, is_required, is_nullable, prefix
             )
         )
-        lines.extend(
-            self._format_property_metadata(prop_name, prop_schema, unwrapped, prefix)
-        )
+        lines.extend(self._format_property_metadata(prop_schema, unwrapped, prefix))
         lines.extend(self._format_nested_type(unwrapped, prefix, indent))
 
         return lines
@@ -2579,7 +2569,6 @@ class ScenarioWorkflowGenerator:
 
     def _format_property_metadata(
         self,
-        prop_name: str,
         prop_schema: dict,
         unwrapped: dict,
         prefix: str,

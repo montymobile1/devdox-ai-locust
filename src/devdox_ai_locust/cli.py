@@ -827,7 +827,7 @@ async def _save_generated_scenarios(
         state.successful_endpoints.add(id(endpoint))
         state.created_files.extend(local_files)
 
-    progress.endpoint_done(endpoint_info, scenarios_generated=len(local_files))
+    progress.endpoint_done(endpoint_info)
     return local_files
 
 

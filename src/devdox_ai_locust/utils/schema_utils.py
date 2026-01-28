@@ -166,7 +166,6 @@ def escape_for_raw_string(value: Any) -> str:
 def resolve_ref_in_union(
     ref: str,
     one_of: List[Any],
-    full_schema: Optional[dict] = None,
 ) -> Optional[dict]:
     """
     Resolve a $ref within the context of a discriminated union.
@@ -176,7 +175,6 @@ def resolve_ref_in_union(
     Args:
         ref: Reference string (e.g., "#/components/schemas/Dog")
         one_of: List of oneOf/anyOf variants
-        full_schema: Full OpenAPI schema for $ref resolution
 
     Returns:
         Resolved schema dict or None if not found

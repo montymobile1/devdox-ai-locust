@@ -202,7 +202,7 @@ class PatchGenerator:
 
         # Process main files
         for filename, content in sorted(base_files.items()):
-            patch = self._create_file_patch(filename, "", content, label)
+            patch = self._create_file_patch(filename, "", content)
             patches.append(patch)
 
         # Process directory files (workflows)
@@ -210,7 +210,7 @@ class PatchGenerator:
             for filename, content in dir_file.items():
                 if isinstance(content, str):
                     workflow_path = f"workflows/{filename}"
-                    patch = self._create_file_patch(workflow_path, "", content, label)
+                    patch = self._create_file_patch(workflow_path, "", content)
                     patches.append(patch)
 
         return "\n".join(patches)
@@ -249,9 +249,7 @@ class PatchGenerator:
             post_content = post_files.get(filename, "")
 
             if pre_content != post_content:
-                patch = self._create_file_patch(
-                    filename, pre_content, post_content, label
-                )
+                patch = self._create_file_patch(filename, pre_content, post_content)
                 patches.append(patch)
 
         # Process directory files (workflows)
@@ -266,7 +264,7 @@ class PatchGenerator:
             if pre_content != post_content:
                 workflow_path = f"workflows/{filename}"
                 patch = self._create_file_patch(
-                    workflow_path, pre_content, post_content, label
+                    workflow_path, pre_content, post_content
                 )
                 patches.append(patch)
 
@@ -292,7 +290,7 @@ class PatchGenerator:
         return result
 
     def _create_file_patch(
-        self, filename: str, old_content: str, new_content: str, label: str
+        self, filename: str, old_content: str, new_content: str
     ) -> str:
         """
         Create a unified diff patch for a single file.
@@ -301,7 +299,6 @@ class PatchGenerator:
             filename: Name of the file.
             old_content: Content before (empty string for new files).
             new_content: Content after.
-            label: Label for the patch.
 
         Returns:
             Unified diff patch for this file.

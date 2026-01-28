@@ -395,7 +395,7 @@ class GenerationProgress:
             )
         )
 
-    def endpoint_done(self, endpoint_info: str, scenarios_generated: int = 0) -> None:
+    def endpoint_done(self, endpoint_info: str) -> None:
         """Called when an endpoint finishes processing."""
         self.completed += 1
 
@@ -403,7 +403,7 @@ class GenerationProgress:
         analysis = self._endpoint_analyses.get(endpoint_info)
         if self.verbose and analysis:
             # Verbose mode: show full analysis
-            self._print_verbose_endpoint(endpoint_info, analysis)
+            self._print_verbose_endpoint(analysis)
         else:
             # Normal mode: just show success
             self.console.print(f"  [green]✓[/green] {endpoint_info}")
@@ -413,9 +413,7 @@ class GenerationProgress:
             del self._endpoint_analyses[endpoint_info]
         self._check_milestone()
 
-    def _print_verbose_endpoint(
-        self, endpoint_info: str, analysis: EndpointAnalysis
-    ) -> None:
+    def _print_verbose_endpoint(self, analysis: EndpointAnalysis) -> None:
         """Print detailed verbose output for an endpoint."""
         c = self.console
         c.print(f"\n[bold]→ {analysis.method} {analysis.path}[/bold]")

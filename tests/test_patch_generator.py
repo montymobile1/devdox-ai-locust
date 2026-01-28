@@ -286,7 +286,7 @@ class TestPatchGeneratorHelpers:
         """Test _create_file_patch for a new file."""
         pg = PatchGenerator(temp_dir)
 
-        patch = pg._create_file_patch("test.py", "", "new content\n", "test")
+        patch = pg._create_file_patch("test.py", "", "new content\n")
 
         assert "a/test.py" in patch
         assert "b/test.py" in patch
@@ -296,9 +296,7 @@ class TestPatchGeneratorHelpers:
         """Test _create_file_patch for a modified file."""
         pg = PatchGenerator(temp_dir)
 
-        patch = pg._create_file_patch(
-            "test.py", "old content\n", "new content\n", "test"
-        )
+        patch = pg._create_file_patch("test.py", "old content\n", "new content\n")
 
         assert "-old content" in patch
         assert "+new content" in patch
