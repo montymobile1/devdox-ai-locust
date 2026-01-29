@@ -80,6 +80,20 @@ def _extract_props_from_dict(
         required_list.extend(item.get("required", []))
 
 
+def _process_nested_all_of(
+    item: dict,
+    properties: Dict[str, Any],
+    required_list: List[str],
+) -> None:
+    """Process nested allOf within an item."""
+    nested_all_of = item.get("allOf")
+    if not nested_all_of or not isinstance(nested_all_of, list):
+        return
+    for sub in nested_all_of:
+        if isinstance(sub, dict):
+            _extract_props_from_dict(sub, properties, required_list)
+
+
 def _merge_all_of_properties(
     schema: dict,
     properties: Dict[str, Any],
@@ -94,12 +108,7 @@ def _merge_all_of_properties(
         if not isinstance(item, dict):
             continue
         _extract_props_from_dict(item, properties, required_list)
-
-        nested_all_of = item.get("allOf")
-        if nested_all_of and isinstance(nested_all_of, list):
-            for sub in nested_all_of:
-                if isinstance(sub, dict):
-                    _extract_props_from_dict(sub, properties, required_list)
+        _process_nested_all_of(item, properties, required_list)
 
     return properties, required_list
 
@@ -118,12 +127,7 @@ def _merge_union_properties(
         if not isinstance(variant, dict):
             continue
         _extract_props_from_dict(variant, properties, required_list)
-
-        v_all_of = variant.get("allOf")
-        if v_all_of and isinstance(v_all_of, list):
-            for sub in v_all_of:
-                if isinstance(sub, dict):
-                    _extract_props_from_dict(sub, properties, required_list)
+        _process_nested_all_of(variant, properties, required_list)
 
     return properties, required_list
 

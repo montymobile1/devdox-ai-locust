@@ -410,7 +410,7 @@ def test_function():
             mock_build.return_value = "# Generated locustfile"
 
             result = generator._generate_main_locustfile(
-                sample_endpoints, sample_api_info, ["users", "auth"]
+                sample_endpoints, sample_api_info
             )
 
             assert result == "# Generated locustfile"

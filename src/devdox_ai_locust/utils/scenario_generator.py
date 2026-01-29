@@ -1860,6 +1860,48 @@ class ScenarioWorkflowGenerator:
             prompt,
         )
 
+    def _should_prepare_retry_prompt(
+        self, attempt: int, last_error: Optional[str], last_code: Optional[str]
+    ) -> bool:
+        """Check if we should prepare a retry prompt for this attempt."""
+        return attempt > 0 and last_error is not None and last_code is not None
+
+    async def _process_validation_result(
+        self,
+        content: str,
+        is_valid: bool,
+        error: Optional[str],
+        scenario_type: ScenarioType,
+        endpoint: "Endpoint",
+        all_endpoints: Optional[List["Endpoint"]],
+        tag_name: str,
+        endpoint_dir_name: str,
+        scenario_name: str,
+        endpoint_info: str,
+        attempt: int,
+        max_retries: int,
+    ) -> Tuple[Optional[str], Optional[str], bool]:
+        """Process validation result and return (final_code, error, is_semantic)."""
+        if not is_valid:
+            self._report_syntax_failure(endpoint_info, scenario_name, error)
+            return None, error, False
+
+        result = await self._check_and_finalize_scenario(
+            content,
+            scenario_type,
+            endpoint,
+            all_endpoints,
+            tag_name,
+            endpoint_dir_name,
+            scenario_name,
+            endpoint_info,
+            attempt,
+            max_retries,
+        )
+        if isinstance(result, str):
+            return result, None, False
+        return None, result[0], result[1]
+
     async def _run_llm_retry_loop(
         self,
         scenario_type: ScenarioType,
@@ -1874,17 +1916,17 @@ class ScenarioWorkflowGenerator:
     ) -> str:
         """Execute the LLM call with validation retry loop."""
         max_retries = 1 if self.replay_dir else 2
-        last_error = None
-        last_code = None
+        last_error: Optional[str] = None
+        last_code: Optional[str] = None
         last_is_semantic = False
         current_prompt = prompt
         endpoint_dir_name = self.get_endpoint_dir_name(endpoint)
 
         for attempt in range(max_retries):
-            if attempt > 0 and last_error and last_code:
+            if self._should_prepare_retry_prompt(attempt, last_error, last_code):
                 current_prompt = self._prepare_retry_prompt(
-                    last_code,
-                    last_error,
+                    last_code or "",
+                    last_error or "",
                     last_is_semantic,
                     expected_status_codes,
                     endpoint.path,
@@ -1912,12 +1954,11 @@ class ScenarioWorkflowGenerator:
                 scenario_name,
             )
 
-            if not is_valid:
-                self._report_syntax_failure(endpoint_info, scenario_name, error)
-                is_semantic_error = False
-            else:
-                result = await self._check_and_finalize_scenario(
+            final_code, error, is_semantic_error = (
+                await self._process_validation_result(
                     content,
+                    is_valid,
+                    error,
                     scenario_type,
                     endpoint,
                     all_endpoints,
@@ -1928,13 +1969,13 @@ class ScenarioWorkflowGenerator:
                     attempt,
                     max_retries,
                 )
-                if isinstance(result, str):
-                    return result
-                error, is_semantic_error = result
+            )
+            if final_code is not None:
+                return final_code
 
             last_error = error
             last_code = content
-            last_is_semantic = is_semantic_error if is_valid else False
+            last_is_semantic = is_semantic_error
 
             await self._handle_retry_or_fail(
                 attempt,
@@ -2110,24 +2151,54 @@ class ScenarioWorkflowGenerator:
         )
         return None if result.is_valid else result
 
+    def _check_ipv4_field(
+        self, field_name_lower: str, field_type: str
+    ) -> Optional[str]:
+        """Check if field is an IPv4 field by name."""
+        if not field_name_lower or field_type != TYPE_STRING:
+            return None
+        if "ipv4" in field_name_lower or field_name_lower == "ip_address":
+            return "test_data_generator.random_ipv4()"
+        return None
+
+    def _get_type_based_instruction(
+        self,
+        field_type: str,
+        field_schema: dict,
+        field_name: str,
+        _object_ancestors: Optional[frozenset],
+    ) -> str:
+        """Get instruction based on field type."""
+        if field_type == TYPE_STRING:
+            return get_string_instruction(field_schema, field_name)
+        if field_type == TYPE_INTEGER:
+            return get_integer_instruction(field_schema, field_name)
+        if field_type == TYPE_NUMBER:
+            return get_number_instruction(field_schema)
+        if field_type == TYPE_BOOLEAN:
+            return "test_data_generator.generate_boolean()"
+        if field_type == TYPE_OBJECT:
+            return get_object_instruction(
+                field_schema,
+                self._precompute_object_instruction,
+                _object_ancestors,
+            )
+        if field_type == TYPE_ARRAY:
+            return get_array_instruction(
+                field_schema,
+                self._precompute_object_instruction,
+                _object_ancestors,
+                field_name,
+            )
+        return "test_data_generator.generate_string(length=10)"
+
     def _get_type_instruction(
         self,
         field_schema: dict,
         _object_ancestors: Optional[frozenset] = None,
         field_name: str = "",
     ) -> str:
-        """Map a field schema to a Python code instruction for generating a valid value.
-
-        Delegates to type-specific helper functions in type_instruction module.
-
-        Args:
-            field_schema: The (already unwrapped) field schema dict
-            _object_ancestors: Frozenset for circular reference detection
-            field_name: Optional field name for inferring the appropriate generator
-
-        Returns:
-            Python code string for generating a valid test value
-        """
+        """Map a field schema to a Python code instruction for generating a valid value."""
         if not isinstance(field_schema, dict):
             return "test_data_generator.generate_string(length=10)"  # type: ignore[unreachable]
 
@@ -2137,55 +2208,24 @@ class ScenarioWorkflowGenerator:
         field_pattern = field_schema.get("pattern")
         field_name_lower = field_name.lower() if field_name else ""
 
-        # Enum takes priority
         if field_enum:
             return f"random.choice({field_enum})"
 
-        # IPv4 early detection (before pattern check)
-        if field_name_lower and field_type == TYPE_STRING:
-            if "ipv4" in field_name_lower or field_name_lower == "ip_address":
-                return "test_data_generator.random_ipv4()"
+        ipv4_instr = self._check_ipv4_field(field_name_lower, field_type)
+        if ipv4_instr:
+            return ipv4_instr
 
-        # Pattern-based generation
         if field_pattern:
             escaped = escape_for_raw_string(field_pattern)
             return f'test_data_generator.generate_string(pattern=r"{escaped}")'
 
-        # Format-specific generators
         format_instr = get_format_instruction(field_format)
         if format_instr:
             return format_instr
 
-        # Type-specific generators
-        if field_type == TYPE_STRING:
-            return get_string_instruction(field_schema, field_name)
-
-        if field_type == TYPE_INTEGER:
-            return get_integer_instruction(field_schema, field_name)
-
-        if field_type == TYPE_NUMBER:
-            return get_number_instruction(field_schema)
-
-        if field_type == TYPE_BOOLEAN:
-            return "test_data_generator.generate_boolean()"
-
-        if field_type == TYPE_OBJECT:
-            return get_object_instruction(
-                field_schema,
-                self._precompute_object_instruction,
-                _object_ancestors,
-            )
-
-        if field_type == TYPE_ARRAY:
-            return get_array_instruction(
-                field_schema,
-                self._precompute_object_instruction,
-                _object_ancestors,
-                field_name,
-            )
-
-        # Fallback for unknown types
-        return "test_data_generator.generate_string(length=10)"
+        return self._get_type_based_instruction(
+            field_type, field_schema, field_name, _object_ancestors
+        )
 
     def _format_endpoint_parameters(
         self, endpoint: "Endpoint"
@@ -2320,28 +2360,26 @@ class ScenarioWorkflowGenerator:
             "",
         ]
 
+    def _iter_responses(self, responses: Any) -> List[Tuple[Any, Any]]:
+        """Iterate over responses returning (status_code, response) pairs."""
+        if isinstance(responses, dict):
+            return list(responses.items())
+        if isinstance(responses, list):
+            return [(getattr(r, "status_code", "???"), r) for r in responses]
+        return []
+
     def _format_endpoint_responses(
         self, endpoint: "Endpoint", exclude_2xx: bool = False
     ) -> List[str]:
         """Format endpoint responses section."""
-        lines: list[str] = []
         if not (hasattr(endpoint, "responses") and endpoint.responses):
-            return lines
+            return []
 
-        responses = endpoint.responses
-        lines.append("\nResponses:")
-
-        if isinstance(responses, dict):  # type: ignore[unreachable]
-            for status_code, response in responses.items():  # type: ignore[unreachable]
-                if exclude_2xx and self._is_2xx_status(status_code):
-                    continue
-                lines.extend(self._format_single_response(status_code, response))
-        elif isinstance(responses, list):
-            for response in responses:
-                status_code = getattr(response, "status_code", "???")
-                if exclude_2xx and self._is_2xx_status(status_code):
-                    continue
-                lines.extend(self._format_single_response(status_code, response))
+        lines: list[str] = ["\nResponses:"]
+        for status_code, response in self._iter_responses(endpoint.responses):
+            if exclude_2xx and self._is_2xx_status(status_code):
+                continue
+            lines.extend(self._format_single_response(status_code, response))
 
         return lines
 

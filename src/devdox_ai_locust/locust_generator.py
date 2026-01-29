@@ -176,9 +176,7 @@ class LocustTestGenerator:
             workflows_files = self.generate_workflows(grouped_enpoint, api_info)
 
             self.generated_files = {
-                "locustfile.py": self._generate_main_locustfile(
-                    endpoints, api_info, list(grouped_enpoint.keys())
-                ),
+                "locustfile.py": self._generate_main_locustfile(endpoints, api_info),
                 "base_workflow.py": self.generate_base_common_file(
                     api_info, total_endpoints=len(endpoints)
                 ),
@@ -278,7 +276,7 @@ class LocustTestGenerator:
         )
 
     def _generate_main_locustfile(
-        self, endpoints: List[Any], api_info: Dict[str, Any], groups: List[str]
+        self, endpoints: List[Any], api_info: Dict[str, Any]
     ) -> str:
         """
         Generate the main Locust test file with proper structure and no duplicates
