@@ -12,7 +12,11 @@ from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 from enum import Enum
 
-from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON
+from devdox_ai_locust.utils.constants import (
+    CONTENT_TYPE_JSON,
+    MULTI_UNDERSCORE_RE,
+    NON_ALNUM_RE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +119,10 @@ class OpenAPIParser:
         raw_id = f"{method.lower()}_{path_parts.replace('/', '_')}"
         # Sanitize: replace common separators with underscores
         raw_id = raw_id.replace("-", "_").replace(".", "_")
-        # Remove non-alphanumeric chars except underscore
-        # Note: Using [^a-zA-Z0-9_] instead of \W to ensure ASCII-only identifiers
-        raw_id = re.sub(r"[^a-zA-Z0-9_]", "", raw_id)
+        # Remove non-alphanumeric chars except underscore (use pre-compiled pattern)
+        raw_id = NON_ALNUM_RE.sub("", raw_id)
         # Remove consecutive underscores
-        raw_id = re.sub(r"_+", "_", raw_id)
+        raw_id = MULTI_UNDERSCORE_RE.sub("_", raw_id)
         # Remove leading/trailing underscores
         raw_id = raw_id.strip("_")
         # Ensure doesn't start with a number (shouldn't happen with method prefix)
@@ -269,33 +272,41 @@ class OpenAPIParser:
 
         return parameters
 
+    def _resolve_schema_ref(self, param_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve $ref in a parameter schema if present."""
+        if not param_schema.get("$ref"):
+            return param_schema
+        resolved_schema = self._resolve_reference(param_schema)
+        if not resolved_schema:
+            return param_schema
+        return {
+            **resolved_schema,
+            **{k: v for k, v in param_schema.items() if k != "$ref"},
+        }
+
+    def _unwrap_nullable_union(self, param_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Unwrap OpenAPI 3.1 anyOf/oneOf nullable pattern to get real type."""
+        any_of = param_schema.get("anyOf") or param_schema.get("oneOf")
+        if not (any_of and isinstance(any_of, list)):
+            return param_schema
+
+        resolved_variants = []
+        for v in any_of:
+            if isinstance(v, dict) and "$ref" in v:
+                resolved_variants.append(self._resolve_reference(v) or v)
+            elif isinstance(v, dict):
+                resolved_variants.append(v)
+
+        real_variants = [v for v in resolved_variants if v.get("type") != "null"]
+        if len(real_variants) == 1:
+            return real_variants[0]
+        return param_schema
+
     def _resolve_param_schema(self, param: Dict[str, Any]) -> Dict[str, Any]:
         """Resolve and unwrap a parameter's schema including $ref and anyOf."""
         param_schema = param.get("schema", {})
-
-        if param_schema.get("$ref"):
-            resolved_schema = self._resolve_reference(param_schema)
-            if resolved_schema:
-                param_schema = {
-                    **resolved_schema,
-                    **{k: v for k, v in param_schema.items() if k != "$ref"},
-                }
-
-        # Unwrap OpenAPI 3.1 anyOf nullable pattern
-        effective_schema = param_schema
-        any_of = param_schema.get("anyOf") or param_schema.get("oneOf")
-        if any_of and isinstance(any_of, list):
-            resolved_variants = []
-            for v in any_of:
-                if isinstance(v, dict) and "$ref" in v:
-                    resolved_variants.append(self._resolve_reference(v) or v)
-                elif isinstance(v, dict):
-                    resolved_variants.append(v)
-            real_variants = [v for v in resolved_variants if v.get("type") != "null"]
-            if len(real_variants) == 1:
-                effective_schema = real_variants[0]
-
-        return effective_schema  # type: ignore[no-any-return]
+        param_schema = self._resolve_schema_ref(param_schema)
+        return self._unwrap_nullable_union(param_schema)
 
     def _parse_single_parameter(self, param: Dict[str, Any]) -> Optional[Parameter]:
         """Parse a single resolved parameter dict into a Parameter object."""
@@ -389,6 +400,28 @@ class OpenAPIParser:
             examples=media_type.get("examples"),
         )
 
+    def _extract_response_content(
+        self, content: Dict[str, Any]
+    ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+        """Extract content type and schema from response content dict."""
+        if not content:
+            return None, None
+
+        # Prioritize JSON content type
+        if application_json_type in content:
+            content_type = application_json_type
+            media_type = content[application_json_type]
+        else:
+            content_keys = list(content.keys())
+            content_type = content_keys[0] if content_keys else application_json_type
+            media_type = content.get(content_type, {})
+
+        schema = media_type.get("schema")
+        if schema:
+            schema = self._resolve_schema_deep(schema)
+
+        return content_type, schema
+
     def _extract_responses(self, operation: Dict[str, Any]) -> List[Response]:
         """
         Extract responses from an OpenAPI operation
@@ -403,41 +436,22 @@ class OpenAPIParser:
         responses_def = operation.get("responses", {})
 
         for status_code, response_def in responses_def.items():
-            # Resolve reference if needed
             response_def = self._resolve_reference(response_def)
             if not response_def:
                 continue
 
-            # Extract content information
             content = response_def.get("content", {})
-            content_type = None
-            schema = None
+            content_type, schema = self._extract_response_content(content)
 
-            if content:
-                # Prioritize JSON content type
-                if application_json_type in content:
-                    content_type = application_json_type
-                    media_type = content[application_json_type]
-                else:
-                    content_keys = list(content.keys())
-                    content_type = (
-                        content_keys[0] if content_keys else application_json_type
-                    )
-                    media_type = content.get(content_type, {})
-
-                schema = media_type.get("schema")
-                if schema:
-                    schema = self._resolve_schema_deep(schema)
-
-            response = Response(
-                status_code=status_code,
-                description=response_def.get("description", ""),
-                content_type=content_type,
-                schema=schema,
-                headers=response_def.get("headers"),
+            responses.append(
+                Response(
+                    status_code=status_code,
+                    description=response_def.get("description", ""),
+                    content_type=content_type,
+                    schema=schema,
+                    headers=response_def.get("headers"),
+                )
             )
-
-            responses.append(response)
 
         return responses
 
@@ -539,23 +553,47 @@ class OpenAPIParser:
         self._resolve_nested_schemas(result, _ancestors)
         return result
 
-    def _resolve_nested_schemas(self, result: Dict[str, Any], _ancestors: set) -> None:
-        """Resolve nested $refs within properties, items, and composition keywords."""
-        if "properties" in result and isinstance(result["properties"], dict):
-            resolved_props = {}
-            for prop_name, prop_schema in result["properties"].items():
-                resolved_props[prop_name] = (
-                    self._resolve_schema_deep(prop_schema, _ancestors) or prop_schema
-                )
-            result["properties"] = resolved_props
+    def _resolve_properties(self, result: Dict[str, Any], _ancestors: set) -> None:
+        """Resolve $refs in properties dict."""
+        if "properties" not in result or not isinstance(result["properties"], dict):
+            return
+        resolved_props = {}
+        for prop_name, prop_schema in result["properties"].items():
+            resolved_props[prop_name] = (
+                self._resolve_schema_deep(prop_schema, _ancestors) or prop_schema
+            )
+        result["properties"] = resolved_props
 
-        if "additionalProperties" in result and isinstance(
+    def _resolve_additional_properties(
+        self, result: Dict[str, Any], _ancestors: set
+    ) -> None:
+        """Resolve $refs in additionalProperties."""
+        if "additionalProperties" not in result or not isinstance(
             result["additionalProperties"], dict
         ):
-            result["additionalProperties"] = (
-                self._resolve_schema_deep(result["additionalProperties"], _ancestors)
-                or result["additionalProperties"]
-            )
+            return
+        result["additionalProperties"] = (
+            self._resolve_schema_deep(result["additionalProperties"], _ancestors)
+            or result["additionalProperties"]
+        )
+
+    def _resolve_composition_keywords(
+        self, result: Dict[str, Any], _ancestors: set
+    ) -> None:
+        """Resolve $refs in allOf, oneOf, anyOf lists."""
+        for keyword in ("allOf", "oneOf", "anyOf"):
+            if keyword not in result or not isinstance(result[keyword], list):
+                continue
+            resolved_list = [
+                self._resolve_schema_deep(item, _ancestors) or item
+                for item in result[keyword]
+            ]
+            result[keyword] = resolved_list
+
+    def _resolve_nested_schemas(self, result: Dict[str, Any], _ancestors: set) -> None:
+        """Resolve nested $refs within properties, items, and composition keywords."""
+        self._resolve_properties(result, _ancestors)
+        self._resolve_additional_properties(result, _ancestors)
 
         if "items" in result and isinstance(result["items"], dict):
             result["items"] = (
@@ -563,13 +601,7 @@ class OpenAPIParser:
                 or result["items"]
             )
 
-        for keyword in ("allOf", "oneOf", "anyOf"):
-            if keyword in result and isinstance(result[keyword], list):
-                resolved_list = []
-                for item in result[keyword]:
-                    resolved_item = self._resolve_schema_deep(item, _ancestors)
-                    resolved_list.append(resolved_item or item)
-                result[keyword] = resolved_list
+        self._resolve_composition_keywords(result, _ancestors)
 
     def get_schema_info(self) -> Dict[str, Any]:
         """

@@ -19,6 +19,9 @@ from rich.console import Console
 
 from devdox_ai_locust.utils.constants import CONTENT_TYPE_JSON
 
+# Verbose output prefix for tree-like formatting
+_TREE_PREFIX = "  [dim]│[/dim]"
+
 
 @dataclass
 class FailureInfo:
@@ -236,6 +239,31 @@ class GenerationProgress:
             f"({self.num_workers} concurrent, {self.total} endpoints)"
         )
 
+    def _print_failure_code_context(self, failure: FailureInfo) -> None:
+        """Print code context for a failure if available."""
+        if not (failure.code_snippet and failure.line_number):
+            return
+        self.console.print(f"   [dim]Code context (line {failure.line_number}):[/dim]")
+        lines = failure.code_snippet.split("\n")
+        start = max(0, failure.line_number - 3)
+        end = min(len(lines), failure.line_number + 2)
+
+        for j, line in enumerate(lines[start:end], start + 1):
+            if j == failure.line_number:
+                self.console.print(f"   [red]→ {j:4d} │ {line}[/red]")
+            else:
+                self.console.print(f"     {j:4d} │ {line}", style="dim")
+
+    def _print_single_failure(self, index: int, failure: FailureInfo) -> None:
+        """Print details for a single failure."""
+        self.console.print(f"[bold red]{index}. {failure.endpoint}[/bold red]")
+        self.console.print(f"   Scenario: {failure.scenario}")
+        self.console.print(f"   Error: {failure.error}")
+        self._print_failure_code_context(failure)
+        if failure.saved_path:
+            self.console.print(f"   [dim]Saved to: {failure.saved_path}[/dim]")
+        self.console.print()  # Blank line between failures
+
     def stop(self) -> None:
         """Print final summary."""
         elapsed = time.time() - self.start_time
@@ -252,37 +280,12 @@ class GenerationProgress:
             f"[dim]{self.skipped} skipped[/dim]"
         )
 
-        # Show detailed failure summary
         if self._failures:
             self.console.print(
                 f"\n[bold red]═══ FAILURES ({len(self._failures)}) ═══[/bold red]\n"
             )
-
             for i, failure in enumerate(self._failures, 1):
-                self.console.print(f"[bold red]{i}. {failure.endpoint}[/bold red]")
-                self.console.print(f"   Scenario: {failure.scenario}")
-                self.console.print(f"   Error: {failure.error}")
-
-                # Show code context if available
-                if failure.code_snippet and failure.line_number:
-                    self.console.print(
-                        f"   [dim]Code context (line {failure.line_number}):[/dim]"
-                    )
-                    lines = failure.code_snippet.split("\n")
-                    start = max(0, failure.line_number - 3)
-                    end = min(len(lines), failure.line_number + 2)
-
-                    for j, line in enumerate(lines[start:end], start + 1):
-                        if j == failure.line_number:
-                            self.console.print(f"   [red]→ {j:4d} │ {line}[/red]")
-                        else:
-                            self.console.print(f"     {j:4d} │ {line}", style="dim")
-
-                # Show saved path
-                if failure.saved_path:
-                    self.console.print(f"   [dim]Saved to: {failure.saved_path}[/dim]")
-
-                self.console.print()  # Blank line between failures
+                self._print_single_failure(i, failure)
 
     def _format_time(self) -> str:
         """Format elapsed time."""
@@ -426,7 +429,7 @@ class GenerationProgress:
         self._print_warnings(c, analysis.warnings)
 
         # Scenario Results
-        c.print("  [dim]│[/dim]")
+        c.print(_TREE_PREFIX)
         for scenario_name in ["positive", "negative", "security"]:
             result = analysis.scenarios.get(scenario_name)
             if result:
@@ -438,28 +441,28 @@ class GenerationProgress:
 
     def _print_endpoint_openapi(self, c: Console, analysis: EndpointAnalysis) -> None:
         """Print OpenAPI analysis section."""
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── OpenAPI Analysis ──[/cyan]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── OpenAPI Analysis ──[/cyan]")
         responses_str = (
             ", ".join(str(r) for r in analysis.responses_defined)
             if analysis.responses_defined
             else "none"
         )
-        c.print(f"  [dim]│[/dim] responses_defined: {responses_str}")
-        c.print(f"  [dim]│[/dim] source_of_truth: {analysis.source_of_truth}")
-        c.print(f"  [dim]│[/dim] content_type: {analysis.content_type}")
+        c.print(f"{_TREE_PREFIX} responses_defined: {responses_str}")
+        c.print(f"{_TREE_PREFIX} source_of_truth: {analysis.source_of_truth}")
+        c.print(f"{_TREE_PREFIX} content_type: {analysis.content_type}")
 
     def _print_endpoint_schema(self, c: Console, schema: SchemaAnalysis) -> None:
         """Print schema analysis section."""
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Schema Analysis ──[/cyan]")
-        c.print(f"  [dim]│[/dim] schema_type: {schema.schema_type}")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Schema Analysis ──[/cyan]")
+        c.print(f"{_TREE_PREFIX} schema_type: {schema.schema_type}")
         if schema.discriminator:
-            c.print(f"  [dim]│[/dim] discriminator: {schema.discriminator}")
+            c.print(f"{_TREE_PREFIX} discriminator: {schema.discriminator}")
             if schema.variants:
-                c.print(f"  [dim]│[/dim] variants: {', '.join(schema.variants)}")
+                c.print(f"{_TREE_PREFIX} variants: {', '.join(schema.variants)}")
         c.print(
-            f"  [dim]│[/dim] total_fields: {schema.total_fields}, required: {schema.required_fields}"
+            f"{_TREE_PREFIX} total_fields: {schema.total_fields}, required: {schema.required_fields}"
         )
         if schema.patterns_found or schema.enums_found or schema.formats_found:
             constraints = []
@@ -469,32 +472,32 @@ class GenerationProgress:
                 constraints.append(f"enums={schema.enums_found}")
             if schema.formats_found:
                 constraints.append(f"formats={schema.formats_found}")
-            c.print(f"  [dim]│[/dim] constraints: {', '.join(constraints)}")
+            c.print(f"{_TREE_PREFIX} constraints: {', '.join(constraints)}")
 
     def _print_endpoint_setup(self, c: Console, setup: SetupAnalysis) -> None:
         """Print setup analysis section if relevant."""
         if not setup.needs_setup and setup.setup_endpoints_found <= 0:
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Setup Analysis ──[/cyan]")
-        c.print(f"  [dim]│[/dim] needs_setup: {setup.needs_setup}")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Setup Analysis ──[/cyan]")
+        c.print(f"{_TREE_PREFIX} needs_setup: {setup.needs_setup}")
         if setup.parent_resources:
             c.print(
-                f"  [dim]│[/dim] parent_resources: {', '.join(setup.parent_resources)}"
+                f"{_TREE_PREFIX} parent_resources: {', '.join(setup.parent_resources)}"
             )
-        c.print(f"  [dim]│[/dim] setup_endpoints_found: {setup.setup_endpoints_found}")
+        c.print(f"{_TREE_PREFIX} setup_endpoints_found: {setup.setup_endpoints_found}")
 
     def _print_endpoint_injection(self, c: Console, inj: InjectionAnalysis) -> None:
         """Print injection analysis section if relevant."""
         if inj.total_injectable <= 0:
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Injection Analysis ──[/cyan]")
-        c.print(f"  [dim]│[/dim] injectable_fields: {inj.total_injectable}")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Injection Analysis ──[/cyan]")
+        c.print(f"{_TREE_PREFIX} injectable_fields: {inj.total_injectable}")
         if inj.high_risk_fields:
-            c.print(f"  [dim]│[/dim] high_risk: {', '.join(inj.high_risk_fields[:5])}")
+            c.print(f"{_TREE_PREFIX} high_risk: {', '.join(inj.high_risk_fields[:5])}")
         if inj.injection_locations:
-            c.print(f"  [dim]│[/dim] locations: {', '.join(inj.injection_locations)}")
+            c.print(f"{_TREE_PREFIX} locations: {', '.join(inj.injection_locations)}")
 
     def _print_endpoint_precomputed(
         self, c: Console, analysis: EndpointAnalysis
@@ -505,50 +508,54 @@ class GenerationProgress:
             and analysis.negative_scenarios_precomputed <= 0
         ):
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Pre-computed ──[/cyan]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Pre-computed ──[/cyan]")
         if analysis.positive_fields_precomputed > 0:
             c.print(
-                f"  [dim]│[/dim] positive_fields: {analysis.positive_fields_precomputed} generators ready"
+                f"{_TREE_PREFIX} positive_fields: {analysis.positive_fields_precomputed} generators ready"
             )
         if analysis.negative_scenarios_precomputed > 0:
             c.print(
-                f"  [dim]│[/dim] negative_scenarios: {analysis.negative_scenarios_precomputed} identified"
+                f"{_TREE_PREFIX} negative_scenarios: {analysis.negative_scenarios_precomputed} identified"
             )
             if analysis.negative_scenario_types:
                 for scenario_type in analysis.negative_scenario_types[:5]:
-                    c.print(f"  [dim]│[/dim]   • {scenario_type}")
+                    c.print(f"{_TREE_PREFIX}   • {scenario_type}")
 
     def _print_warnings(self, c: Console, warnings: List[str]) -> None:
         """Print warnings section if any."""
         if not warnings:
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [yellow]⚠ warnings:[/yellow]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[yellow]⚠ warnings:[/yellow]")
         for warning in warnings[:3]:
-            c.print(f"  [dim]│[/dim]   • {warning}")
+            c.print(f"{_TREE_PREFIX}   • {warning}")
+
+    def _build_success_details(self, result: ScenarioResult) -> List[str]:
+        """Build list of detail strings for a successful scenario."""
+        details = []
+        if result.time_seconds > 0:
+            details.append(f"{result.time_seconds:.1f}s")
+        if result.tokens_used > 0:
+            details.append(f"{result.tokens_used} tokens")
+        if result.fields_used > 0 and result.fields_total > 0:
+            details.append(f"fields={result.fields_used}/{result.fields_total}")
+        if result.scenarios_generated > 0:
+            details.append(f"scenarios={result.scenarios_generated}")
+        if result.retries > 0:
+            details.append(f"[yellow]retries={result.retries}[/yellow]")
+        if result.syntax_fixes:
+            details.append(f"[yellow]fixes={len(result.syntax_fixes)}[/yellow]")
+        return details
 
     def _print_scenario_result(self, name: str, result: ScenarioResult) -> None:
         """Print a single scenario result."""
         c = self.console
 
         if result.status == "success":
-            status_icon = "[green]✓[/green]"
-            details = []
-            if result.time_seconds > 0:
-                details.append(f"{result.time_seconds:.1f}s")
-            if result.tokens_used > 0:
-                details.append(f"{result.tokens_used} tokens")
-            if result.fields_used > 0 and result.fields_total > 0:
-                details.append(f"fields={result.fields_used}/{result.fields_total}")
-            if result.scenarios_generated > 0:
-                details.append(f"scenarios={result.scenarios_generated}")
-            if result.retries > 0:
-                details.append(f"[yellow]retries={result.retries}[/yellow]")
-            if result.syntax_fixes:
-                details.append(f"[yellow]fixes={len(result.syntax_fixes)}[/yellow]")
+            details = self._build_success_details(result)
             detail_str = f"  {', '.join(details)}" if details else ""
-            c.print(f"  [dim]├─[/dim] {name}  {status_icon}{detail_str}")
+            c.print(f"  [dim]├─[/dim] {name}  [green]✓[/green]{detail_str}")
         elif result.status == "skipped":
             reason = f": {result.skip_reason}" if result.skip_reason else ""
             c.print(f"  [dim]├─[/dim] {name}  [dim]⊘ skipped{reason}[/dim]")
@@ -690,7 +697,7 @@ class GenerationProgress:
         self._print_orchestrator_stats(c, analysis)
         self._print_warnings(c, analysis.warnings)
 
-        c.print("  [dim]│[/dim]")
+        c.print(_TREE_PREFIX)
         c.print(f"  [green]✓[/green] {tag_name}/orchestrator_workflow.py generated")
         c.print()  # Blank line after orchestrator
 
@@ -698,11 +705,11 @@ class GenerationProgress:
         self, c: Console, analysis: OrchestratorAnalysis
     ) -> None:
         """Print orchestrator basic info."""
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Orchestrator Info ──[/cyan]")
-        c.print(f"  [dim]│[/dim] class_name: {analysis.class_name}")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Orchestrator Info ──[/cyan]")
+        c.print(f"{_TREE_PREFIX} class_name: {analysis.class_name}")
         c.print(
-            f"  [dim]│[/dim] endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)"
+            f"{_TREE_PREFIX} endpoints: {analysis.valid_endpoints}/{analysis.total_endpoints} (valid/total)"
         )
 
     def _print_orchestrator_endpoints(
@@ -711,8 +718,8 @@ class GenerationProgress:
         """Print endpoint composition section."""
         if not endpoints:
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Endpoint Composition ──[/cyan]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Endpoint Composition ──[/cyan]")
         for ep in endpoints[:5]:
             scenarios = []
             if ep.has_positive:
@@ -722,16 +729,16 @@ class GenerationProgress:
             if ep.has_security:
                 scenarios.append("sec")
             scenarios_str = f"[{', '.join(scenarios)}]" if scenarios else "[none]"
-            c.print(f"  [dim]│[/dim]   {ep.method} {ep.path} {scenarios_str}")
+            c.print(f"{_TREE_PREFIX}   {ep.method} {ep.path} {scenarios_str}")
         if len(endpoints) > 5:
-            c.print(f"  [dim]│[/dim]   ... and {len(endpoints) - 5} more")
+            c.print(f"{_TREE_PREFIX}   ... and {len(endpoints) - 5} more")
 
     def _print_orchestrator_crud(
         self, c: Console, analysis: OrchestratorAnalysis
     ) -> None:
         """Print CRUD detection section."""
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── CRUD Detection ──[/cyan]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── CRUD Detection ──[/cyan]")
         crud_ops = []
         if analysis.has_create:
             crud_ops.append("Create")
@@ -742,9 +749,9 @@ class GenerationProgress:
         if analysis.has_delete:
             crud_ops.append("Delete")
         crud_str = ", ".join(crud_ops) if crud_ops else "none"
-        c.print(f"  [dim]│[/dim] operations: {crud_str}")
+        c.print(f"{_TREE_PREFIX} operations: {crud_str}")
         c.print(
-            f"  [dim]│[/dim] crud_lifecycle_possible: {analysis.crud_lifecycle_possible}"
+            f"{_TREE_PREFIX} crud_lifecycle_possible: {analysis.crud_lifecycle_possible}"
         )
 
     def _print_orchestrator_auth(
@@ -753,27 +760,27 @@ class GenerationProgress:
         """Print auth detection section if relevant."""
         if analysis.auth_endpoints_found <= 0 and not analysis.auth_tests_possible:
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Auth Detection ──[/cyan]")
-        c.print(f"  [dim]│[/dim] auth_endpoints_found: {analysis.auth_endpoints_found}")
-        c.print(f"  [dim]│[/dim] auth_tests_possible: {analysis.auth_tests_possible}")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Auth Detection ──[/cyan]")
+        c.print(f"{_TREE_PREFIX} auth_endpoints_found: {analysis.auth_endpoints_found}")
+        c.print(f"{_TREE_PREFIX} auth_tests_possible: {analysis.auth_tests_possible}")
 
     def _print_orchestrator_capabilities(
         self, c: Console, analysis: OrchestratorAnalysis
     ) -> None:
         """Print orchestration capabilities section."""
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Orchestration Capabilities ──[/cyan]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Orchestration Capabilities ──[/cyan]")
         if analysis.state_dependent_tests:
             c.print(
-                f"  [dim]│[/dim] state_dependent_tests: {', '.join(analysis.state_dependent_tests)}"
+                f"{_TREE_PREFIX} state_dependent_tests: {', '.join(analysis.state_dependent_tests)}"
             )
         else:
-            c.print("  [dim]│[/dim] state_dependent_tests: none identified")
+            c.print(f"{_TREE_PREFIX}state_dependent_tests: none identified")
         c.print(
-            f"  [dim]│[/dim] concurrent_tests_possible: {analysis.concurrent_tests_possible}"
+            f"{_TREE_PREFIX} concurrent_tests_possible: {analysis.concurrent_tests_possible}"
         )
-        c.print(f"  [dim]│[/dim] resource_limit_tests: {analysis.resource_limit_tests}")
+        c.print(f"{_TREE_PREFIX} resource_limit_tests: {analysis.resource_limit_tests}")
 
     def _print_orchestrator_stats(
         self, c: Console, analysis: OrchestratorAnalysis
@@ -781,16 +788,16 @@ class GenerationProgress:
         """Print generation stats section if relevant."""
         if analysis.time_seconds <= 0 and analysis.prompt_tokens <= 0:
             return
-        c.print("  [dim]│[/dim]")
-        c.print("  [dim]│[/dim] [cyan]── Generation Stats ──[/cyan]")
+        c.print(_TREE_PREFIX)
+        c.print(f"{_TREE_PREFIX}[cyan]── Generation Stats ──[/cyan]")
         if analysis.time_seconds > 0:
-            c.print(f"  [dim]│[/dim] time: {analysis.time_seconds:.1f}s")
+            c.print(f"{_TREE_PREFIX} time: {analysis.time_seconds:.1f}s")
         if analysis.prompt_tokens > 0 or analysis.completion_tokens > 0:
             c.print(
-                f"  [dim]│[/dim] tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion"
+                f"{_TREE_PREFIX} tokens: {analysis.prompt_tokens} prompt, {analysis.completion_tokens} completion"
             )
         if analysis.retries > 0:
-            c.print(f"  [dim]│[/dim] [yellow]retries: {analysis.retries}[/yellow]")
+            c.print(f"{_TREE_PREFIX} [yellow]retries: {analysis.retries}[/yellow]")
 
     def __enter__(self) -> "GenerationProgress":
         self.start()

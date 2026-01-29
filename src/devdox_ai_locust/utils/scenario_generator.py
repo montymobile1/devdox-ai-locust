@@ -11,6 +11,7 @@ Uses 3 LLM calls per endpoint for focused, non-truncated output.
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
@@ -47,6 +48,9 @@ from devdox_ai_locust.utils.type_instruction import (
     get_array_instruction,
 )
 
+# Default summary for endpoints without a summary
+_DEFAULT_SUMMARY = "No summary"
+
 if TYPE_CHECKING:
     from devdox_ai_locust.utils.debug_recorder import DebugRecorder
     from devdox_ai_locust.utils.generation_progress import (
@@ -62,6 +66,27 @@ if TYPE_CHECKING:
     from jinja2 import Template
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PrecomputedScenarioData:
+    """Precomputed data for scenario generation."""
+
+    injection_points: str = ""
+    negative_scenarios: str = ""
+    positive_fields: str = ""
+    setup_endpoints_section: str = ""
+    expected_status_codes: List[int] = field(default_factory=list)
+    expected_status_info: str = ""
+
+
+@dataclass
+class TemplateContentData:
+    """Template content data for scenario generation."""
+
+    base_workflow_content: str = ""
+    test_data_content: str = ""
+    auth_endpoints: Optional[List[Any]] = None
 
 
 class ScenarioGenerationError(Exception):
@@ -427,6 +452,33 @@ class ScenarioWorkflowGenerator:
                 )
         return results, errors
 
+    def _set_discriminator_info(self, schema_analysis: Any, schema: dict) -> None:
+        """Set discriminator info on schema analysis if present."""
+        one_of = schema.get("oneOf") or schema.get("anyOf")
+        discriminator = schema.get("discriminator", {})
+        if not (one_of and discriminator):
+            return
+        schema_analysis.schema_type = "discriminated_union"
+        schema_analysis.discriminator = discriminator.get("propertyName", "")
+        mapping = discriminator.get("mapping", {})
+        schema_analysis.variants = list(mapping.keys()) if mapping else []
+
+    def _count_property_constraints(
+        self, schema_analysis: Any, properties: Dict[str, Any]
+    ) -> None:
+        """Count constraint types in schema properties."""
+        for prop_schema in properties.values():
+            unwrapped, _ = unwrap_nullable_schema(prop_schema)
+            if unwrapped.get("pattern"):
+                schema_analysis.patterns_found += 1
+            if unwrapped.get("enum"):
+                schema_analysis.enums_found += 1
+            if unwrapped.get("format"):
+                schema_analysis.formats_found += 1
+            if unwrapped.get("type") == "array":
+                if unwrapped.get("minItems") or unwrapped.get("maxItems"):
+                    schema_analysis.arrays_with_constraints += 1
+
     def _analyze_schema_for_verbose(
         self, endpoint: "Endpoint", schema_analysis_cls: type
     ) -> Any:
@@ -443,29 +495,39 @@ class ScenarioWorkflowGenerator:
         schema_analysis.total_fields = len(properties)
         schema_analysis.required_fields = len(required_list)
 
-        # Check for discriminator
-        one_of = schema.get("oneOf") or schema.get("anyOf")
-        discriminator = schema.get("discriminator", {})
-        if one_of and discriminator:
-            schema_analysis.schema_type = "discriminated_union"
-            schema_analysis.discriminator = discriminator.get("propertyName", "")
-            mapping = discriminator.get("mapping", {})
-            schema_analysis.variants = list(mapping.keys()) if mapping else []
-
-        # Count constraints
-        for prop_schema in properties.values():
-            unwrapped, _ = unwrap_nullable_schema(prop_schema)
-            if unwrapped.get("pattern"):
-                schema_analysis.patterns_found += 1
-            if unwrapped.get("enum"):
-                schema_analysis.enums_found += 1
-            if unwrapped.get("format"):
-                schema_analysis.formats_found += 1
-            if unwrapped.get("type") == "array":
-                if unwrapped.get("minItems") or unwrapped.get("maxItems"):
-                    schema_analysis.arrays_with_constraints += 1
+        self._set_discriminator_info(schema_analysis, schema)
+        self._count_property_constraints(schema_analysis, properties)
 
         return schema_analysis
+
+    def _parse_injection_result(
+        self, injection_analysis: Any, injection_result: Optional[str]
+    ) -> None:
+        """Parse injection points from precomputed result."""
+        if not injection_result:
+            return
+        for line in injection_result.split("\n"):
+            if "HIGH_RISK" in line and ":" in line:
+                field_name = line.split(":")[0].strip().lstrip("-").strip()
+                injection_analysis.high_risk_fields.append(field_name)
+            injection_analysis.total_injectable += 1
+
+    def _determine_injection_locations(
+        self, injection_analysis: Any, endpoint: "Endpoint"
+    ) -> None:
+        """Determine injection locations from endpoint structure."""
+        if hasattr(endpoint, "request_body") and endpoint.request_body:
+            injection_analysis.injection_locations.append("body")
+
+        if not (hasattr(endpoint, "parameters") and endpoint.parameters):
+            return
+
+        for param in endpoint.parameters:
+            loc = getattr(param, "location", None) or getattr(param, "in_", "query")
+            if loc is not None and hasattr(loc, "value"):
+                loc = loc.value
+            if loc == "query" and "query" not in injection_analysis.injection_locations:
+                injection_analysis.injection_locations.append("query")
 
     def _analyze_injection_for_verbose(
         self, endpoint: "Endpoint", injection_analysis_cls: type
@@ -474,26 +536,8 @@ class ScenarioWorkflowGenerator:
         injection_analysis = injection_analysis_cls()
         injection_result = self._precompute_injection_points(endpoint)
 
-        if injection_result:
-            for line in injection_result.split("\n"):
-                if "HIGH_RISK" in line and ":" in line:
-                    field_name = line.split(":")[0].strip().lstrip("-").strip()
-                    injection_analysis.high_risk_fields.append(field_name)
-                injection_analysis.total_injectable += 1
-
-        # Determine locations
-        if hasattr(endpoint, "request_body") and endpoint.request_body:
-            injection_analysis.injection_locations.append("body")
-        if hasattr(endpoint, "parameters") and endpoint.parameters:
-            for param in endpoint.parameters:
-                loc = getattr(param, "location", None) or getattr(param, "in_", "query")
-                if loc is not None and hasattr(loc, "value"):
-                    loc = loc.value
-                if (
-                    loc == "query"
-                    and "query" not in injection_analysis.injection_locations
-                ):
-                    injection_analysis.injection_locations.append("query")
+        self._parse_injection_result(injection_analysis, injection_result)
+        self._determine_injection_locations(injection_analysis, endpoint)
 
         return injection_analysis
 
@@ -938,7 +982,7 @@ class ScenarioWorkflowGenerator:
         operation_id = getattr(ep, "operation_id", "") or self._generate_operation_id(
             ep
         )
-        summary = getattr(ep, "summary", "") or "No summary"
+        summary = getattr(ep, "summary", "") or _DEFAULT_SUMMARY
         lines = [
             f"  - {ep.path}",
             f"    Operation ID: {operation_id}",
@@ -1195,41 +1239,34 @@ class ScenarioWorkflowGenerator:
     def _build_scenario_template_context(
         self,
         endpoint_details: str,
-        auth_endpoints: Optional[List[Any]],
-        base_workflow_content: str,
-        test_data_content: str,
+        content_data: TemplateContentData,
         class_name: str,
         operation_id: str,
         endpoint: "Endpoint",
-        expected_status_codes: List[int],
-        expected_status_info: str,
-        injection_points: str,
-        negative_scenarios: str,
-        positive_fields: str,
-        setup_endpoints_section: str,
+        precomputed: PrecomputedScenarioData,
         custom_requirement: Optional[str],
         db_type: str,
     ) -> Dict[str, Any]:
         """Build template context dict for scenario generation."""
         auth_formatted = ""
-        if auth_endpoints:
-            auth_formatted = self._format_endpoints_list(auth_endpoints)
+        if content_data.auth_endpoints:
+            auth_formatted = self._format_endpoints_list(content_data.auth_endpoints)
 
         return {
             "endpoint": endpoint_details,
             "auth_endpoints": auth_formatted,
-            "base_workflow": base_workflow_content,
-            "test_data_content": test_data_content,
+            "base_workflow": content_data.base_workflow_content,
+            "test_data_content": content_data.test_data_content,
             "class_name": class_name,
             "operation_id": operation_id,
             "method": endpoint.method.upper(),
             "path": endpoint.path,
-            "endpoint_expected_status": expected_status_codes,
-            "expected_status_info": expected_status_info,
-            "injection_points": injection_points,
-            "negative_scenarios": negative_scenarios,
-            "positive_fields": positive_fields,
-            "setup_endpoints": setup_endpoints_section,
+            "endpoint_expected_status": precomputed.expected_status_codes,
+            "expected_status_info": precomputed.expected_status_info,
+            "injection_points": precomputed.injection_points,
+            "negative_scenarios": precomputed.negative_scenarios,
+            "positive_fields": precomputed.positive_fields,
+            "setup_endpoints": precomputed.setup_endpoints_section,
             "custom_requirement": custom_requirement or "",
             "db_type": db_type,
         }
@@ -1589,17 +1626,10 @@ class ScenarioWorkflowGenerator:
         scenario_type: ScenarioType,
         endpoint: "Endpoint",
         endpoint_details: str,
-        auth_endpoints: Optional[List[Any]],
-        base_workflow_content: str,
-        test_data_content: str,
+        content_data: TemplateContentData,
         class_name: str,
         operation_id: str,
-        expected_status_codes: List[int],
-        expected_status_info: str,
-        injection_points: str,
-        negative_scenarios: str,
-        positive_fields: str,
-        setup_endpoints_section: str,
+        precomputed: PrecomputedScenarioData,
         custom_requirement: Optional[str],
         db_type: str,
         tag_name: str,
@@ -1608,18 +1638,11 @@ class ScenarioWorkflowGenerator:
         """Build template context, render prompt, and record debug info."""
         context = self._build_scenario_template_context(
             endpoint_details=endpoint_details,
-            auth_endpoints=auth_endpoints,
-            base_workflow_content=base_workflow_content,
-            test_data_content=test_data_content,
+            content_data=content_data,
             class_name=class_name,
             operation_id=operation_id,
             endpoint=endpoint,
-            expected_status_codes=expected_status_codes,
-            expected_status_info=expected_status_info,
-            injection_points=injection_points,
-            negative_scenarios=negative_scenarios,
-            positive_fields=positive_fields,
-            setup_endpoints_section=setup_endpoints_section,
+            precomputed=precomputed,
             custom_requirement=custom_requirement,
             db_type=db_type,
         )
@@ -1635,8 +1658,8 @@ class ScenarioWorkflowGenerator:
             scenario_name=scenario_name,
             class_name=class_name,
             operation_id=operation_id,
-            expected_status_codes=expected_status_codes,
-            setup_endpoints_section=setup_endpoints_section,
+            expected_status_codes=precomputed.expected_status_codes,
+            setup_endpoints_section=precomputed.setup_endpoints_section,
             custom_requirement=custom_requirement,
             db_type=db_type,
             prompt=prompt,
@@ -1796,22 +1819,28 @@ class ScenarioWorkflowGenerator:
         )
 
         # Build prompt and record debug
+        content_data = TemplateContentData(
+            base_workflow_content=base_workflow_content,
+            test_data_content=test_data_content,
+            auth_endpoints=auth_endpoints,
+        )
+        precomputed = PrecomputedScenarioData(
+            injection_points=injection_points,
+            negative_scenarios=negative_scenarios,
+            positive_fields=positive_fields,
+            setup_endpoints_section=setup_section,
+            expected_status_codes=expected_status_codes,
+            expected_status_info=expected_status_info,
+        )
         prompt = await self._build_and_record_prompt(
             template,
             scenario_type,
             endpoint,
             endpoint_details,
-            auth_endpoints,
-            base_workflow_content,
-            test_data_content,
+            content_data,
             class_name,
             operation_id,
-            expected_status_codes,
-            expected_status_info,
-            injection_points,
-            negative_scenarios,
-            positive_fields,
-            setup_section,
+            precomputed,
             custom_requirement,
             db_type,
             tag_name,
@@ -2358,7 +2387,7 @@ class ScenarioWorkflowGenerator:
         operation_id = getattr(
             endpoint, "operation_id", ""
         ) or self._generate_operation_id(endpoint)
-        summary = getattr(endpoint, "summary", "") or "No summary"
+        summary = getattr(endpoint, "summary", "") or _DEFAULT_SUMMARY
         description = getattr(endpoint, "description", "") or ""
 
         lines.append(f"Operation: {endpoint.method.upper()} {endpoint.path}")
@@ -2712,26 +2741,33 @@ class ScenarioWorkflowGenerator:
         # Fallback: match by const value in inline properties
         return self._try_resolve_variant_by_const(one_of, ref)
 
+    def _try_merge_all_of_with_properties(self, variant: dict) -> Optional[dict]:
+        """Try to merge allOf and return if it has properties."""
+        if "allOf" not in variant:
+            return None
+        merged = self._merge_all_of(variant["allOf"])
+        if merged and merged.get("properties"):
+            return merged
+        return None
+
     def _try_resolve_variant_by_ref(
         self,
         variant: dict,
         ref: str,
     ) -> Optional[dict]:
         """Try to resolve a variant by direct $ref match or allOf containing the $ref."""
+        # Direct $ref match
         if variant.get("$ref") == ref:
             if "properties" in variant:
                 return variant
-            if "allOf" in variant:
-                merged = self._merge_all_of(variant["allOf"])
-                if merged and merged.get("properties"):
-                    return merged
+            return self._try_merge_all_of_with_properties(variant)
 
-        if "allOf" in variant:
-            for sub in variant["allOf"]:
-                if sub.get("$ref") == ref:
-                    merged = self._merge_all_of(variant["allOf"])
-                    if merged and merged.get("properties"):
-                        return merged
+        # Check allOf for $ref match
+        if "allOf" not in variant:
+            return None
+        for sub in variant["allOf"]:
+            if sub.get("$ref") == ref:
+                return self._try_merge_all_of_with_properties(variant)
         return None
 
     @staticmethod
@@ -3058,7 +3094,7 @@ Do NOT invent or call POST endpoints that are not documented here.
         operation_id = getattr(
             endpoint, "operation_id", ""
         ) or self._generate_operation_id(endpoint)
-        summary = getattr(endpoint, "summary", "") or "No summary"
+        summary = getattr(endpoint, "summary", "") or _DEFAULT_SUMMARY
         description = getattr(endpoint, "description", "") or ""
         status_codes = self._get_setup_endpoint_status_codes(endpoint)
 
@@ -3877,7 +3913,7 @@ Do NOT invent or call POST endpoints that are not documented here.
 
         lines = []
         for ep in endpoints:
-            summary = getattr(ep, "summary", "") or "No summary"
+            summary = getattr(ep, "summary", "") or _DEFAULT_SUMMARY
             lines.append(f"- {ep.method.upper()} {ep.path} - {summary}")
 
         return "\n".join(lines)

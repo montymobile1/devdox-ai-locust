@@ -68,6 +68,18 @@ def extract_all_properties(schema: Any) -> Tuple[Dict[str, Any], List[str]]:
     return properties, list(set(required_list))
 
 
+def _extract_props_from_dict(
+    item: dict,
+    properties: Dict[str, Any],
+    required_list: List[str],
+) -> None:
+    """Extract properties and required fields from a schema dict."""
+    item_props = item.get("properties", {})
+    if item_props:
+        properties.update(item_props)
+        required_list.extend(item.get("required", []))
+
+
 def _merge_all_of_properties(
     schema: dict,
     properties: Dict[str, Any],
@@ -81,17 +93,13 @@ def _merge_all_of_properties(
     for item in all_of:
         if not isinstance(item, dict):
             continue
-        item_props = item.get("properties", {})
-        if item_props:
-            properties.update(item_props)
-            required_list.extend(item.get("required", []))
+        _extract_props_from_dict(item, properties, required_list)
 
         nested_all_of = item.get("allOf")
         if nested_all_of and isinstance(nested_all_of, list):
             for sub in nested_all_of:
-                if isinstance(sub, dict) and sub.get("properties"):
-                    properties.update(sub["properties"])
-                    required_list.extend(sub.get("required", []))
+                if isinstance(sub, dict):
+                    _extract_props_from_dict(sub, properties, required_list)
 
     return properties, required_list
 
@@ -109,17 +117,13 @@ def _merge_union_properties(
     for variant in one_of:
         if not isinstance(variant, dict):
             continue
-        v_props = variant.get("properties", {})
-        if v_props:
-            properties.update(v_props)
-            required_list.extend(variant.get("required", []))
+        _extract_props_from_dict(variant, properties, required_list)
 
         v_all_of = variant.get("allOf")
         if v_all_of and isinstance(v_all_of, list):
             for sub in v_all_of:
-                if isinstance(sub, dict) and sub.get("properties"):
-                    properties.update(sub["properties"])
-                    required_list.extend(sub.get("required", []))
+                if isinstance(sub, dict):
+                    _extract_props_from_dict(sub, properties, required_list)
 
     return properties, required_list
 

@@ -19,6 +19,10 @@ from devdox_ai_locust.utils.schema_utils import (
     extract_all_properties,
 )
 
+# Generator instruction constants for commonly used generators
+_GEN_RANDOM_URI = "test_data_generator.random_uri()"
+_GEN_RANDOM_IPV4 = "test_data_generator.random_ipv4()"
+
 
 def get_format_instruction(field_format: str) -> Optional[str]:
     """Get instruction for format-specific fields.
@@ -35,14 +39,54 @@ def get_format_instruction(field_format: str) -> Optional[str]:
         "time": "test_data_generator.random_time()",
         "email": "test_data_generator.generate_email()",
         "uuid": "test_data_generator.random_uuid()",
-        "uri": "test_data_generator.random_uri()",
-        "url": "test_data_generator.random_uri()",
-        "ipv4": "test_data_generator.random_ipv4()",
+        "uri": _GEN_RANDOM_URI,
+        "url": _GEN_RANDOM_URI,
+        "ipv4": _GEN_RANDOM_IPV4,
         "ipv6": "test_data_generator.random_ipv6()",
         "hostname": "test_data_generator.random_hostname()",
         "byte": "test_data_generator.random_base64()",
     }
     return format_map.get(field_format)
+
+
+# Field name patterns and their corresponding generators
+_TIMESTAMP_KEYWORDS = ("created_at", "updated_at", "modified_at", "timestamp")
+_DATE_KEYWORDS = ("birth_date", "start_date", "end_date", "date")
+_URL_KEYWORDS = ("url", "uri", "website", "link")
+
+
+def _check_code_field(field_name_lower: str, max_length: int) -> Optional[str]:
+    """Check for country/currency code fields."""
+    if "country" in field_name_lower and max_length <= 3:
+        return "test_data_generator.random_country_code()"
+    if "currency" in field_name_lower and max_length <= 4:
+        return "test_data_generator.random_currency_code()"
+    return None
+
+
+def _check_datetime_field(field_name_lower: str) -> Optional[str]:
+    """Check for date/time related fields."""
+    if any(kw in field_name_lower for kw in _TIMESTAMP_KEYWORDS):
+        return "test_data_generator.random_datetime()"
+    if (
+        any(kw in field_name_lower for kw in _DATE_KEYWORDS)
+        and "time" not in field_name_lower
+    ):
+        return "test_data_generator.random_date()"
+    return None
+
+
+def _check_network_field(field_name_lower: str) -> Optional[str]:
+    """Check for network-related fields (IP, hostname, URL)."""
+    if any(kw in field_name_lower for kw in _URL_KEYWORDS):
+        return _GEN_RANDOM_URI
+    if "ipv4" in field_name_lower or "ip_address" in field_name_lower:
+        return _GEN_RANDOM_IPV4
+    if "ipv6" in field_name_lower:
+        return "test_data_generator.random_ipv6()"
+    if "hostname" in field_name_lower or "host" in field_name_lower:
+        return "test_data_generator.random_hostname()"
+    return None
 
 
 def get_string_instruction_by_name(
@@ -60,58 +104,30 @@ def get_string_instruction_by_name(
     if not field_name_lower:
         return None
 
-    # Country codes: 2-3 char fields with "country" in name
-    if "country" in field_name_lower and max_length <= 3:
-        return "test_data_generator.random_country_code()"
+    # Check code fields (country, currency)
+    result = _check_code_field(field_name_lower, max_length)
+    if result:
+        return result
 
-    # Currency codes: 3-char fields with "currency" in name
-    if "currency" in field_name_lower and max_length <= 4:
-        return "test_data_generator.random_currency_code()"
-
-    # Locale fields
+    # Simple keyword matches
     if "locale" in field_name_lower:
         return "test_data_generator.random_locale()"
-
-    # Color fields
     if "color" in field_name_lower or "colour" in field_name_lower:
         return "test_data_generator.random_hex_color()"
 
-    # Date/time fields by name
-    timestamp_keywords = ["created_at", "updated_at", "modified_at", "timestamp"]
-    if any(kw in field_name_lower for kw in timestamp_keywords):
-        return "test_data_generator.random_datetime()"
+    # Date/time fields
+    result = _check_datetime_field(field_name_lower)
+    if result:
+        return result
 
-    date_keywords = ["birth_date", "start_date", "end_date", "date"]
-    if (
-        any(kw in field_name_lower for kw in date_keywords)
-        and "time" not in field_name_lower
-    ):
-        return "test_data_generator.random_date()"
-
-    # Email fields by name
+    # Email and phone
     if "email" in field_name_lower:
         return "test_data_generator.generate_email()"
-
-    # URL fields by name
-    url_keywords = ["url", "uri", "website", "link"]
-    if any(kw in field_name_lower for kw in url_keywords):
-        return "test_data_generator.random_uri()"
-
-    # Phone fields by name
     if "phone" in field_name_lower:
-        return "test_data_generator.random_ipv4()"
+        return _GEN_RANDOM_IPV4
 
-    # IP address fields by name
-    if "ipv4" in field_name_lower or "ip_address" in field_name_lower:
-        return "test_data_generator.random_ipv4()"
-    if "ipv6" in field_name_lower:
-        return "test_data_generator.random_ipv6()"
-
-    # Hostname fields by name
-    if "hostname" in field_name_lower or "host" in field_name_lower:
-        return "test_data_generator.random_hostname()"
-
-    return None
+    # Network fields
+    return _check_network_field(field_name_lower)
 
 
 def get_string_instruction(field_schema: dict, field_name: str = "") -> str:
@@ -348,7 +364,9 @@ def _get_nested_array_instruction(field_items: dict, array_len: int) -> str:
     """Get instruction for nested arrays (array of arrays)."""
     inner_items = field_items.get("items", {}) if isinstance(field_items, dict) else {}
     inner_type = (
-        inner_items.get("type", TYPE_STRING) if isinstance(inner_items, dict) else TYPE_STRING
+        inner_items.get("type", TYPE_STRING)
+        if isinstance(inner_items, dict)
+        else TYPE_STRING
     )
 
     type_generators = {

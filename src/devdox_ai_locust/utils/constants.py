@@ -12,8 +12,10 @@ from typing import Pattern
 
 # ---------------------------------------------------------------------------
 # Shared helper regex (used by sanitize_identifier / to_class_name)
+# Using [^a-zA-Z0-9_] instead of \W to ensure ASCII-only identifiers
+# (Python's \W matches Unicode word characters, which we don't want)
 # ---------------------------------------------------------------------------
-NON_ALNUM_RE: Pattern[str] = re.compile(r"[^a-zA-Z0-9_]")
+NON_ALNUM_RE: Pattern[str] = re.compile(r"[^a-zA-Z0-9_]")  # NOSONAR
 MULTI_UNDERSCORE_RE: Pattern[str] = re.compile(r"_+")
 
 # ---------------------------------------------------------------------------

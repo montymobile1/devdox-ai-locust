@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import aiofiles  # type: ignore[import-untyped]
 
+# File name constants for debug output
+CONTEXT_JSON = "context.json"
+LLM_RESPONSE_TXT = "llm_response.txt"
+SUMMARY_JSON = "_summary.json"
+
 
 @dataclass
 class ScenarioDebugInfo:
@@ -63,27 +68,27 @@ class DebugRecorder:
                 │   └── resolved_config.json
                 ├── static/
                 │   └── {file_name}/
-                │       ├── context.json
+                │       ├── CONTEXT_JSON
                 │       └── rendered.py
                 └── workflows/
                     └── {tag}/
                         ├── {endpoint}/
                         │   ├── _endpoint.json
                         │   └── {scenario}/
-                        │       ├── context.json
+                        │       ├── CONTEXT_JSON
                         │       ├── prompt.txt
                         │       ├── llm_request.json
-                        │       ├── llm_response.txt
+                        │       ├── LLM_RESPONSE_TXT
                         │       ├── extracted.py
                         │       ├── processed.py
                         │       ├── validation.json
                         │       ├── final.py
                         │       ├── _retry_N/
                         │       ├── _fallback/
-                        │       └── _summary.json
+                        │       └── SUMMARY_JSON
                         ├── orchestrator/
                         │   └── ...
-                        └── _summary.json
+                        └── SUMMARY_JSON
     """
 
     def __init__(self, output_dir: Path, enabled: bool = False):
@@ -180,6 +185,80 @@ class DebugRecorder:
             return
         self._write_json_sync(self.input_dir / "openapi_raw.json", raw_spec)
 
+    @staticmethod
+    def _serialize_parameter(param: Any) -> Dict[str, Any]:
+        """Serialize a single endpoint parameter to dict."""
+        return {
+            "name": getattr(param, "name", None),
+            "location": str(getattr(param, "location", getattr(param, "in_", "query"))),
+            "required": getattr(param, "required", False),
+            "type": getattr(param, "type", "string"),
+            "format": getattr(param, "format", None),
+            "enum": getattr(param, "enum", None),
+            "description": getattr(param, "description", None),
+        }
+
+    @staticmethod
+    def _serialize_request_body(rb: Any) -> Dict[str, Any]:
+        """Serialize a request body to dict."""
+        return {
+            "required": getattr(rb, "required", False),
+            "content_type": getattr(rb, "content_type", None),
+            "schema": getattr(rb, "schema", None),
+        }
+
+    @staticmethod
+    def _get_response_description(resp: Any) -> str:
+        """Extract description from a response object."""
+        if hasattr(resp, "description"):
+            desc = getattr(resp, "description", None)
+            return str(desc) if desc is not None else ""
+        return str(resp)
+
+    @staticmethod
+    def _serialize_responses(responses: Any) -> Dict[str, Dict[str, Any]]:
+        """Serialize responses to dict format."""
+        result: Dict[str, Dict[str, Any]] = {}
+        if isinstance(responses, dict):
+            for status, resp in responses.items():
+                result[str(status)] = {
+                    "description": DebugRecorder._get_response_description(resp)
+                }
+        elif isinstance(responses, list):
+            for resp in responses:
+                status = getattr(resp, "status_code", "unknown")
+                result[str(status)] = {
+                    "description": DebugRecorder._get_response_description(resp)
+                }
+        return result
+
+    def _serialize_endpoint(self, ep: Any) -> Dict[str, Any]:
+        """Serialize a single endpoint to dict."""
+        ep_dict: Dict[str, Any] = {
+            "method": ep.method,
+            "path": ep.path,
+            "operation_id": getattr(ep, "operation_id", None),
+            "tags": getattr(ep, "tags", []),
+            "summary": getattr(ep, "summary", None),
+            "description": getattr(ep, "description", None),
+            "parameters": [],
+            "request_body": None,
+            "responses": {},
+        }
+
+        if hasattr(ep, "parameters") and ep.parameters:
+            ep_dict["parameters"] = [
+                self._serialize_parameter(p) for p in ep.parameters
+            ]
+
+        if hasattr(ep, "request_body") and ep.request_body:
+            ep_dict["request_body"] = self._serialize_request_body(ep.request_body)
+
+        if hasattr(ep, "responses") and ep.responses:
+            ep_dict["responses"] = self._serialize_responses(ep.responses)
+
+        return ep_dict
+
     def record_openapi_parsed(
         self, endpoints: List[Any], api_info: Dict[str, Any]
     ) -> None:
@@ -187,69 +266,7 @@ class DebugRecorder:
         if not self.enabled:
             return
 
-        # Serialize endpoints to dict
-        endpoints_data = []
-        for ep in endpoints:
-            ep_dict = {
-                "method": ep.method,
-                "path": ep.path,
-                "operation_id": getattr(ep, "operation_id", None),
-                "tags": getattr(ep, "tags", []),
-                "summary": getattr(ep, "summary", None),
-                "description": getattr(ep, "description", None),
-                "parameters": [],
-                "request_body": None,
-                "responses": {},
-            }
-
-            # Serialize parameters
-            if hasattr(ep, "parameters") and ep.parameters:
-                for param in ep.parameters:
-                    param_dict = {
-                        "name": getattr(param, "name", None),
-                        "location": str(
-                            getattr(param, "location", getattr(param, "in_", "query"))
-                        ),
-                        "required": getattr(param, "required", False),
-                        "type": getattr(param, "type", "string"),
-                        "format": getattr(param, "format", None),
-                        "enum": getattr(param, "enum", None),
-                        "description": getattr(param, "description", None),
-                    }
-                    ep_dict["parameters"].append(param_dict)
-
-            # Serialize request body
-            if hasattr(ep, "request_body") and ep.request_body:
-                rb = ep.request_body
-                ep_dict["request_body"] = {
-                    "required": getattr(rb, "required", False),
-                    "content_type": getattr(rb, "content_type", None),
-                    "schema": getattr(rb, "schema", None),
-                }
-
-            # Serialize responses (can be dict or list depending on parser)
-            if hasattr(ep, "responses") and ep.responses:
-                if isinstance(ep.responses, dict):
-                    for status, resp in ep.responses.items():
-                        ep_dict["responses"][str(status)] = {
-                            "description": (
-                                getattr(resp, "description", None)
-                                if hasattr(resp, "description")
-                                else str(resp)
-                            ),
-                        }
-                elif isinstance(ep.responses, list):
-                    for resp in ep.responses:
-                        status = getattr(resp, "status_code", "unknown")
-                        ep_dict["responses"][str(status)] = {
-                            "description": (
-                                getattr(resp, "description", None)
-                                if hasattr(resp, "description")
-                                else str(resp)
-                            ),
-                        }
-
-            endpoints_data.append(ep_dict)
+        endpoints_data = [self._serialize_endpoint(ep) for ep in endpoints]
 
         parsed_data = {
             "api_info": api_info,
@@ -292,7 +309,7 @@ class DebugRecorder:
             if k not in ("base_workflow_content", "test_data_content")
         }
 
-        self._write_json_sync(file_dir / "context.json", filtered_context)
+        self._write_json_sync(file_dir / CONTEXT_JSON, filtered_context)
 
         # Determine file extension
         if file_name.endswith(".py"):
@@ -351,7 +368,7 @@ class DebugRecorder:
             return
 
         scenario_dir = self._get_scenario_dir(tag, endpoint_dir_name, scenario_type)
-        await self._write_json(scenario_dir / "context.json", context)
+        await self._write_json(scenario_dir / CONTEXT_JSON, context)
 
     async def record_scenario_prompt(
         self,
@@ -394,7 +411,7 @@ class DebugRecorder:
             return
 
         scenario_dir = self._get_scenario_dir(tag, endpoint_dir_name, scenario_type)
-        await self._write_text(scenario_dir / "llm_response.txt", response)
+        await self._write_text(scenario_dir / LLM_RESPONSE_TXT, response)
 
     async def record_extracted_code(
         self,
@@ -472,7 +489,7 @@ class DebugRecorder:
             return
 
         scenario_dir = self._get_scenario_dir(tag, endpoint_dir_name, scenario_type)
-        await self._write_json(scenario_dir / "_summary.json", summary)
+        await self._write_json(scenario_dir / SUMMARY_JSON, summary)
         self.stats["scenarios"]["total"] += 1
         if summary.get("success"):
             self.stats["scenarios"]["succeeded"] += 1
@@ -507,7 +524,7 @@ class DebugRecorder:
         await self._write_text(retry_dir / "error.txt", error)
         await self._write_text(retry_dir / "bad_code.py", bad_code)
         await self._write_text(retry_dir / "fix_prompt.txt", fix_prompt)
-        await self._write_text(retry_dir / "llm_response.txt", llm_response)
+        await self._write_text(retry_dir / LLM_RESPONSE_TXT, llm_response)
         await self._write_text(retry_dir / "extracted.py", extracted_code)
         await self._write_json(retry_dir / "validation.json", validation_result)
 
@@ -553,7 +570,7 @@ class DebugRecorder:
             return
 
         orchestrator_dir = self.workflows_dir / tag / "orchestrator"
-        await self._write_json(orchestrator_dir / "context.json", context)
+        await self._write_json(orchestrator_dir / CONTEXT_JSON, context)
 
     async def record_orchestrator_prompt(
         self,
@@ -590,7 +607,7 @@ class DebugRecorder:
             return
 
         orchestrator_dir = self.workflows_dir / tag / "orchestrator"
-        await self._write_text(orchestrator_dir / "llm_response.txt", response)
+        await self._write_text(orchestrator_dir / LLM_RESPONSE_TXT, response)
 
     async def record_orchestrator_final(
         self,
@@ -604,7 +621,7 @@ class DebugRecorder:
 
         orchestrator_dir = self.workflows_dir / tag / "orchestrator"
         await self._write_text(orchestrator_dir / "final.py", code)
-        await self._write_json(orchestrator_dir / "_summary.json", summary)
+        await self._write_json(orchestrator_dir / SUMMARY_JSON, summary)
 
         self.stats["orchestrators"]["total"] += 1
         if summary.get("success"):
@@ -627,7 +644,7 @@ class DebugRecorder:
             return
 
         tag_dir = self.workflows_dir / tag
-        await self._write_json(tag_dir / "_summary.json", summary)
+        await self._write_json(tag_dir / SUMMARY_JSON, summary)
         self.stats["tags"] += 1
 
     async def record_endpoint_summary(
@@ -641,7 +658,7 @@ class DebugRecorder:
             return
 
         endpoint_dir = self.workflows_dir / tag / endpoint_dir_name
-        await self._write_json(endpoint_dir / "_summary.json", summary)
+        await self._write_json(endpoint_dir / SUMMARY_JSON, summary)
 
     async def finalize(self) -> None:
         """Finalize debug recording and write manifest"""
@@ -658,7 +675,7 @@ class DebugRecorder:
             "scenarios": self.stats["scenarios"],
             "orchestrators": self.stats["orchestrators"],
         }
-        await self._write_json(self.workflows_dir / "_summary.json", workflows_summary)
+        await self._write_json(self.workflows_dir / SUMMARY_JSON, workflows_summary)
 
         # Write manifest
         manifest = {

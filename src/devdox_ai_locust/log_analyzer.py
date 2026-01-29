@@ -196,6 +196,31 @@ def _line_iterator(f: TextIO) -> Iterator[str]:
         yield line.rstrip("\n\r")
 
 
+def _write_pattern_section(
+    out: TextIO,
+    section_name: str,
+    pattern_data: PatternData,
+) -> None:
+    """Write a single section (errors or exceptions) to the log file."""
+    if not pattern_data.signatures:
+        return
+    out.write(
+        f"# {'=' * 30} {section_name} ({len(pattern_data.signatures)}) {'=' * 30}\n\n"
+    )
+    for sig, count in pattern_data.signatures.most_common():
+        sample_lines = pattern_data.samples.get(sig, [])
+        apis = pattern_data.apis.get(sig, set())
+
+        out.write(f"# [{count}x]")
+        if apis:
+            out.write(f" Affected APIs: {', '.join(sorted(apis))}")
+        out.write("\n")
+
+        for sample_line in sample_lines:
+            out.write(f"{sample_line}\n")
+        out.write("\n")
+
+
 def _write_reduced_log(
     output_path: str,
     errors: PatternData,
@@ -214,39 +239,8 @@ def _write_reduced_log(
         )
         out.write(f"#{'=' * 69}\n\n")
 
-        # Exceptions (most important)
-        if exceptions.signatures:
-            out.write(
-                f"# {'=' * 30} EXCEPTIONS ({len(exceptions.signatures)}) {'=' * 30}\n\n"
-            )
-            for sig, count in exceptions.signatures.most_common():
-                sample_lines = exceptions.samples.get(sig, [])
-                apis = exceptions.apis.get(sig, set())
-
-                out.write(f"# [{count}x]")
-                if apis:
-                    out.write(f" Affected APIs: {', '.join(sorted(apis))}")
-                out.write("\n")
-
-                for sample_line in sample_lines:
-                    out.write(f"{sample_line}\n")
-                out.write("\n")
-
-        # Error lines
-        if errors.signatures:
-            out.write(f"# {'=' * 30} ERRORS ({len(errors.signatures)}) {'=' * 30}\n\n")
-            for sig, count in errors.signatures.most_common():
-                sample_lines = errors.samples.get(sig, [])
-                apis = errors.apis.get(sig, set())
-
-                out.write(f"# [{count}x]")
-                if apis:
-                    out.write(f" Affected APIs: {', '.join(sorted(apis))}")
-                out.write("\n")
-
-                for sample_line in sample_lines:
-                    out.write(f"{sample_line}\n")
-                out.write("\n")
+        _write_pattern_section(out, "EXCEPTIONS", exceptions)
+        _write_pattern_section(out, "ERRORS", errors)
 
 
 def main() -> None:

@@ -415,7 +415,7 @@ class TestProcessApiSchema:
 
         # Test the function
         schema_data, endpoints, api_info = await _process_api_schema(
-            "https://api.example.com/swagger.json", verbose=False
+            "https://api.example.com/swagger.json"
         )
 
         # Verify results
@@ -975,7 +975,7 @@ class TestProcessApiSchemaEdgeCases:
         """Test schema processing when get_api_schema returns None."""
         mock_get_schema.return_value = None
         with pytest.raises(SystemExit):
-            await _process_api_schema("https://api.example.com/swagger.json", False)
+            await _process_api_schema("https://api.example.com/swagger.json")
 
     @pytest.mark.asyncio
     @patch("devdox_ai_locust.cli.get_api_schema")
@@ -989,7 +989,7 @@ class TestProcessApiSchemaEdgeCases:
         mock_get_schema.side_effect = slow_fetch
         with pytest.raises(SystemExit):
             await _process_api_schema(
-                "https://api.example.com/swagger.json", False, schema_timeout=0
+                "https://api.example.com/swagger.json", schema_timeout=0
             )
 
     @pytest.mark.asyncio
@@ -998,7 +998,7 @@ class TestProcessApiSchemaEdgeCases:
         """Test schema processing with generic exception."""
         mock_get_schema.side_effect = ValueError("bad schema")
         with pytest.raises(SystemExit):
-            await _process_api_schema("https://api.example.com/swagger.json", False)
+            await _process_api_schema("https://api.example.com/swagger.json")
 
     @pytest.mark.asyncio
     @patch("devdox_ai_locust.cli.get_api_schema")
@@ -1012,7 +1012,7 @@ class TestProcessApiSchemaEdgeCases:
         mock_parser.parse_schema.side_effect = ValueError("parse error")
         mock_parser_class.return_value = mock_parser
         with pytest.raises(SystemExit):
-            await _process_api_schema("https://api.example.com/swagger.json", False)
+            await _process_api_schema("https://api.example.com/swagger.json")
 
     @pytest.mark.asyncio
     @patch("devdox_ai_locust.cli.get_api_schema")

@@ -331,7 +331,7 @@ class _GenerationState:
 
 
 async def _process_api_schema(
-    swagger_url: str, verbose: bool, schema_timeout: int = DEFAULT_SCHEMA_TIMEOUT
+    swagger_url: str, schema_timeout: int = DEFAULT_SCHEMA_TIMEOUT
 ) -> Tuple[Dict[str, Any], List[Endpoint], Dict[str, Any]]:
     """Fetch and parse API schema"""
     api_schema = await _fetch_schema(swagger_url, schema_timeout)
@@ -1384,7 +1384,7 @@ async def run_generate(dto: GenerateParams, output_dir: Path) -> None:
 
     try:
         raw_schema, endpoints, api_info = await _process_api_schema(
-            dto.swagger_url, dto.verbose, dto.schema_timeout
+            dto.swagger_url, dto.schema_timeout
         )
 
         _record_debug_parsed_schema(

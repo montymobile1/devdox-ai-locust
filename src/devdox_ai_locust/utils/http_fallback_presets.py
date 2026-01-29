@@ -3,6 +3,14 @@ from pydantic import BaseModel
 import json
 import yaml
 
+# HTTP response description constants to avoid duplication
+_DESC_AUTH_REJECTED = "_DESC_AUTH_REJECTED"
+_DESC_AUTH_FORBIDDEN = "_DESC_AUTH_FORBIDDEN"
+_DESC_VALIDATION_FAILED = "_DESC_VALIDATION_FAILED"
+_DESC_NO_CONTENT = "_DESC_NO_CONTENT"
+_DESC_BAD_REQUEST = "_DESC_BAD_REQUEST"
+_DESC_CONFLICT = "_DESC_CONFLICT"
+
 
 class ResponseBlock(BaseModel):
     """
@@ -57,18 +65,12 @@ class FallbackHttpResponseRegistry:
             "400": {
                 "description": "The server rejected the request before executing it."
             },
-            "401": {
-                "description": "The server rejected the request because authentication was not accepted."
-            },
-            "403": {
-                "description": "The server accepted authentication but rejected execution of the request."
-            },
+            "401": {"description": _DESC_AUTH_REJECTED},
+            "403": {"description": _DESC_AUTH_FORBIDDEN},
             "404": {
                 "description": "The server could not match the request to any available handler."
             },
-            "422": {
-                "description": "The server parsed the request but rejected it before execution."
-            },
+            "422": {"description": _DESC_VALIDATION_FAILED},
         },
         "POST": {
             "201": {
@@ -77,93 +79,55 @@ class FallbackHttpResponseRegistry:
             "200": {
                 "description": "The server executed the request and returned a response body."
             },
-            "204": {
-                "description": "The server executed the request and returned no response body."
-            },
-            "400": {"description": "The server rejected the request before execution."},
-            "401": {
-                "description": "The server rejected the request because authentication was not accepted."
-            },
-            "403": {
-                "description": "The server accepted authentication but rejected execution of the request."
-            },
-            "409": {
-                "description": "The server rejected the request due to a conflict with existing server-side state."
-            },
+            "204": {"description": _DESC_NO_CONTENT},
+            "400": {"description": _DESC_BAD_REQUEST},
+            "401": {"description": _DESC_AUTH_REJECTED},
+            "403": {"description": _DESC_AUTH_FORBIDDEN},
+            "409": {"description": _DESC_CONFLICT},
             "415": {
                 "description": "The server rejected the request before execution due to unsupported input format."
             },
-            "422": {
-                "description": "The server parsed the request but rejected it before execution."
-            },
+            "422": {"description": _DESC_VALIDATION_FAILED},
         },
         "PUT": {
             "200": {
                 "description": "The server executed the request and replaced existing server-side state."
             },
-            "204": {
-                "description": "The server executed the request and returned no response body."
-            },
+            "204": {"description": _DESC_NO_CONTENT},
             "201": {
                 "description": "The server executed the request and created new server-side state."
             },
-            "400": {"description": "The server rejected the request before execution."},
-            "401": {
-                "description": "The server rejected the request because authentication was not accepted."
-            },
-            "403": {
-                "description": "The server accepted authentication but rejected execution of the request."
-            },
-            "409": {
-                "description": "The server rejected the request due to a conflict with existing server-side state."
-            },
-            "422": {
-                "description": "The server parsed the request but rejected it before execution."
-            },
+            "400": {"description": _DESC_BAD_REQUEST},
+            "401": {"description": _DESC_AUTH_REJECTED},
+            "403": {"description": _DESC_AUTH_FORBIDDEN},
+            "409": {"description": _DESC_CONFLICT},
+            "422": {"description": _DESC_VALIDATION_FAILED},
         },
         "PATCH": {
             "200": {
                 "description": "The server executed the request and updated server-side state."
             },
-            "204": {
-                "description": "The server executed the request and returned no response body."
-            },
-            "400": {"description": "The server rejected the request before execution."},
-            "401": {
-                "description": "The server rejected the request because authentication was not accepted."
-            },
-            "403": {
-                "description": "The server accepted authentication but rejected execution of the request."
-            },
-            "409": {
-                "description": "The server rejected the request due to a conflict with existing server-side state."
-            },
+            "204": {"description": _DESC_NO_CONTENT},
+            "400": {"description": _DESC_BAD_REQUEST},
+            "401": {"description": _DESC_AUTH_REJECTED},
+            "403": {"description": _DESC_AUTH_FORBIDDEN},
+            "409": {"description": _DESC_CONFLICT},
             "415": {
                 "description": "The server rejected the request before execution due to unsupported input format."
             },
-            "422": {
-                "description": "The server parsed the request but rejected it before execution."
-            },
+            "422": {"description": _DESC_VALIDATION_FAILED},
         },
         "DELETE": {
-            "204": {
-                "description": "The server executed the request and returned no response body."
-            },
+            "204": {"description": _DESC_NO_CONTENT},
             "200": {
                 "description": "The server executed the request and returned a response body."
             },
             "404": {
                 "description": "The server could not match the request to any available handler."
             },
-            "401": {
-                "description": "The server rejected the request because authentication was not accepted."
-            },
-            "403": {
-                "description": "The server accepted authentication but rejected execution of the request."
-            },
-            "422": {
-                "description": "The server parsed the request but rejected it before execution."
-            },
+            "401": {"description": _DESC_AUTH_REJECTED},
+            "403": {"description": _DESC_AUTH_FORBIDDEN},
+            "422": {"description": _DESC_VALIDATION_FAILED},
         },
     }
 

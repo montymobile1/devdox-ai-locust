@@ -530,7 +530,7 @@ class TestLocustTestGeneratorTemplates:
             mock_jinja_env.get_template.return_value = mock_template
 
             result = generator._build_locustfile_template(
-                sample_api_info, "# Task methods", ["users"]
+                sample_api_info, "# Task methods"
             )
 
             assert result == "# Generated locustfile"

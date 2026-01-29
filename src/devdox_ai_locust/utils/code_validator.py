@@ -359,6 +359,23 @@ class CodeValidator:
 
         return True
 
+    def _parse_status_codes(self, codes_str: str) -> List[int]:
+        """Parse comma-separated status codes into list of integers."""
+        try:
+            return [int(c.strip()) for c in codes_str.split(",") if c.strip()]
+        except (ValueError, TypeError):
+            return []
+
+    def _is_setup_call(self, line: str, endpoint_path: str) -> bool:
+        """Check if a make_request call is a setup call to a different endpoint."""
+        if not endpoint_path:
+            return False
+        call_match = MAKE_REQUEST_CALL_RE.search(line)
+        if not call_match:
+            return False
+        call_path = call_match.group(2)
+        return bool(call_path and not self._paths_match(endpoint_path, call_path))
+
     def _check_success_codes_in_negative(
         self, code: str, endpoint_path: str = ""
     ) -> List[ValidationViolation]:
@@ -372,36 +389,27 @@ class CodeValidator:
 
         for i, line in enumerate(lines, 1):
             match = SUCCESS_IN_EXPECTED_STATUS_RE.search(line)
-            if match:
-                codes_str = match.group(1)
-                try:
-                    codes = [int(c.strip()) for c in codes_str.split(",") if c.strip()]
-                    success_codes = [c for c in codes if 200 <= c < 300]
-                    if not success_codes:
-                        continue
+            if not match:
+                continue
 
-                    # Check if this call targets the endpoint under test or a different endpoint
-                    if endpoint_path:
-                        call_match = MAKE_REQUEST_CALL_RE.search(line)
-                        if call_match:
-                            call_path = call_match.group(2)
-                            # If calling a DIFFERENT endpoint (setup call), allow 2xx
-                            if call_path and not self._paths_match(
-                                endpoint_path, call_path
-                            ):
-                                continue
+            codes = self._parse_status_codes(match.group(1))
+            success_codes = [c for c in codes if 200 <= c < 300]
+            if not success_codes:
+                continue
 
-                    violations.append(
-                        ValidationViolation(
-                            rule="success_in_negative",
-                            message=f"Negative workflow has success codes {success_codes} in expected_status. "
-                            f"Negative tests must ONLY expect 4xx error codes.",
-                            line_number=i,
-                            severity=SEVERITY_ERROR,
-                        )
-                    )
-                except (ValueError, TypeError):
-                    pass
+            # Setup calls to different endpoints are exempt
+            if self._is_setup_call(line, endpoint_path):
+                continue
+
+            violations.append(
+                ValidationViolation(
+                    rule="success_in_negative",
+                    message=f"Negative workflow has success codes {success_codes} in expected_status. "
+                    f"Negative tests must ONLY expect 4xx error codes.",
+                    line_number=i,
+                    severity=SEVERITY_ERROR,
+                )
+            )
 
         return violations
 
@@ -493,13 +501,34 @@ class CodeValidator:
         request_dicts = self._extract_request_body_dicts(tree)
 
         for dict_node in request_dicts:
-            violations.extend(
-                self._validate_dict_against_schema(
-                    dict_node, properties, schema.get("required", [])
-                )
-            )
+            violations.extend(self._validate_dict_against_schema(dict_node, properties))
 
         return violations
+
+    # Variable names that indicate request body data
+    _BODY_VAR_NAMES = {
+        "data",
+        "json_data",
+        "payload",
+        "body",
+        "request_data",
+        "request_body",
+    }
+
+    def _extract_dict_from_assign(self, node: ast.Assign) -> Optional[ast.Dict]:
+        """Extract dict from an assignment if it assigns to a body variable."""
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in self._BODY_VAR_NAMES:
+                if isinstance(node.value, ast.Dict):
+                    return node.value
+        return None
+
+    def _extract_dict_from_call(self, node: ast.Call) -> Optional[ast.Dict]:
+        """Extract dict from a json= keyword argument in a function call."""
+        for kw in node.keywords:
+            if kw.arg == "json" and isinstance(kw.value, ast.Dict):
+                return kw.value
+        return None
 
     def _extract_request_body_dicts(self, tree: ast.AST) -> List[ast.Dict]:
         """
@@ -510,36 +539,62 @@ class CodeValidator:
         - json= keyword argument in function calls
         """
         dicts: List[ast.Dict] = []
-        body_var_names = {
-            "data",
-            "json_data",
-            "payload",
-            "body",
-            "request_data",
-            "request_body",
-        }
 
         for node in ast.walk(tree):
-            # Case 1: Assignment like `data = {...}`
             if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id in body_var_names:
-                        if isinstance(node.value, ast.Dict):
-                            dicts.append(node.value)
-
-            # Case 2: json={...} keyword in make_request call
-            if isinstance(node, ast.Call):
-                for kw in node.keywords:
-                    if kw.arg == "json" and isinstance(kw.value, ast.Dict):
-                        dicts.append(kw.value)
+                dict_node = self._extract_dict_from_assign(node)
+                if dict_node:
+                    dicts.append(dict_node)
+            elif isinstance(node, ast.Call):
+                dict_node = self._extract_dict_from_call(node)
+                if dict_node:
+                    dicts.append(dict_node)
 
         return dicts
+
+    def _validate_single_field(
+        self,
+        field_name: str,
+        value_node: ast.AST,
+        field_schema: Dict[str, Any],
+    ) -> List[ValidationViolation]:
+        """Validate a single field against its schema."""
+        violations: List[ValidationViolation] = []
+        field_type = field_schema.get("type", "")
+        field_format = field_schema.get("format")
+        field_enum = field_schema.get("enum")
+        line_num = getattr(value_node, "lineno", None)
+
+        # Check 1: Enum constraint ignored
+        if field_enum:
+            violation = self._check_enum_usage(
+                field_name, value_node, field_enum, line_num
+            )
+            if violation:
+                violations.append(violation)
+        # Check 2: String format with wrong generator
+        elif field_type == TYPE_STRING and field_format:
+            violation = self._check_format_usage(
+                field_name, value_node, field_format, line_num
+            )
+            if violation:
+                violations.append(violation)
+
+        # Check 3: Array with mixed types
+        if field_type == TYPE_ARRAY:
+            items_schema = field_schema.get("items", {})
+            violation = self._check_array_types(
+                field_name, value_node, items_schema, line_num
+            )
+            if violation:
+                violations.append(violation)
+
+        return violations
 
     def _validate_dict_against_schema(
         self,
         dict_node: ast.Dict,
         properties: Dict[str, Any],
-        required_fields: List[str],
     ) -> List[ValidationViolation]:
         """Validate a Dict AST node against schema properties."""
         violations: List[ValidationViolation] = []
@@ -548,45 +603,17 @@ class CodeValidator:
             if key_node is None or value_node is None:
                 continue
 
-            # Get the field name from the key
             field_name = self._get_constant_value(key_node)
             if not isinstance(field_name, str):
                 continue
 
-            # Look up field in schema
             field_schema = properties.get(field_name)
             if not field_schema:
                 continue
 
-            field_type = field_schema.get("type", "")
-            field_format = field_schema.get("format")
-            field_enum = field_schema.get("enum")
-            line_num = getattr(value_node, "lineno", None)
-
-            # Check 1: Enum constraint ignored
-            if field_enum:
-                violation = self._check_enum_usage(
-                    field_name, value_node, field_enum, line_num
-                )
-                if violation:
-                    violations.append(violation)
-
-            # Check 2: String format with wrong generator
-            elif field_type == TYPE_STRING and field_format:
-                violation = self._check_format_usage(
-                    field_name, value_node, field_format, line_num
-                )
-                if violation:
-                    violations.append(violation)
-
-            # Check 3: Array with mixed types
-            if field_type == TYPE_ARRAY:
-                items_schema = field_schema.get("items", {})
-                violation = self._check_array_types(
-                    field_name, value_node, items_schema, line_num
-                )
-                if violation:
-                    violations.append(violation)
+            violations.extend(
+                self._validate_single_field(field_name, value_node, field_schema)
+            )
 
         return violations
 

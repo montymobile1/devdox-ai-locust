@@ -315,7 +315,6 @@ class LocustTestGenerator:
             return self._build_locustfile_template(
                 api_info=api_info,
                 task_methods_content=indented_task_methods,
-                groups=groups,
             )
 
         except Exception as e:
@@ -358,7 +357,7 @@ class LocustTestGenerator:
     from typing import Dict, Any
 
     def _build_locustfile_template(
-        self, api_info: Dict[str, Any], task_methods_content: str, groups: List[str]
+        self, api_info: Dict[str, Any], task_methods_content: str
     ) -> str:
         # Import all workflows from the workflows package (uses __init__.py exports)
         import_group_tasks = "from workflows import *  # Imports all workflow classes\n"
