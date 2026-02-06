@@ -1,0 +1,167 @@
+You are an expert Python developer specializing in Locust load testing frameworks. Your task is to enhance an existing Locust test file based on a specific user requirement. This may involve adding NEW test scenarios, upgrading/replacing EXISTING code, or both.
+
+REQUIREMENT:
+{{ custom_requirement }}
+
+EXISTING LOCUST TEST FILE:
+```python
+{{ existing_source_code }}
+```
+
+EXISTING TASK METHODS (DO NOT recreate these in <new_tasks>):
+{% for task_name in existing_task_names %}- {{ task_name }}
+{% endfor %}
+
+EXISTING CLASS NAMES:
+{% for class_name in existing_class_names %}- {{ class_name }}
+{% endfor %}
+
+EXISTING IMPORTS:
+{% for imp in existing_imports %}- {{ imp }}
+{% endfor %}
+
+PRIMARY USER CLASS: {{ user_class_name }}
+
+{% if existing_task_source %}
+EXISTING TASK METHOD SOURCE CODE (for reference when upgrading):
+{% for name, source in existing_task_source.items() %}
+--- {{ name }} ---
+{{ source }}
+{% endfor %}
+{% endif %}
+
+{% if existing_helper_source %}
+EXISTING HELPER FUNCTION SOURCE CODE (for reference when upgrading):
+{% for name, source in existing_helper_source.items() %}
+--- {{ name }} ---
+{{ source }}
+{% endfor %}
+{% endif %}
+
+{% if existing_class_source %}
+EXISTING CLASS SOURCE CODE (for reference when upgrading):
+{% for name, source in existing_class_source.items() %}
+--- {{ name }} ---
+{{ source }}
+{% endfor %}
+{% endif %}
+
+{% if api_schema_summary %}
+API SCHEMA SUMMARY (use for realistic request bodies and endpoint paths):
+{{ api_schema_summary }}
+{% endif %}
+
+STRICT REQUIREMENTS:
+
+1. GENERATE ONLY DELTAS: Do not reproduce the entire file. Output only the new pieces to add OR the replacement pieces to upgrade. Each section can be empty if not needed.
+
+2. ADD vs REPLACE — Choose the correct operation:
+   - When the requirement asks to ADD new functionality that does not exist yet → use `<new_*>` sections
+   - When the requirement asks to IMPROVE, UPGRADE, MODIFY, FIX, or REFACTOR existing functionality → use `<replace_*>` sections
+   - Both can be used in the same response (e.g., upgrade an existing login task AND add a brand-new MFA task)
+
+3. DO NOT DUPLICATE: When adding NEW code, the existing task methods listed above must not be recreated. If the requirement overlaps with existing functionality and asks to improve it, put the improved version in the appropriate `<replace_*>` section instead. For replacements, include the COMPLETE method/class/function body (not just the changed lines) so the merger can perform a full swap.
+
+4. FOLLOW EXISTING CONVENTIONS: Study the existing source code above and match its patterns exactly:
+   - Naming conventions for methods, variables, and classes
+   - Error handling style (catch_response patterns, status code checks)
+   - Logging patterns and logger usage
+   - Import organization and style
+   - Indentation (4 spaces for class methods)
+   - Docstring format
+
+5. LOCUST BEST PRACTICES:
+   - Assign realistic task weights: higher weights (8-10) for common operations, lower weights (1-3) for edge cases
+   - Validate responses using status code checks
+   - Use descriptive task method names that reflect the scenario being tested
+   - Use self.client methods (self.client.get, self.client.post, self.client.put, self.client.delete, self.client.patch)
+   - Use catch_response=True with context manager for detailed response validation where appropriate
+   - Add meaningful failure messages that include expected vs actual status codes
+   - Store resource IDs from creation responses for use in subsequent tasks
+
+{% if has_auth %}
+6. AUTHENTICATION: The existing file already handles authentication (login/token management) in on_start or a dedicated method. Assume authentication is already configured and tokens/headers are set on self.client. Do not add new authentication logic unless the requirement explicitly asks for auth-related test scenarios.
+{% else %}
+6. AUTHENTICATION: The existing file does not use authentication. Do not add authentication handling unless the requirement explicitly asks for it.
+{% endif %}
+
+{% if has_sequential_tasks %}
+7. SEQUENTIAL TASKS: The existing file uses SequentialTaskSet for ordered task execution. If adding tasks that belong to a sequential flow, place them in the correct logical order and document their position in the sequence.
+{% else %}
+7. TASK STRUCTURE: The existing file uses standard @task decorators. Add new tasks following the same pattern.
+{% endif %}
+
+{% if api_schema_summary %}
+8. API SCHEMA USAGE: Use the API schema summary above to:
+   - Construct realistic and valid request bodies with correct field names and types
+   - Use actual endpoint paths from the schema
+   - Include required fields in request payloads
+   - Generate realistic test data that matches schema constraints
+{% endif %}
+
+9. CODE QUALITY:
+   - Every new or replacement @task method must have a docstring explaining what scenario it tests
+   - Include proper error handling: do not let unhandled exceptions crash the load test
+   - Use catch_response=True when you need to mark requests as failed based on response content or non-standard status codes
+   - Log important events (resource creation, unexpected responses) using the existing logger
+
+10. NEW IMPORTS: Only include imports that are not already present in the existing file. Check the existing imports list above before adding any.
+
+11. OUTPUT FORMAT: Return your code using ONLY these XML-style section markers. Do not wrap the output in markdown code blocks. Every section (both new_* and replace_*) must be present in your output, even if empty.
+
+OUTPUT FORMAT:
+
+<new_imports>
+# Only imports NOT already present in the existing file
+# Leave empty if no new imports are needed
+</new_imports>
+
+<new_tasks>
+# New @task methods to be added inside the existing {{ user_class_name }} class
+# Must be indented with 4 spaces (as class methods)
+# Each method must have a @task(weight) decorator
+# Each method must have a descriptive docstring
+</new_tasks>
+
+<new_classes>
+# Only if the requirement calls for entirely new user classes or TaskSets
+# Leave empty if new tasks should be added to the existing {{ user_class_name }} class
+# Include full class definition with inheritance, on_start, and task methods
+</new_classes>
+
+<new_helpers>
+# Helper functions or module-level utilities needed by the new tasks
+# These are standalone functions defined outside any class
+# Leave empty if no helpers are needed
+</new_helpers>
+
+<replace_tasks>
+# Complete replacement code for existing @task methods that need upgrading
+# Method name MUST match an existing method exactly
+# Include the full method with @task decorator, docstring, and body
+# Indented with 4 spaces (as class methods)
+# Leave empty if no existing tasks need to be replaced
+</replace_tasks>
+
+<replace_helpers>
+# Complete replacement code for existing helper functions that need upgrading
+# Function name MUST match an existing function exactly
+# Include the full function definition with signature, docstring, and body
+# Leave empty if no existing helpers need to be replaced
+</replace_helpers>
+
+<replace_classes>
+# Complete replacement code for existing classes that need upgrading
+# Class name MUST match an existing class exactly
+# Include the full class definition with inheritance, methods, and docstrings
+# Leave empty if no existing classes need to be replaced
+</replace_classes>
+
+CRITICAL REMINDERS:
+- Generate ONLY deltas (new code and/or replacements), never the entire file
+- For `<new_*>` sections: names must NOT match any existing names — do NOT duplicate any existing task method names: {{ existing_task_names }}
+- For `<replace_*>` sections: method/function/class names MUST match existing ones EXACTLY so the merger can locate and replace them
+- For replacements, include the COMPLETE method/function/class body (not just changed lines)
+- Do NOT wrap output in markdown code blocks — use the XML-style markers only
+- Every section (both new_* and replace_*) must be present in your output, even if its content is empty
+- New and replacement @task methods must be properly indented with 4 spaces as they will be inserted into an existing class body
