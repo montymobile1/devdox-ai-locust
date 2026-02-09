@@ -707,3 +707,82 @@ class TestValidateAndLogResult:
 
         assert len(warnings) == 0
         assert "passed syntax validation" in caplog.text
+
+
+class TestCollectDecorators:
+    """Tests for _collect_decorators helper."""
+
+    def test_collects_single_decorator(self):
+        """Test collecting a single decorator line."""
+        lines = ["    @task\n", "    def foo(self):\n", "        pass\n"]
+        decorators, j = LocustCodeMerger._collect_decorators(lines, 0)
+
+        assert decorators == ["    @task\n"]
+        assert j == 1
+
+    def test_collects_multiple_decorators_with_gaps(self):
+        """Test collecting multiple decorators with empty lines."""
+        lines = [
+            "@task(1)\n",
+            "\n",
+            "@other\n",
+            "def foo(self):\n",
+            "    pass\n",
+        ]
+        decorators, j = LocustCodeMerger._collect_decorators(lines, 0)
+
+        assert len(decorators) == 3
+        assert decorators[0] == "@task(1)\n"
+        assert decorators[2] == "@other\n"
+        assert j == 3
+
+    def test_stops_at_non_decorator(self):
+        """Test that collection stops at non-decorator, non-empty line."""
+        lines = ["@task\n", "def foo(self):\n"]
+        decorators, j = LocustCodeMerger._collect_decorators(lines, 0)
+
+        assert decorators == ["@task\n"]
+        assert j == 1
+
+
+class TestFixMisalignedDef:
+    """Tests for _fix_misaligned_def helper."""
+
+    def test_fixes_misaligned_def(self):
+        """Test that a misaligned def is realigned."""
+        lines = [
+            "        def foo(self):\n",
+            "            pass\n",
+        ]
+        result = LocustCodeMerger._fix_misaligned_def(lines, 0, deco_indent=4)
+
+        assert result is not None
+        fixed_lines, next_idx = result
+        assert fixed_lines[0] == "    def foo(self):\n"
+        assert next_idx == 2
+
+    def test_returns_none_when_aligned(self):
+        """Test returns None when def indent matches decorator indent."""
+        lines = ["    def foo(self):\n", "        pass\n"]
+        result = LocustCodeMerger._fix_misaligned_def(lines, 0, deco_indent=4)
+
+        assert result is None
+
+    def test_returns_none_for_non_def(self):
+        """Test returns None when line is not a def."""
+        lines = ["    x = 1\n"]
+        result = LocustCodeMerger._fix_misaligned_def(lines, 0, deco_indent=0)
+
+        assert result is None
+
+    def test_fixes_async_def(self):
+        """Test that a misaligned async def is also fixed."""
+        lines = [
+            "        async def bar(self):\n",
+            "            await something()\n",
+        ]
+        result = LocustCodeMerger._fix_misaligned_def(lines, 0, deco_indent=4)
+
+        assert result is not None
+        fixed_lines, _ = result
+        assert fixed_lines[0] == "    async def bar(self):\n"

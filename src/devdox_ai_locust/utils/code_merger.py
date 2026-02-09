@@ -1131,73 +1131,90 @@ class LocustCodeMerger:
         i = 0
 
         while i < len(lines):
-            line = lines[i]
-            stripped = line.lstrip()
+            stripped = lines[i].lstrip()
 
-            if stripped.startswith("@"):
-                deco_indent = len(line) - len(stripped)
-                decorators = [line]
-                j = i + 1
-
-                # Collect consecutive decorators (and empty lines between them)
-                while j < len(lines):
-                    next_stripped = lines[j].lstrip()
-                    if next_stripped.startswith("@"):
-                        decorators.append(lines[j])
-                        j += 1
-                    elif not next_stripped:
-                        decorators.append(lines[j])
-                        j += 1
-                    else:
-                        break
-
-                # Check if next non-empty line is a def
-                if j < len(lines):
-                    def_line = lines[j]
-                    def_stripped = def_line.lstrip()
-                    if def_stripped.startswith("def ") or def_stripped.startswith("async def "):
-                        def_indent = len(def_line) - len(def_stripped)
-                        if def_indent != deco_indent:
-                            # Misalignment - fix it by aligning def to decorator
-                            indent_str = " " * deco_indent
-                            result.extend(decorators)
-                            result.append(indent_str + def_stripped)
-                            j += 1
-
-                            # Adjust body indentation
-                            diff = def_indent - deco_indent
-                            while j < len(lines):
-                                body_line = lines[j]
-                                body_stripped = body_line.lstrip()
-
-                                if not body_stripped:
-                                    result.append(body_line)
-                                    j += 1
-                                    continue
-
-                                body_indent = len(body_line) - len(body_stripped)
-
-                                # Check if we've reached another decorator
-                                # (which would be a new method)
-                                if body_stripped.startswith("@"):
-                                    break
-
-                                # Adjust indentation
-                                new_indent = max(0, body_indent - diff)
-                                result.append(" " * new_indent + body_stripped)
-                                j += 1
-
-                            i = j
-                            continue
-
-                # No misalignment or not a def - add normally
-                result.extend(decorators)
-                i = j
-            else:
-                result.append(line)
+            if not stripped.startswith("@"):
+                result.append(lines[i])
                 i += 1
+                continue
+
+            deco_indent = len(lines[i]) - len(stripped)
+            decorators, j = self._collect_decorators(lines, i)
+
+            fix = self._fix_misaligned_def(lines, j, deco_indent) if j < len(lines) else None
+            if fix is not None:
+                result.extend(decorators)
+                fixed_lines, j = fix
+                result.extend(fixed_lines)
+            else:
+                result.extend(decorators)
+            i = j
 
         return "".join(result)
+
+    @staticmethod
+    def _collect_decorators(
+        lines: List[str], start: int
+    ) -> Tuple[List[str], int]:
+        """Collect consecutive decorator lines (and empty lines between them).
+
+        Returns the decorator lines and the index of the next non-decorator line.
+        """
+        decorators = [lines[start]]
+        j = start + 1
+        while j < len(lines):
+            next_stripped = lines[j].lstrip()
+            if next_stripped.startswith("@") or not next_stripped:
+                decorators.append(lines[j])
+                j += 1
+            else:
+                break
+        return decorators, j
+
+    @staticmethod
+    def _fix_misaligned_def(
+        lines: List[str], def_idx: int, deco_indent: int
+    ) -> Optional[Tuple[List[str], int]]:
+        """Fix a misaligned def/async def line and its body.
+
+        Returns ``(fixed_lines, next_idx)`` when a misalignment is found
+        and corrected, or ``None`` when no fix is needed.
+        """
+        def_line = lines[def_idx]
+        def_stripped = def_line.lstrip()
+
+        if not (def_stripped.startswith("def ") or def_stripped.startswith("async def ")):
+            return None
+
+        def_indent = len(def_line) - len(def_stripped)
+        if def_indent == deco_indent:
+            return None
+
+        # Realign the def line to match the decorator indent.
+        fixed: List[str] = []
+        indent_str = " " * deco_indent
+        fixed.append(indent_str + def_stripped)
+
+        # Adjust body indentation.
+        diff = def_indent - deco_indent
+        j = def_idx + 1
+        while j < len(lines):
+            body_stripped = lines[j].lstrip()
+
+            if not body_stripped:
+                fixed.append(lines[j])
+                j += 1
+                continue
+
+            if body_stripped.startswith("@"):
+                break
+
+            body_indent = len(lines[j]) - len(body_stripped)
+            new_indent = max(0, body_indent - diff)
+            fixed.append(" " * new_indent + body_stripped)
+            j += 1
+
+        return fixed, j
 
     def _detect_indent_unit(self, code: str) -> str:
         """
