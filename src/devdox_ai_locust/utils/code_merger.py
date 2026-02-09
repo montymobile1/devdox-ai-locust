@@ -408,6 +408,24 @@ class LocustCodeMerger:
     # Replacement helpers (locating boundaries)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _node_start_line(node: ast.AST) -> int:
+        """Return the 0-based start line of an AST node, including decorators."""
+        start = node.lineno - 1
+        if hasattr(node, "decorator_list") and node.decorator_list:
+            start = min(d.lineno for d in node.decorator_list) - 1
+        return start
+
+    @staticmethod
+    def _find_class_node_at(
+        tree: ast.Module, class_start: int
+    ) -> Optional[ast.ClassDef]:
+        """Find the ClassDef node whose lineno matches *class_start*."""
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef) and (node.lineno - 1) == class_start:
+                return node
+        return None
+
     def _find_method_in_class(
         self,
         lines: List[str],
@@ -438,32 +456,15 @@ class LocustCodeMerger:
         except SyntaxError:
             return None, None
 
-        for node in ast.iter_child_nodes(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            # Match by line range — the class whose ``lineno`` sits at
-            # our expected ``class_start``.
-            if (node.lineno - 1) != class_start:
-                continue
+        class_node = self._find_class_node_at(tree, class_start)
+        if class_node is None:
+            return None, None
 
-            for child in ast.iter_child_nodes(node):
-                if (
-                    isinstance(child, ast.FunctionDef)
-                    and child.name == method_name
-                ):
-                    start = child.lineno - 1
-                    end = (
-                        child.end_lineno - 1
-                        if child.end_lineno
-                        else start
-                    )
-                    # Include decorator lines preceding the ``def``.
-                    if child.decorator_list:
-                        first_deco_line = min(
-                            d.lineno for d in child.decorator_list
-                        )
-                        start = first_deco_line - 1
-                    return start, end
+        for child in ast.iter_child_nodes(class_node):
+            if isinstance(child, ast.FunctionDef) and child.name == method_name:
+                start = self._node_start_line(child)
+                end = child.end_lineno - 1 if child.end_lineno else start
+                return start, end
 
         return None, None
 
@@ -491,19 +492,9 @@ class LocustCodeMerger:
             return None, None
 
         for node in ast.iter_child_nodes(tree):
-            if (
-                isinstance(node, ast.FunctionDef)
-                and node.name == func_name
-            ):
-                start = node.lineno - 1
-                end = (
-                    node.end_lineno - 1 if node.end_lineno else start
-                )
-                if node.decorator_list:
-                    first_deco_line = min(
-                        d.lineno for d in node.decorator_list
-                    )
-                    start = first_deco_line - 1
+            if isinstance(node, ast.FunctionDef) and node.name == func_name:
+                start = self._node_start_line(node)
+                end = node.end_lineno - 1 if node.end_lineno else start
                 return start, end
 
         return None, None
@@ -536,13 +527,8 @@ class LocustCodeMerger:
 
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.FunctionDef):
-                start = node.lineno - 1
+                start = self._node_start_line(node)
                 end = node.end_lineno if node.end_lineno else start + 1
-                if node.decorator_list:
-                    first_deco_line = min(
-                        d.lineno for d in node.decorator_list
-                    )
-                    start = first_deco_line - 1
                 segment = "".join(source_lines[start:end])
                 segments.append((node.name, segment))
 
@@ -576,13 +562,8 @@ class LocustCodeMerger:
 
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.ClassDef):
-                start = node.lineno - 1
+                start = self._node_start_line(node)
                 end = node.end_lineno if node.end_lineno else start + 1
-                if node.decorator_list:
-                    first_deco_line = min(
-                        d.lineno for d in node.decorator_list
-                    )
-                    start = first_deco_line - 1
                 segment = "".join(source_lines[start:end])
                 segments.append((node.name, segment))
 
@@ -862,14 +843,8 @@ class LocustCodeMerger:
 
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.FunctionDef) and node.name in keep_set:
-                start = node.lineno - 1  # 0-based
+                start = self._node_start_line(node)
                 end = node.end_lineno if node.end_lineno else start + 1
-                # Include decorator lines that precede the function def.
-                if node.decorator_list:
-                    first_deco_line = min(
-                        d.lineno for d in node.decorator_list
-                    )
-                    start = first_deco_line - 1
                 segment = "".join(source_lines[start:end])
                 kept_segments.append(segment)
 
