@@ -1012,3 +1012,65 @@ class TestLogVerboseFormatResult:
 
         assert "[format]" in caplog.text
         assert "Black formatting applied" in caplog.text
+
+
+class TestExtractReferenceImports:
+    """Tests for _extract_reference_imports helper."""
+
+    def test_returns_imports_from_valid_source(
+        self, enhancer, sample_locust_source
+    ):
+        """Test that imports are extracted from valid reference source."""
+        imports = enhancer._extract_reference_imports(sample_locust_source)
+
+        assert isinstance(imports, list)
+        assert len(imports) > 0
+        assert any("locust" in imp for imp in imports)
+
+    def test_returns_empty_list_when_none(self, enhancer):
+        """Test returns empty list when source is None."""
+        imports = enhancer._extract_reference_imports(None)
+
+        assert imports == []
+
+    def test_returns_empty_list_on_invalid_syntax(self, enhancer):
+        """Test returns empty list when source has invalid syntax."""
+        imports = enhancer._extract_reference_imports(
+            "def broken(\n  invalid"
+        )
+
+        assert imports == []
+
+
+class TestLogVerboseWorkflowStart:
+    """Tests for _log_verbose_workflow_start helper."""
+
+    def test_logs_tag_and_endpoints(self, verbose_enhancer, caplog):
+        """Test that tag name and endpoint summaries are logged."""
+        caplog.set_level(logging.DEBUG)
+        mock_ep = Mock()
+        mock_ep.method = "GET"
+        mock_ep.path = "/users"
+
+        verbose_enhancer._log_verbose_workflow_start(
+            "users", [mock_ep], None
+        )
+
+        assert "[new-workflow] generating for tag 'users'" in caplog.text
+        assert "1 endpoint(s)" in caplog.text
+        assert "GET /users" in caplog.text
+
+    def test_logs_reference_info(self, verbose_enhancer, caplog):
+        """Test that reference workflow info is logged."""
+        caplog.set_level(logging.DEBUG)
+        mock_ep = Mock()
+        mock_ep.method = "POST"
+        mock_ep.path = "/orders"
+        reference = "from locust import HttpUser\nclass U(HttpUser): pass\n"
+
+        verbose_enhancer._log_verbose_workflow_start(
+            "orders", [mock_ep], reference
+        )
+
+        assert "reference workflow:" in caplog.text
+        assert "chars" in caplog.text

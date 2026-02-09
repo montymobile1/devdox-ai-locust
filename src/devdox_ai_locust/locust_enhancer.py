@@ -1012,55 +1012,16 @@ class LocustTestEnhancer:
         """
         try:
             if self._verbose:
-                ep_summaries = [
-                    f"{getattr(ep, 'method', '?').upper()} {getattr(ep, 'path', '?')}"
-                    for ep in tag_endpoints
-                ]
-                self._logger.info(
-                    "[new-workflow] generating for tag '%s' — %d endpoint(s): %s",
-                    tag_name,
-                    len(tag_endpoints),
-                    ", ".join(ep_summaries),
-                )
-                self._logger.info(
-                    "[new-workflow] reference workflow: %s",
-                    f"{len(reference_workflow_source)} chars"
-                    if reference_workflow_source
-                    else "none",
+                self._log_verbose_workflow_start(
+                    tag_name, tag_endpoints, reference_workflow_source
                 )
 
-            # Build context for the prompt
-            api_schema_summary = ""
-            if swagger_url:
-                try:
-                    api_schema_summary = await self._fetch_api_schema_summary(
-                        swagger_url
-                    )
-                    if self._verbose:
-                        self._logger.info(
-                            "[new-workflow] fetched API schema: %d chars",
-                            len(api_schema_summary),
-                        )
-                except Exception as e:
-                    self._logger.warning(
-                        "Could not fetch API schema for new workflow: %s", e
-                    )
-
-            # Collect imports from the reference workflow
-            existing_imports: List[str] = []
-            if reference_workflow_source:
-                try:
-                    ref_analysis = self._analyze_source(reference_workflow_source)
-                    existing_imports = [
-                        imp.statement for imp in ref_analysis.imports
-                    ]
-                    if self._verbose:
-                        self._logger.info(
-                            "[new-workflow] extracted %d import(s) from reference",
-                            len(existing_imports),
-                        )
-                except ValueError:
-                    pass
+            api_schema_summary = await self._fetch_api_schema_context(
+                swagger_url
+            )
+            existing_imports = self._extract_reference_imports(
+                reference_workflow_source
+            )
 
             # Render the prompt
             template = self._template_env.get_template(
@@ -1137,3 +1098,52 @@ class LocustTestEnhancer:
                 original_source="",
                 error=str(e),
             )
+
+    # ------------------------------------------------------------------
+    # New workflow helpers
+    # ------------------------------------------------------------------
+
+    def _log_verbose_workflow_start(
+        self,
+        tag_name: str,
+        tag_endpoints: list,
+        reference_workflow_source: Optional[str],
+    ) -> None:
+        """Log the start of a new workflow generation."""
+        ep_summaries = [
+            f"{getattr(ep, 'method', '?').upper()} {getattr(ep, 'path', '?')}"
+            for ep in tag_endpoints
+        ]
+        self._logger.info(
+            "[new-workflow] generating for tag '%s' — %d endpoint(s): %s",
+            tag_name,
+            len(tag_endpoints),
+            ", ".join(ep_summaries),
+        )
+        self._logger.info(
+            "[new-workflow] reference workflow: %s",
+            f"{len(reference_workflow_source)} chars"
+            if reference_workflow_source
+            else "none",
+        )
+
+    def _extract_reference_imports(
+        self, reference_workflow_source: Optional[str]
+    ) -> List[str]:
+        """Extract import statements from a reference workflow source.
+
+        Returns an empty list when no source is given or parsing fails.
+        """
+        if not reference_workflow_source:
+            return []
+        try:
+            ref_analysis = self._analyze_source(reference_workflow_source)
+            imports = [imp.statement for imp in ref_analysis.imports]
+            if self._verbose:
+                self._logger.info(
+                    "[new-workflow] extracted %d import(s) from reference",
+                    len(imports),
+                )
+            return imports
+        except ValueError:
+            return []
