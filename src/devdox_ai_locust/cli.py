@@ -772,6 +772,216 @@ def enhance(
         sys.exit(1)
 
 
+def _validate_and_discover_suite(
+    suite_dir: Path, verbose: bool,
+) -> Dict[str, Any]:
+    """Discover suite files, validate at least one exists, and print count."""
+    console.print("[bold]Discovering test suite structure...[/bold]")
+    suite = _discover_suite_files(suite_dir, verbose)
+
+    if not suite["workflows"] and not suite["locustfile"]:
+        console.print(
+            "[red]Error:[/red] No Locust test files found in "
+            f"suite directory: {suite_dir}"
+        )
+        sys.exit(1)
+
+    file_count = (
+        len(suite["workflows"])
+        + (1 if suite["locustfile"] else 0)
+        + (1 if suite["test_data"] else 0)
+    )
+    console.print(
+        f"[green]\u2713[/green] Found {file_count} enhanceable file(s) "
+        f"in {suite_dir}"
+    )
+    return suite
+
+
+def _log_tag_breakdown(endpoints: List[Endpoint]) -> None:
+    """Print a per-tag endpoint count breakdown (verbose mode)."""
+    tag_counts: Dict[str, int] = {}
+    for ep in endpoints:
+        for tag in ep.tags:
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    console.print("[blue]Endpoints per tag:[/blue]")
+    for tag, count in sorted(tag_counts.items()):
+        console.print(f"  [dim]-[/dim] {tag}: {count} endpoint(s)")
+
+
+def _configure_verbose_logging() -> None:
+    """Set DEBUG level on enhancer/merger loggers and ensure a root handler."""
+    import logging as _logging
+
+    _logging.getLogger("devdox_ai_locust.locust_enhancer").setLevel(
+        _logging.DEBUG
+    )
+    _logging.getLogger("devdox_ai_locust.utils.code_merger").setLevel(
+        _logging.DEBUG
+    )
+    root = _logging.getLogger()
+    if not root.handlers:
+        handler = _logging.StreamHandler()
+        handler.setFormatter(
+            _logging.Formatter("%(name)s %(levelname)s: %(message)s")
+        )
+        root.addHandler(handler)
+    root.setLevel(_logging.DEBUG)
+
+
+async def _enhance_suite_files(
+    enhancer: LocustTestEnhancer,
+    suite: Dict[str, Any],
+    custom_requirement: str,
+    swagger_url: str,
+    verbose: bool,
+) -> Dict[str, EnhanceResult]:
+    """Enhance all files in the suite (workflows, locustfile, test_data)."""
+    results: Dict[str, EnhanceResult] = {}
+
+    for wf_path in suite["workflows"]:
+        results[str(wf_path)] = await _enhance_single_file(
+            enhancer, wf_path, custom_requirement, swagger_url, verbose
+        )
+
+    if suite["locustfile"]:
+        lf_path = suite["locustfile"]
+        results[str(lf_path)] = await _enhance_single_file(
+            enhancer, lf_path, custom_requirement, swagger_url, verbose
+        )
+
+    if suite["test_data"]:
+        td_path = suite["test_data"]
+        results[str(td_path)] = await _enhance_single_file(
+            enhancer, td_path, custom_requirement, swagger_url, verbose
+        )
+
+    return results
+
+
+async def _generate_single_gap_workflow(
+    enhancer: LocustTestEnhancer,
+    gap_tag: str,
+    gap_endpoints: List[Endpoint],
+    custom_requirement: str,
+    swagger_url: str,
+    reference_source: Optional[str],
+    suite_dir: Path,
+    verbose: bool,
+    dry_run: bool,
+) -> Optional[str]:
+    """Generate a single new workflow for an uncovered tag.
+
+    Returns the created file path, or None on failure.
+    """
+    file_start = datetime.now(timezone.utc)
+
+    if verbose:
+        ep_list = ", ".join(
+            f"{getattr(e, 'method', '?').upper()} "
+            f"{getattr(e, 'path', '?')}"
+            for e in gap_endpoints
+        )
+        console.print(
+            f"  [blue]>[/blue] {gap_tag}: "
+            f"{len(gap_endpoints)} endpoint(s) — {ep_list}"
+        )
+
+    with console.status(
+        f"[bold blue]Generating new workflow for '{gap_tag}'..."
+    ):
+        try:
+            gen_result = await enhancer.generate_new_workflow(
+                tag_name=gap_tag,
+                tag_endpoints=gap_endpoints,
+                custom_requirement=custom_requirement,
+                swagger_url=swagger_url,
+                reference_workflow_source=reference_source,
+            )
+        except Exception as e:
+            gen_result = EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="",
+                error=str(e),
+            )
+
+    elapsed = (datetime.now(timezone.utc) - file_start).total_seconds()
+
+    if not gen_result.success or not gen_result.enhanced_source.strip():
+        console.print(
+            f"  [red]\u2717[/red] {gap_tag}_workflow.py: "
+            f"{gen_result.error} ({elapsed:.1f}s)"
+        )
+        return None
+
+    workflows_dir = suite_dir / "workflows"
+    workflows_dir.mkdir(exist_ok=True)
+    new_path = workflows_dir / f"{gap_tag}_workflow.py"
+
+    if not dry_run:
+        with open(new_path, "w", encoding="utf-8") as f:
+            f.write(gen_result.enhanced_source)
+
+    if verbose:
+        new_lines = gen_result.enhanced_source.count("\n") + 1
+        console.print(
+            f"  {new_path.name}: [blue]created[/blue] "
+            f"({elapsed:.1f}s, {new_lines} lines)"
+        )
+    else:
+        console.print(
+            f"  [blue]+[/blue] {gap_tag}_workflow.py ({elapsed:.1f}s)"
+        )
+
+    return str(new_path)
+
+
+async def _generate_gap_workflows(
+    enhancer: LocustTestEnhancer,
+    gaps: List[str],
+    endpoints: List[Endpoint],
+    suite: Dict[str, Any],
+    suite_dir: Path,
+    custom_requirement: str,
+    swagger_url: str,
+    verbose: bool,
+    dry_run: bool,
+) -> List[str]:
+    """Generate new workflow files for uncovered API tags."""
+    reference_source = None
+    if suite["workflows"]:
+        try:
+            with open(suite["workflows"][0], "r", encoding="utf-8") as f:
+                reference_source = f.read()
+        except IOError:
+            pass
+
+    tag_endpoint_map: Dict[str, List[Endpoint]] = {}
+    for ep in endpoints:
+        for tag in ep.tags:
+            normalised = tag.lower().replace(" ", "_")
+            if normalised in gaps:
+                tag_endpoint_map.setdefault(normalised, []).append(ep)
+
+    if verbose:
+        console.print(
+            f"\n[bold]Generating new workflows for "
+            f"{len(tag_endpoint_map)} uncovered tag(s)...[/bold]"
+        )
+
+    created_files: List[str] = []
+    for gap_tag, gap_endpoints in tag_endpoint_map.items():
+        created_path = await _generate_single_gap_workflow(
+            enhancer, gap_tag, gap_endpoints, custom_requirement,
+            swagger_url, reference_source, suite_dir, verbose, dry_run,
+        )
+        if created_path:
+            created_files.append(created_path)
+
+    return created_files
+
+
 async def _async_enhance(
     ctx: click.Context,
     swagger_url: str,
@@ -785,214 +995,63 @@ async def _async_enhance(
     verbose = ctx.obj["verbose"]
 
     try:
-        # 1. Validate API key
         _, api_key = _initialize_config(together_api_key)
         suite_dir = Path(test_suite)
 
-        # 2. Display configuration
         if verbose:
             _display_enhance_configuration(
                 swagger_url, suite_dir, custom_requirement, dry_run
             )
 
-        # 3. Discover suite structure
-        console.print("[bold]Discovering test suite structure...[/bold]")
-        suite = _discover_suite_files(suite_dir, verbose)
+        suite = _validate_and_discover_suite(suite_dir, verbose)
 
-        if not suite["workflows"] and not suite["locustfile"]:
-            console.print(
-                "[red]Error:[/red] No Locust test files found in "
-                f"suite directory: {suite_dir}"
-            )
-            sys.exit(1)
-
-        file_count = (
-            len(suite["workflows"])
-            + (1 if suite["locustfile"] else 0)
-            + (1 if suite["test_data"] else 0)
-        )
-        console.print(
-            f"[green]\u2713[/green] Found {file_count} enhanceable file(s) "
-            f"in {suite_dir}"
-        )
-
-        # 4. Fetch and parse swagger spec
         _, endpoints, api_info = await _process_api_schema(
             swagger_url, verbose
         )
 
         if verbose:
-            # Show a per-tag endpoint breakdown
-            tag_counts: Dict[str, int] = {}
-            for ep in endpoints:
-                for tag in ep.tags:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-            console.print("[blue]Endpoints per tag:[/blue]")
-            for tag, count in sorted(tag_counts.items()):
-                console.print(f"  [dim]-[/dim] {tag}: {count} endpoint(s)")
+            _log_tag_breakdown(endpoints)
 
-        # 5. Identify coverage gaps
         gaps = _identify_coverage_gaps(
             endpoints, suite["workflows"], verbose
         )
 
-        # 6. Enhance existing files
         console.print(
             f"\n[bold]Enhancing test suite based on requirement:[/bold] "
             f"{custom_requirement}\n"
         )
 
-        # -- Verbose: configure logging level for enhancer & merger --
         if verbose:
-            import logging as _logging
-
-            _logging.getLogger("devdox_ai_locust.locust_enhancer").setLevel(
-                _logging.DEBUG
-            )
-            _logging.getLogger("devdox_ai_locust.utils.code_merger").setLevel(
-                _logging.DEBUG
-            )
-            # Ensure there's a handler that can show debug output
-            root = _logging.getLogger()
-            if not root.handlers:
-                handler = _logging.StreamHandler()
-                handler.setFormatter(
-                    _logging.Formatter("%(name)s %(levelname)s: %(message)s")
-                )
-                root.addHandler(handler)
-            root.setLevel(_logging.DEBUG)
+            _configure_verbose_logging()
 
         enhancer = LocustTestEnhancer(
             together_api_key=api_key, verbose=verbose
         )
 
-        results: Dict[str, EnhanceResult] = {}
+        results = await _enhance_suite_files(
+            enhancer, suite, custom_requirement, swagger_url, verbose
+        )
 
-        # --- Workflow files (primary targets) ---
-        for wf_path in suite["workflows"]:
-            results[str(wf_path)] = await _enhance_single_file(
-                enhancer, wf_path, custom_requirement, swagger_url, verbose
-            )
-
-        # --- locustfile.py ---
-        if suite["locustfile"]:
-            lf_path = suite["locustfile"]
-            results[str(lf_path)] = await _enhance_single_file(
-                enhancer, lf_path, custom_requirement, swagger_url, verbose
-            )
-
-        # --- test_data.py ---
-        if suite["test_data"]:
-            td_path = suite["test_data"]
-            results[str(td_path)] = await _enhance_single_file(
-                enhancer, td_path, custom_requirement, swagger_url, verbose
-            )
-
-        # 7. Create new workflow files for uncovered tags
         created_files: List[str] = []
         if gaps:
-            # Get a reference workflow for style matching
-            reference_source = None
-            if suite["workflows"]:
-                try:
-                    with open(suite["workflows"][0], "r", encoding="utf-8") as f:
-                        reference_source = f.read()
-                except IOError:
-                    pass
+            created_files = await _generate_gap_workflows(
+                enhancer, gaps, endpoints, suite, suite_dir,
+                custom_requirement, swagger_url, verbose, dry_run,
+            )
 
-            # Group endpoints by tag for gap generation
-            tag_endpoint_map: Dict[str, List[Endpoint]] = {}
-            for ep in endpoints:
-                for tag in ep.tags:
-                    normalised = tag.lower().replace(" ", "_")
-                    if normalised in gaps:
-                        tag_endpoint_map.setdefault(normalised, []).append(ep)
-
-            if verbose:
-                console.print(
-                    f"\n[bold]Generating new workflows for "
-                    f"{len(tag_endpoint_map)} uncovered tag(s)...[/bold]"
-                )
-
-            for gap_tag, gap_endpoints in tag_endpoint_map.items():
-                file_start = datetime.now(timezone.utc)
-
-                if verbose:
-                    ep_list = ", ".join(
-                        f"{getattr(e, 'method', '?').upper()} "
-                        f"{getattr(e, 'path', '?')}"
-                        for e in gap_endpoints
-                    )
-                    console.print(
-                        f"  [blue]>[/blue] {gap_tag}: "
-                        f"{len(gap_endpoints)} endpoint(s) — {ep_list}"
-                    )
-
-                with console.status(
-                    f"[bold blue]Generating new workflow for "
-                    f"'{gap_tag}'..."
-                ):
-                    try:
-                        gen_result = await enhancer.generate_new_workflow(
-                            tag_name=gap_tag,
-                            tag_endpoints=gap_endpoints,
-                            custom_requirement=custom_requirement,
-                            swagger_url=swagger_url,
-                            reference_workflow_source=reference_source,
-                        )
-                    except Exception as e:
-                        gen_result = EnhanceResult(
-                            success=False,
-                            enhanced_source="",
-                            original_source="",
-                            error=str(e),
-                        )
-
-                elapsed = (
-                    datetime.now(timezone.utc) - file_start
-                ).total_seconds()
-
-                if gen_result.success and gen_result.enhanced_source.strip():
-                    workflows_dir = suite_dir / "workflows"
-                    workflows_dir.mkdir(exist_ok=True)
-                    new_path = workflows_dir / f"{gap_tag}_workflow.py"
-
-                    if not dry_run:
-                        with open(new_path, "w", encoding="utf-8") as f:
-                            f.write(gen_result.enhanced_source)
-
-                    created_files.append(str(new_path))
-                    if verbose:
-                        new_lines = gen_result.enhanced_source.count("\n") + 1
-                        console.print(
-                            f"  {new_path.name}: [blue]created[/blue] "
-                            f"({elapsed:.1f}s, {new_lines} lines)"
-                        )
-                    else:
-                        console.print(
-                            f"  [blue]+[/blue] {gap_tag}_workflow.py "
-                            f"({elapsed:.1f}s)"
-                        )
-                else:
-                    console.print(
-                        f"  [red]\u2717[/red] {gap_tag}_workflow.py: "
-                        f"{gen_result.error} ({elapsed:.1f}s)"
-                    )
-
-        # 8. Write results to disk
         if not dry_run:
             _write_enhance_results(results, verbose)
         elif verbose:
             console.print("[dim]Dry run — no files written.[/dim]")
 
-        # 9. Show results summary
         _show_enhance_results(
             results, created_files, start_time, verbose, dry_run
         )
 
     except Exception as e:
-        end_time = datetime.now(timezone.utc)
-        processing_time = (end_time - start_time).total_seconds()
+        processing_time = (
+            datetime.now(timezone.utc) - start_time
+        ).total_seconds()
         console.print(
             f"[red]\u2717[/red] Enhancement failed after "
             f"{processing_time:.2f}s: {e}"

@@ -20,6 +20,12 @@ from devdox_ai_locust.cli import (
     _add_result_row,
     _print_summary,
     _print_verbose_details,
+    _validate_and_discover_suite,
+    _log_tag_breakdown,
+    _configure_verbose_logging,
+    _enhance_suite_files,
+    _generate_gap_workflows,
+    _generate_single_gap_workflow,
     _enhance_single_file,
     _write_enhance_results,
 )
@@ -951,3 +957,531 @@ class TestAsyncEnhance:
                 together_api_key="test-key",
                 dry_run=False,
             )
+
+
+class TestValidateAndDiscoverSuite:
+    """Tests for _validate_and_discover_suite helper."""
+
+    def test_valid_suite_returns_dict(self, temp_suite_dir):
+        """Test that a valid suite returns the discovery dict."""
+        suite = _validate_and_discover_suite(temp_suite_dir, verbose=False)
+
+        assert suite["suite_dir"] == temp_suite_dir
+        assert suite["locustfile"] is not None
+        assert len(suite["workflows"]) == 1
+
+    def test_empty_suite_exits(self, temp_suite_dir):
+        """Test that an empty suite triggers sys.exit."""
+        import shutil
+        (temp_suite_dir / "locustfile.py").unlink()
+        (temp_suite_dir / "test_data.py").unlink()
+        shutil.rmtree(temp_suite_dir / "workflows")
+
+        with pytest.raises(SystemExit):
+            _validate_and_discover_suite(temp_suite_dir, verbose=False)
+
+    def test_suite_with_only_locustfile(self, temp_suite_dir):
+        """Test suite with only locustfile passes validation."""
+        import shutil
+        shutil.rmtree(temp_suite_dir / "workflows")
+
+        suite = _validate_and_discover_suite(temp_suite_dir, verbose=False)
+
+        assert suite["locustfile"] is not None
+        assert suite["workflows"] == []
+
+    def test_suite_with_only_workflows(self, temp_suite_dir):
+        """Test suite with only workflows passes validation."""
+        (temp_suite_dir / "locustfile.py").unlink()
+
+        suite = _validate_and_discover_suite(temp_suite_dir, verbose=False)
+
+        assert suite["locustfile"] is None
+        assert len(suite["workflows"]) == 1
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_file_count_correct(self, mock_console, temp_suite_dir):
+        """Test that file count includes workflows + locustfile + test_data."""
+        _validate_and_discover_suite(temp_suite_dir, verbose=False)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        # 1 workflow + 1 locustfile + 1 test_data = 3
+        assert "3 enhanceable file(s)" in joined
+
+
+class TestLogTagBreakdown:
+    """Tests for _log_tag_breakdown helper."""
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_correct_per_tag_counts(self, mock_console, sample_endpoints):
+        """Test correct per-tag counts are printed."""
+        _log_tag_breakdown(sample_endpoints)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "users: 1 endpoint(s)" in joined
+        assert "orders: 1 endpoint(s)" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_multi_tag_endpoint(self, mock_console):
+        """Test endpoint with multiple tags counted in each."""
+        from devdox_ai_locust.utils.open_ai_parser import Endpoint
+
+        endpoints = [
+            Endpoint(
+                path="/admin/users",
+                method="GET",
+                operation_id="adminGetUsers",
+                summary="",
+                parameters=[],
+                request_body=None,
+                responses=[],
+                description="",
+                tags=["admin", "users"],
+            ),
+        ]
+
+        _log_tag_breakdown(endpoints)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "admin: 1 endpoint(s)" in joined
+        assert "users: 1 endpoint(s)" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_empty_endpoints(self, mock_console):
+        """Test empty endpoints list does not crash."""
+        _log_tag_breakdown([])
+
+        # Should still print the header
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "Endpoints per tag" in joined
+
+
+class TestConfigureVerboseLogging:
+    """Tests for _configure_verbose_logging helper."""
+
+    def test_enhancer_logger_set_to_debug(self):
+        """Test enhancer logger is set to DEBUG."""
+        import logging
+
+        _configure_verbose_logging()
+
+        logger = logging.getLogger("devdox_ai_locust.locust_enhancer")
+        assert logger.level == logging.DEBUG
+
+    def test_merger_logger_set_to_debug(self):
+        """Test code merger logger is set to DEBUG."""
+        import logging
+
+        _configure_verbose_logging()
+
+        logger = logging.getLogger("devdox_ai_locust.utils.code_merger")
+        assert logger.level == logging.DEBUG
+
+    def test_root_logger_gets_handler(self):
+        """Test root logger gets a handler if none exist."""
+        import logging
+
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+
+        # Remove all handlers temporarily
+        root.handlers.clear()
+
+        _configure_verbose_logging()
+
+        assert len(root.handlers) >= 1
+        assert root.level == logging.DEBUG
+
+        # Restore original handlers
+        root.handlers = original_handlers
+
+    def test_existing_handlers_not_duplicated(self):
+        """Test that existing handlers are not duplicated."""
+        import logging
+
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        original_count = len(root.handlers)
+
+        # Ensure there's at least one handler
+        if not root.handlers:
+            root.addHandler(logging.StreamHandler())
+            original_count = 1
+
+        _configure_verbose_logging()
+
+        # Should not have added another handler
+        assert len(root.handlers) == original_count
+
+        # Restore
+        root.handlers = original_handlers
+
+
+class TestEnhanceSuiteFiles:
+    """Tests for _enhance_suite_files helper."""
+
+    def test_all_workflows_enhanced(self, temp_suite_dir):
+        """Test all workflow files are enhanced."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.enhance_file = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="enhanced",
+                original_source="original",
+            )
+        )
+
+        suite = {
+            "workflows": [temp_suite_dir / "workflows" / "users_workflow.py"],
+            "locustfile": None,
+            "test_data": None,
+        }
+
+        results = asyncio.run(_enhance_suite_files(
+            mock_enhancer, suite, "Add tests", "http://example.com", False
+        ))
+
+        assert len(results) == 1
+        mock_enhancer.enhance_file.assert_called_once()
+
+    def test_locustfile_included(self, temp_suite_dir):
+        """Test locustfile is enhanced when present."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.enhance_file = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="enhanced",
+                original_source="original",
+            )
+        )
+
+        suite = {
+            "workflows": [],
+            "locustfile": temp_suite_dir / "locustfile.py",
+            "test_data": None,
+        }
+
+        results = asyncio.run(_enhance_suite_files(
+            mock_enhancer, suite, "Add tests", "http://example.com", False
+        ))
+
+        assert len(results) == 1
+
+    def test_test_data_included(self, temp_suite_dir):
+        """Test test_data is enhanced when present."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.enhance_file = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="enhanced",
+                original_source="original",
+            )
+        )
+
+        suite = {
+            "workflows": [],
+            "locustfile": None,
+            "test_data": temp_suite_dir / "test_data.py",
+        }
+
+        results = asyncio.run(_enhance_suite_files(
+            mock_enhancer, suite, "Add tests", "http://example.com", False
+        ))
+
+        assert len(results) == 1
+
+    def test_missing_optional_files_skipped(self, temp_suite_dir):
+        """Test that None locustfile/test_data are skipped."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.enhance_file = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="e",
+                original_source="o",
+            )
+        )
+
+        suite = {
+            "workflows": [temp_suite_dir / "workflows" / "users_workflow.py"],
+            "locustfile": None,
+            "test_data": None,
+        }
+
+        results = asyncio.run(_enhance_suite_files(
+            mock_enhancer, suite, "Add tests", "http://example.com", False
+        ))
+
+        assert len(results) == 1
+        assert mock_enhancer.enhance_file.call_count == 1
+
+    def test_empty_workflows(self):
+        """Test empty workflows list produces empty results."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.enhance_file = AsyncMock()
+
+        suite = {
+            "workflows": [],
+            "locustfile": None,
+            "test_data": None,
+        }
+
+        results = asyncio.run(_enhance_suite_files(
+            mock_enhancer, suite, "Add tests", "http://example.com", False
+        ))
+
+        assert len(results) == 0
+        mock_enhancer.enhance_file.assert_not_called()
+
+
+class TestGenerateSingleGapWorkflow:
+    """Tests for _generate_single_gap_workflow helper."""
+
+    def test_successful_generation(self, temp_suite_dir, sample_endpoints):
+        """Test successful gap workflow generation returns file path."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.generate_new_workflow = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="from locust import HttpUser\n",
+                original_source="",
+            )
+        )
+
+        result = asyncio.run(_generate_single_gap_workflow(
+            enhancer=mock_enhancer,
+            gap_tag="orders",
+            gap_endpoints=sample_endpoints,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            reference_source=None,
+            suite_dir=temp_suite_dir,
+            verbose=False,
+            dry_run=False,
+        ))
+
+        assert result is not None
+        assert "orders_workflow.py" in result
+        assert Path(result).exists()
+
+    def test_failed_generation_returns_none(self, temp_suite_dir, sample_endpoints):
+        """Test failed generation returns None."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.generate_new_workflow = AsyncMock(
+            return_value=EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="",
+                error="AI error",
+            )
+        )
+
+        result = asyncio.run(_generate_single_gap_workflow(
+            enhancer=mock_enhancer,
+            gap_tag="orders",
+            gap_endpoints=sample_endpoints,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            reference_source=None,
+            suite_dir=temp_suite_dir,
+            verbose=False,
+            dry_run=False,
+        ))
+
+        assert result is None
+
+    def test_dry_run_does_not_write(self, temp_suite_dir, sample_endpoints):
+        """Test dry run does not write files to disk."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.generate_new_workflow = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="from locust import HttpUser\n",
+                original_source="",
+            )
+        )
+
+        result = asyncio.run(_generate_single_gap_workflow(
+            enhancer=mock_enhancer,
+            gap_tag="orders",
+            gap_endpoints=sample_endpoints,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            reference_source=None,
+            suite_dir=temp_suite_dir,
+            verbose=False,
+            dry_run=True,
+        ))
+
+        assert result is not None
+        assert not Path(result).exists()
+
+    def test_exception_returns_none(self, temp_suite_dir, sample_endpoints):
+        """Test that an exception from the enhancer returns None."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.generate_new_workflow = AsyncMock(
+            side_effect=Exception("Network error")
+        )
+
+        result = asyncio.run(_generate_single_gap_workflow(
+            enhancer=mock_enhancer,
+            gap_tag="orders",
+            gap_endpoints=sample_endpoints,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            reference_source=None,
+            suite_dir=temp_suite_dir,
+            verbose=False,
+            dry_run=False,
+        ))
+
+        assert result is None
+
+
+class TestGenerateGapWorkflows:
+    """Tests for _generate_gap_workflows helper."""
+
+    def test_generates_for_uncovered_tags(self, temp_suite_dir):
+        """Test workflows generated for uncovered tags."""
+        import asyncio
+        from devdox_ai_locust.utils.open_ai_parser import Endpoint
+
+        mock_enhancer = Mock()
+        mock_enhancer.generate_new_workflow = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="from locust import HttpUser\n",
+                original_source="",
+            )
+        )
+
+        endpoints = [
+            Endpoint(
+                path="/orders",
+                method="POST",
+                operation_id="createOrder",
+                summary="",
+                parameters=[],
+                request_body=None,
+                responses=[],
+                description="",
+                tags=["orders"],
+            ),
+        ]
+
+        suite = {
+            "workflows": [temp_suite_dir / "workflows" / "users_workflow.py"],
+            "locustfile": None,
+            "test_data": None,
+        }
+
+        created = asyncio.run(_generate_gap_workflows(
+            enhancer=mock_enhancer,
+            gaps=["orders"],
+            endpoints=endpoints,
+            suite=suite,
+            suite_dir=temp_suite_dir,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            verbose=False,
+            dry_run=False,
+        ))
+
+        assert len(created) == 1
+        assert "orders_workflow.py" in created[0]
+
+    def test_reference_source_from_first_workflow(self, temp_suite_dir):
+        """Test reference source is read from the first workflow file."""
+        import asyncio
+        from devdox_ai_locust.utils.open_ai_parser import Endpoint
+
+        mock_enhancer = Mock()
+        mock_enhancer.generate_new_workflow = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="code\n",
+                original_source="",
+            )
+        )
+
+        endpoints = [
+            Endpoint(
+                path="/products",
+                method="GET",
+                operation_id="getProducts",
+                summary="",
+                parameters=[],
+                request_body=None,
+                responses=[],
+                description="",
+                tags=["products"],
+            ),
+        ]
+
+        suite = {
+            "workflows": [temp_suite_dir / "workflows" / "users_workflow.py"],
+            "locustfile": None,
+            "test_data": None,
+        }
+
+        asyncio.run(_generate_gap_workflows(
+            enhancer=mock_enhancer,
+            gaps=["products"],
+            endpoints=endpoints,
+            suite=suite,
+            suite_dir=temp_suite_dir,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            verbose=False,
+            dry_run=True,
+        ))
+
+        call_kwargs = mock_enhancer.generate_new_workflow.call_args[1]
+        assert "HttpUser" in call_kwargs["reference_workflow_source"]
+
+    def test_empty_gaps_returns_empty(self, temp_suite_dir):
+        """Test no gaps produces no created files."""
+        import asyncio
+
+        mock_enhancer = Mock()
+
+        suite = {
+            "workflows": [],
+            "locustfile": None,
+            "test_data": None,
+        }
+
+        created = asyncio.run(_generate_gap_workflows(
+            enhancer=mock_enhancer,
+            gaps=[],
+            endpoints=[],
+            suite=suite,
+            suite_dir=temp_suite_dir,
+            custom_requirement="Add tests",
+            swagger_url="http://example.com",
+            verbose=False,
+            dry_run=False,
+        ))
+
+        assert created == []
