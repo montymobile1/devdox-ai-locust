@@ -1059,6 +1059,66 @@ async def _async_enhance(
         raise
 
 
+def _build_result_detail(result: "EnhanceResult") -> str:
+    """Build a human-readable detail string from enhancement result metrics."""
+    _METRIC_SPECS = [
+        ("added_tasks", "+{} tasks"),
+        ("replaced_tasks", "~{} tasks replaced"),
+        ("added_imports", "+{} imports"),
+        ("added_helpers", "+{} helpers"),
+        ("added_classes", "+{} classes"),
+        ("replaced_helpers", "~{} helpers replaced"),
+        ("replaced_classes", "~{} classes replaced"),
+        ("warnings", "{} warning(s)"),
+    ]
+
+    parts = []
+    for attr, fmt in _METRIC_SPECS:
+        count = len(getattr(result, attr, []))
+        if count:
+            parts.append(fmt.format(count))
+
+    detail = ", ".join(parts) if parts else "no changes"
+
+    if result.enhanced_source != result.original_source:
+        orig_lines = result.original_source.count("\n") + 1
+        new_lines = result.enhanced_source.count("\n") + 1
+        diff = new_lines - orig_lines
+        sign = "+" if diff >= 0 else ""
+        detail += f" | {orig_lines}->{new_lines} lines ({sign}{diff})"
+
+    return detail
+
+
+def _log_file_result(
+    file_path: Path,
+    result: "EnhanceResult",
+    elapsed: float,
+    verbose: bool,
+) -> None:
+    """Log the outcome of a single file enhancement."""
+    if verbose:
+        if result.success:
+            detail = _build_result_detail(result)
+            console.print(
+                f"  {file_path.name}: [green]done[/green] "
+                f"({elapsed:.1f}s) [{detail}]"
+            )
+        else:
+            console.print(
+                f"  {file_path.name}: [red]failed[/red] "
+                f"({elapsed:.1f}s) {result.error}"
+            )
+    elif result.success:
+        console.print(
+            f"  [green]\u2713[/green] {file_path.name} ({elapsed:.1f}s)"
+        )
+    else:
+        console.print(
+            f"  [red]\u2717[/red] {file_path.name}: {result.error}"
+        )
+
+
 async def _enhance_single_file(
     enhancer: LocustTestEnhancer,
     file_path: Path,
@@ -1091,64 +1151,7 @@ async def _enhance_single_file(
             )
 
     elapsed = (datetime.now(timezone.utc) - file_start).total_seconds()
-
-    if verbose:
-        if result.success:
-            added_tasks = len(result.added_tasks)
-            replaced_tasks = len(getattr(result, "replaced_tasks", []))
-            added_imports = len(result.added_imports)
-            added_helpers = len(getattr(result, "added_helpers", []))
-            added_classes = len(getattr(result, "added_classes", []))
-            replaced_helpers = len(getattr(result, "replaced_helpers", []))
-            replaced_classes = len(getattr(result, "replaced_classes", []))
-            warn_count = len(result.warnings)
-
-            parts = []
-            if added_tasks:
-                parts.append(f"+{added_tasks} tasks")
-            if replaced_tasks:
-                parts.append(f"~{replaced_tasks} tasks replaced")
-            if added_imports:
-                parts.append(f"+{added_imports} imports")
-            if added_helpers:
-                parts.append(f"+{added_helpers} helpers")
-            if added_classes:
-                parts.append(f"+{added_classes} classes")
-            if replaced_helpers:
-                parts.append(f"~{replaced_helpers} helpers replaced")
-            if replaced_classes:
-                parts.append(f"~{replaced_classes} classes replaced")
-            if warn_count:
-                parts.append(f"{warn_count} warning(s)")
-
-            detail = ", ".join(parts) if parts else "no changes"
-
-            if result.enhanced_source != result.original_source:
-                orig_lines = result.original_source.count("\n") + 1
-                new_lines = result.enhanced_source.count("\n") + 1
-                diff = new_lines - orig_lines
-                sign = "+" if diff >= 0 else ""
-                detail += f" | {orig_lines}->{new_lines} lines ({sign}{diff})"
-
-            console.print(
-                f"  {file_path.name}: [green]done[/green] "
-                f"({elapsed:.1f}s) [{detail}]"
-            )
-        else:
-            console.print(
-                f"  {file_path.name}: [red]failed[/red] "
-                f"({elapsed:.1f}s) {result.error}"
-            )
-    else:
-        # Even in non-verbose mode, show basic per-file progress
-        if result.success:
-            console.print(
-                f"  [green]\u2713[/green] {file_path.name} ({elapsed:.1f}s)"
-            )
-        else:
-            console.print(
-                f"  [red]\u2717[/red] {file_path.name}: {result.error}"
-            )
+    _log_file_result(file_path, result, elapsed, verbose)
 
     return result
 

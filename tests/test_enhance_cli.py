@@ -26,6 +26,8 @@ from devdox_ai_locust.cli import (
     _enhance_suite_files,
     _generate_gap_workflows,
     _generate_single_gap_workflow,
+    _build_result_detail,
+    _log_file_result,
     _enhance_single_file,
     _write_enhance_results,
 )
@@ -754,6 +756,186 @@ class TestPrintVerboseDetails:
         assert "alpha_task" in joined
         assert "beta_replaced" in joined
         assert "beta warning" in joined
+
+
+class TestBuildResultDetail:
+    """Tests for _build_result_detail helper."""
+
+    def test_added_tasks_only(self):
+        """Test detail with only added tasks."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="new",
+            original_source="new",
+            added_tasks=["t1", "t2"],
+        )
+
+        detail = _build_result_detail(result)
+
+        assert detail == "+2 tasks"
+
+    def test_replaced_tasks_only(self):
+        """Test detail with only replaced tasks."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="new",
+            original_source="new",
+            replaced_tasks=["r1"],
+        )
+
+        detail = _build_result_detail(result)
+
+        assert detail == "~1 tasks replaced"
+
+    def test_all_metrics_nonzero(self):
+        """Test detail with all metric types present."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="new",
+            original_source="new",
+            added_tasks=["t1"],
+            replaced_tasks=["r1"],
+            added_imports=["i1"],
+            added_helpers=["h1"],
+            added_classes=["c1"],
+            replaced_helpers=["rh1"],
+            replaced_classes=["rc1"],
+            warnings=["w1"],
+        )
+
+        detail = _build_result_detail(result)
+
+        assert "+1 tasks" in detail
+        assert "~1 tasks replaced" in detail
+        assert "+1 imports" in detail
+        assert "+1 helpers" in detail
+        assert "+1 classes" in detail
+        assert "~1 helpers replaced" in detail
+        assert "~1 classes replaced" in detail
+        assert "1 warning(s)" in detail
+
+    def test_no_changes(self):
+        """Test detail returns 'no changes' when all metrics are zero."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="same",
+            original_source="same",
+        )
+
+        detail = _build_result_detail(result)
+
+        assert detail == "no changes"
+
+    def test_changed_source_appends_line_diff(self):
+        """Test that changed source appends line diff info."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="line1\nline2\nline3\n",
+            original_source="line1\n",
+            added_tasks=["t1"],
+        )
+
+        detail = _build_result_detail(result)
+
+        assert "+1 tasks" in detail
+        assert "2->4 lines (+2)" in detail
+
+    def test_fewer_lines_shows_negative_diff(self):
+        """Test that fewer lines shows negative diff without + sign."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="line1\n",
+            original_source="line1\nline2\nline3\n",
+            added_tasks=["t1"],
+        )
+
+        detail = _build_result_detail(result)
+
+        assert "4->2 lines (-2)" in detail
+
+    def test_warnings_included(self):
+        """Test warnings are counted in detail."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="same",
+            original_source="same",
+            warnings=["w1", "w2", "w3"],
+        )
+
+        detail = _build_result_detail(result)
+
+        assert "3 warning(s)" in detail
+
+
+class TestLogFileResult:
+    """Tests for _log_file_result helper."""
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_verbose_success(self, mock_console):
+        """Test verbose mode prints done with detail."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="new",
+            original_source="old",
+            added_tasks=["t1"],
+        )
+
+        _log_file_result(Path("/p/file.py"), result, 1.5, verbose=True)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "done" in joined
+        assert "1.5s" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_verbose_failure(self, mock_console):
+        """Test verbose mode prints failed with error."""
+        result = EnhanceResult(
+            success=False,
+            enhanced_source="",
+            original_source="",
+            error="AI timeout",
+        )
+
+        _log_file_result(Path("/p/file.py"), result, 2.0, verbose=True)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "failed" in joined
+        assert "AI timeout" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_non_verbose_success(self, mock_console):
+        """Test non-verbose mode prints checkmark."""
+        result = EnhanceResult(
+            success=True,
+            enhanced_source="new",
+            original_source="old",
+        )
+
+        _log_file_result(Path("/p/file.py"), result, 0.5, verbose=False)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "file.py" in joined
+        assert "0.5s" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_non_verbose_failure(self, mock_console):
+        """Test non-verbose mode prints cross with error."""
+        result = EnhanceResult(
+            success=False,
+            enhanced_source="",
+            original_source="",
+            error="Parse error",
+        )
+
+        _log_file_result(Path("/p/file.py"), result, 1.0, verbose=False)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "file.py" in joined
+        assert "Parse error" in joined
 
 
 class TestEnhanceSingleFile:
