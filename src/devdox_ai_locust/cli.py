@@ -18,6 +18,7 @@ from .schemas.processing_result import SwaggerProcessingRequest
 
 console = Console()
 
+LOCUSTFILE_MODULE_NAME = "locustfile.py"
 
 def _initialize_config(together_api_key: Optional[str]) -> Tuple[Settings, str]:
     """Initialize configuration and validate API key"""
@@ -120,10 +121,10 @@ def _show_run_instructions(
     console.print(f"  cd {output_dir}")
 
     default_host = host or "http://localhost:8000"
-    locustfile = output_dir / "locustfile.py"
+    locustfile = output_dir / LOCUSTFILE_MODULE_NAME
 
     if locustfile.exists():
-        main_file = "locustfile.py"
+        main_file = LOCUSTFILE_MODULE_NAME
     else:
         py_files = list(output_dir.glob("*.py"))
         main_file = py_files[0].name if py_files else "generated_test.py"
@@ -174,7 +175,7 @@ def _discover_suite_files(suite_dir: Path, verbose: bool) -> Dict[str, Any]:
         "suite_dir": suite_dir,
     }
 
-    locustfile = suite_dir / "locustfile.py"
+    locustfile = suite_dir / LOCUSTFILE_MODULE_NAME
     if locustfile.exists():
         result["locustfile"] = locustfile
 
