@@ -6,6 +6,7 @@ test scenarios. Ties together the file analyzer, AI client, Jinja2 prompt templa
 and code merger to produce enriched load-test files based on user requirements.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -149,8 +150,9 @@ class LocustTestEnhancer:
             self._logger.error("Failed to analyze file: %s", e)
             original = ""
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    original = f.read()
+                original = await asyncio.to_thread(
+                    Path(file_path).read_text, encoding="utf-8"
+                )
             except IOError:
                 pass
             return EnhanceResult(
