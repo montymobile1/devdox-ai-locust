@@ -930,7 +930,7 @@ class LocustTestEnhancer:
                     sources[node.name] = "\n".join(
                         lines[start:end_line]
                     ).rstrip()
-        except (SyntaxError, Exception):
+        except Exception:
             pass
         return sources
 
@@ -961,7 +961,7 @@ class LocustTestEnhancer:
                     sources[node.name] = "\n".join(
                         lines[start:end_line]
                     ).rstrip()
-        except (SyntaxError, Exception):
+        except Exception:
             pass
         return sources
 
