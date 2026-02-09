@@ -16,6 +16,10 @@ from devdox_ai_locust.cli import (
     _identify_coverage_gaps,
     _display_enhance_configuration,
     _show_enhance_results,
+    _build_results_table,
+    _add_result_row,
+    _print_summary,
+    _print_verbose_details,
     _enhance_single_file,
     _write_enhance_results,
 )
@@ -361,6 +365,389 @@ class TestShowEnhanceResults:
             verbose=False,
             dry_run=False,
         )
+
+
+class TestBuildResultsTable:
+    """Tests for _build_results_table helper."""
+
+    def test_successful_result_counters(self):
+        """Test that a successful updated result produces correct counters."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new code",
+                original_source="old code",
+                added_tasks=["task_a", "task_b"],
+                added_imports=["import os"],
+                replaced_tasks=["task_c"],
+            ),
+        }
+
+        table, counters = _build_results_table(results, [], dry_run=False)
+
+        assert counters["updated"] == 1
+        assert counters["total_added"] == 2
+        assert counters["total_replaced"] == 1
+        assert counters["total_imports"] == 1
+        assert counters["unchanged"] == 0
+        assert counters["failed"] == 0
+
+    def test_failed_result_row(self):
+        """Test that a failed result increments failed_count."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="code",
+                error="AI call failed",
+            ),
+        }
+
+        table, counters = _build_results_table(results, [], dry_run=False)
+
+        assert counters["failed"] == 1
+        assert counters["updated"] == 0
+
+    def test_unchanged_result_row(self):
+        """Test that an unchanged result increments unchanged_count."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="same",
+                original_source="same",
+            ),
+        }
+
+        table, counters = _build_results_table(results, [], dry_run=False)
+
+        assert counters["unchanged"] == 1
+        assert counters["updated"] == 0
+
+    def test_dry_run_action_text(self):
+        """Test that dry run mode produces [DRY RUN] in row data."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                added_tasks=["t1"],
+            ),
+        }
+
+        table, counters = _build_results_table(results, [], dry_run=True)
+
+        assert counters["updated"] == 1
+
+    def test_created_files_appear_in_table(self):
+        """Test that created files are added as rows."""
+        results = {}
+        created = ["/path/to/new_workflow.py", "/path/to/another.py"]
+
+        table, counters = _build_results_table(results, created, dry_run=False)
+
+        assert table.row_count == 2
+        assert counters["updated"] == 0
+
+    def test_mixed_results_aggregate_counters(self):
+        """Test mixed success, failure, and unchanged results."""
+        results = {
+            "/path/success.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                added_tasks=["t1"],
+                added_imports=["import x"],
+            ),
+            "/path/failed.py": EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="code",
+                error="err",
+            ),
+            "/path/unchanged.py": EnhanceResult(
+                success=True,
+                enhanced_source="same",
+                original_source="same",
+            ),
+        }
+
+        table, counters = _build_results_table(results, ["/created.py"], dry_run=False)
+
+        assert counters["updated"] == 1
+        assert counters["failed"] == 1
+        assert counters["unchanged"] == 1
+        assert counters["total_added"] == 1
+        assert counters["total_imports"] == 1
+        # 3 result rows + 1 created row
+        assert table.row_count == 4
+
+    def test_empty_results(self):
+        """Test with no results and no created files."""
+        table, counters = _build_results_table({}, [], dry_run=False)
+
+        assert table.row_count == 0
+        assert all(v == 0 for v in counters.values())
+
+
+class TestAddResultRow:
+    """Tests for the _add_result_row helper."""
+
+    def _make_table(self):
+        from rich.table import Table
+        table = Table()
+        table.add_column("File")
+        table.add_column("Action")
+        table.add_column("Tasks +")
+        table.add_column("Tasks ~")
+        table.add_column("Imports +")
+        table.add_column("Warnings")
+        return table
+
+    def _zero_counters(self):
+        return {
+            "total_added": 0, "total_replaced": 0, "total_imports": 0,
+            "updated": 0, "unchanged": 0, "failed": 0,
+        }
+
+    def test_failed_result_returns_early(self):
+        """Test that a failed result adds one row and increments failed."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(success=False, enhanced_source="", original_source="c", error="boom"),
+            dry_run=False, counters=counters,
+        )
+
+        assert table.row_count == 1
+        assert counters["failed"] == 1
+        assert counters["updated"] == 0
+
+    def test_unchanged_result_returns_early(self):
+        """Test that an unchanged result adds one row and increments unchanged."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(success=True, enhanced_source="s", original_source="s"),
+            dry_run=False, counters=counters,
+        )
+
+        assert table.row_count == 1
+        assert counters["unchanged"] == 1
+
+    def test_updated_result_accumulates_counters(self):
+        """Test that a successful changed result accumulates all counters."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(
+                success=True, enhanced_source="new", original_source="old",
+                added_tasks=["a", "b"], added_imports=["i1"],
+                replaced_tasks=["r1"],
+            ),
+            dry_run=False, counters=counters,
+        )
+
+        assert counters["updated"] == 1
+        assert counters["total_added"] == 2
+        assert counters["total_replaced"] == 1
+        assert counters["total_imports"] == 1
+
+
+class TestPrintSummary:
+    """Tests for _print_summary helper."""
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_summary_format(self, mock_console):
+        """Test that summary line contains correct counter values."""
+        counters = {
+            "total_added": 5, "total_replaced": 2, "total_imports": 3,
+            "updated": 1, "unchanged": 1, "failed": 1,
+        }
+
+        _print_summary(counters, created_count=2, processing_time=1.5)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "1 updated" in joined
+        assert "2 created" in joined
+        assert "1 unchanged" in joined
+        assert "1 failed" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_totals_format(self, mock_console):
+        """Test that totals line shows added/replaced/imports."""
+        counters = {
+            "total_added": 10, "total_replaced": 3, "total_imports": 4,
+            "updated": 2, "unchanged": 0, "failed": 0,
+        }
+
+        _print_summary(counters, created_count=0, processing_time=2.0)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "+10 tasks added" in joined
+        assert "~3 tasks replaced" in joined
+        assert "+4 imports" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_processing_time_precision(self, mock_console):
+        """Test that processing time is formatted to 2 decimal places."""
+        counters = {
+            "total_added": 0, "total_replaced": 0, "total_imports": 0,
+            "updated": 0, "unchanged": 0, "failed": 0,
+        }
+
+        _print_summary(counters, created_count=0, processing_time=3.14159)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "3.14s" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_all_zero_counters(self, mock_console):
+        """Test summary with all zero counters."""
+        counters = {
+            "total_added": 0, "total_replaced": 0, "total_imports": 0,
+            "updated": 0, "unchanged": 0, "failed": 0,
+        }
+
+        _print_summary(counters, created_count=0, processing_time=0.0)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "0 updated" in joined
+        assert "0 created" in joined
+        assert "0 unchanged" in joined
+        assert "0 failed" in joined
+
+
+class TestPrintVerboseDetails:
+    """Tests for _print_verbose_details helper."""
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_prints_added_tasks(self, mock_console):
+        """Test that added tasks are printed for successful results."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                added_tasks=["task_a", "task_b"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "task_a" in joined
+        assert "task_b" in joined
+        assert "added tasks" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_prints_replaced_tasks(self, mock_console):
+        """Test that replaced tasks are printed."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                replaced_tasks=["replaced_one"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "replaced_one" in joined
+        assert "replaced tasks" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_prints_warnings(self, mock_console):
+        """Test that warnings are printed."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                warnings=["Duplicate method skipped", "Syntax issue fixed"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "Duplicate method skipped" in joined
+        assert "Syntax issue fixed" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_skips_failed_results_added_tasks(self, mock_console):
+        """Test that failed results do not print added tasks."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="code",
+                error="Failed",
+                added_tasks=["should_not_appear"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "should_not_appear" not in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_nothing_to_print(self, mock_console):
+        """Test that no output is produced when there are no details."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        mock_console.print.assert_not_called()
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_multiple_files_mixed_details(self, mock_console):
+        """Test verbose output across multiple files with different details."""
+        results = {
+            "/path/alpha.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                added_tasks=["alpha_task"],
+            ),
+            "/path/beta.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                replaced_tasks=["beta_replaced"],
+                warnings=["beta warning"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "alpha_task" in joined
+        assert "beta_replaced" in joined
+        assert "beta warning" in joined
 
 
 class TestEnhanceSingleFile:

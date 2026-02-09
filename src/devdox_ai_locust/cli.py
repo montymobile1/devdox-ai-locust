@@ -233,17 +233,17 @@ def _identify_coverage_gaps(
     return gaps
 
 
-def _show_enhance_results(
+def _build_results_table(
     results: Dict[str, "EnhanceResult"],
     created_files: List[str],
-    start_time: datetime,
-    verbose: bool,
     dry_run: bool,
-) -> None:
-    """Display enhancement results summary."""
-    end_time = datetime.now(timezone.utc)
-    processing_time = (end_time - start_time).total_seconds()
+) -> Tuple[Table, Dict[str, int]]:
+    """Build the Rich table and compute aggregate counters for enhancement results.
 
+    Returns:
+        A tuple of (table, counters) where counters is a dict with keys:
+        total_added, total_replaced, total_imports, updated, unchanged, failed.
+    """
     table = Table(title="Enhancement Results")
     table.add_column("File", style="cyan")
     table.add_column("Action", style="green")
@@ -252,86 +252,126 @@ def _show_enhance_results(
     table.add_column("Imports +", justify="right")
     table.add_column("Warnings", justify="right", style="yellow")
 
-    total_added = 0
-    total_replaced = 0
-    total_imports = 0
-    updated_count = 0
-    unchanged_count = 0
-    failed_count = 0
+    counters: Dict[str, int] = {
+        "total_added": 0,
+        "total_replaced": 0,
+        "total_imports": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "failed": 0,
+    }
 
     for file_path, result in results.items():
-        name = Path(file_path).name
-
-        if not result.success:
-            table.add_row(
-                name,
-                "[red]FAILED[/red]",
-                "-",
-                "-",
-                "-",
-                result.error or "Unknown",
-            )
-            failed_count += 1
-            continue
-
-        if result.enhanced_source == result.original_source:
-            table.add_row(name, "[dim]UNCHANGED[/dim]", "0", "0", "0", "0")
-            unchanged_count += 1
-            continue
-
-        tasks_added = len(result.added_tasks)
-        tasks_replaced = len(getattr(result, "replaced_tasks", []))
-        imports_added = len(result.added_imports)
-        warn_count = len(result.warnings)
-
-        action = "[DRY RUN]" if dry_run else "[green]UPDATED[/green]"
-        table.add_row(
-            name,
-            action,
-            str(tasks_added),
-            str(tasks_replaced),
-            str(imports_added),
-            str(warn_count) if warn_count else "0",
-        )
-        total_added += tasks_added
-        total_replaced += tasks_replaced
-        total_imports += imports_added
-        updated_count += 1
+        _add_result_row(table, file_path, result, dry_run, counters)
 
     for created in created_files:
         name = Path(created).name
         action = "[DRY RUN]" if dry_run else "[blue]CREATED[/blue]"
         table.add_row(name, action, "-", "-", "-", "0")
 
-    console.print(table)
+    return table, counters
 
+
+def _add_result_row(
+    table: Table,
+    file_path: str,
+    result: "EnhanceResult",
+    dry_run: bool,
+    counters: Dict[str, int],
+) -> None:
+    """Add a single result row to the table and update counters."""
+    name = Path(file_path).name
+
+    if not result.success:
+        table.add_row(
+            name, "[red]FAILED[/red]", "-", "-", "-", result.error or "Unknown",
+        )
+        counters["failed"] += 1
+        return
+
+    if result.enhanced_source == result.original_source:
+        table.add_row(name, "[dim]UNCHANGED[/dim]", "0", "0", "0", "0")
+        counters["unchanged"] += 1
+        return
+
+    tasks_added = len(result.added_tasks)
+    tasks_replaced = len(getattr(result, "replaced_tasks", []))
+    imports_added = len(result.added_imports)
+    warn_count = len(result.warnings)
+
+    action = "[DRY RUN]" if dry_run else "[green]UPDATED[/green]"
+    table.add_row(
+        name,
+        action,
+        str(tasks_added),
+        str(tasks_replaced),
+        str(imports_added),
+        str(warn_count) if warn_count else "0",
+    )
+    counters["total_added"] += tasks_added
+    counters["total_replaced"] += tasks_replaced
+    counters["total_imports"] += imports_added
+    counters["updated"] += 1
+
+
+def _print_summary(
+    counters: Dict[str, int],
+    created_count: int,
+    processing_time: float,
+) -> None:
+    """Print the summary, totals, and processing time lines."""
     console.print(
-        f"\n[bold]Summary:[/bold] {updated_count} updated, "
-        f"{len(created_files)} created, {unchanged_count} unchanged, "
-        f"{failed_count} failed"
+        f"\n[bold]Summary:[/bold] {counters['updated']} updated, "
+        f"{created_count} created, {counters['unchanged']} unchanged, "
+        f"{counters['failed']} failed"
     )
     console.print(
-        f"[bold]Totals:[/bold] +{total_added} tasks added, "
-        f"~{total_replaced} tasks replaced, +{total_imports} imports"
+        f"[bold]Totals:[/bold] +{counters['total_added']} tasks added, "
+        f"~{counters['total_replaced']} tasks replaced, +{counters['total_imports']} imports"
     )
     console.print(f"[blue]Processing time:[/blue] {processing_time:.2f}s")
 
+
+def _print_verbose_details(results: Dict[str, "EnhanceResult"]) -> None:
+    """Print per-file verbose details (added tasks, replaced tasks, warnings)."""
+    for file_path, result in results.items():
+        name = Path(file_path).name
+
+        if result.success and result.added_tasks:
+            console.print(
+                f"\n[bold]{name}[/bold] added tasks: "
+                f"{', '.join(result.added_tasks)}"
+            )
+
+        replaced = getattr(result, "replaced_tasks", [])
+        if replaced:
+            console.print(
+                f"[bold]{name}[/bold] replaced tasks: "
+                f"{', '.join(replaced)}"
+            )
+
+        if result.warnings:
+            for w in result.warnings:
+                console.print(f"  [yellow]Warning:[/yellow] {w}")
+
+
+def _show_enhance_results(
+    results: Dict[str, "EnhanceResult"],
+    created_files: List[str],
+    start_time: datetime,
+    verbose: bool,
+    dry_run: bool,
+) -> None:
+    """Display enhancement results summary."""
+    processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+
+    table, counters = _build_results_table(results, created_files, dry_run)
+    console.print(table)
+
+    _print_summary(counters, len(created_files), processing_time)
+
     if verbose:
-        for file_path, result in results.items():
-            if result.success and result.added_tasks:
-                console.print(
-                    f"\n[bold]{Path(file_path).name}[/bold] added tasks: "
-                    f"{', '.join(result.added_tasks)}"
-                )
-            replaced = getattr(result, "replaced_tasks", [])
-            if replaced:
-                console.print(
-                    f"[bold]{Path(file_path).name}[/bold] replaced tasks: "
-                    f"{', '.join(replaced)}"
-                )
-            if result.warnings:
-                for w in result.warnings:
-                    console.print(f"  [yellow]Warning:[/yellow] {w}")
+        _print_verbose_details(results)
 
 
 async def _process_api_schema(
