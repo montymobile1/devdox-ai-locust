@@ -682,7 +682,7 @@ class LocustTestEnhancer:
             # For tasks/methods, wrap in a dummy class to make it valid module-level code
             if "tasks" in section_name:
                 # Wrap methods in a class for validation
-                test_code = f"class _ValidationWrapper:\n"
+                test_code = "class _ValidationWrapper:\n"
                 for line in code.splitlines():
                     test_code += f"    {line}\n"
             else:
