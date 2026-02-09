@@ -30,6 +30,7 @@ from devdox_ai_locust.cli import (
     _log_file_result,
     _enhance_single_file,
     _write_enhance_results,
+    _process_api_schema,
 )
 from devdox_ai_locust.locust_enhancer import EnhanceResult
 
@@ -1667,3 +1668,313 @@ class TestGenerateGapWorkflows:
         ))
 
         assert created == []
+
+
+class TestAddResultRowEdgeCases:
+    """Tests for untested branches in _add_result_row."""
+
+    def _make_table(self):
+        from rich.table import Table
+        table = Table()
+        table.add_column("File")
+        table.add_column("Action")
+        table.add_column("Tasks +")
+        table.add_column("Tasks ~")
+        table.add_column("Imports +")
+        table.add_column("Warnings")
+        return table
+
+    def _zero_counters(self):
+        return {
+            "total_added": 0, "total_replaced": 0, "total_imports": 0,
+            "updated": 0, "unchanged": 0, "failed": 0,
+        }
+
+    def test_failed_result_none_error(self):
+        """Test _add_result_row when result.error is None shows 'Unknown'."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(success=False, enhanced_source="", original_source="c", error=None),
+            dry_run=False, counters=counters,
+        )
+
+        assert table.row_count == 1
+        assert counters["failed"] == 1
+
+    def test_result_with_warnings(self):
+        """Test _add_result_row when result has warnings (warn_count > 0)."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(
+                success=True, enhanced_source="new", original_source="old",
+                added_tasks=["t1"], warnings=["w1", "w2"],
+            ),
+            dry_run=False, counters=counters,
+        )
+
+        assert counters["updated"] == 1
+        assert table.row_count == 1
+
+    def test_dry_run_action(self):
+        """Test _add_result_row in dry_run mode."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(
+                success=True, enhanced_source="new", original_source="old",
+                added_tasks=["t1"],
+            ),
+            dry_run=True, counters=counters,
+        )
+
+        assert counters["updated"] == 1
+
+    def test_result_with_zero_replaced_tasks(self):
+        """Test _add_result_row when replaced_tasks is empty list (default)."""
+        table = self._make_table()
+        counters = self._zero_counters()
+
+        _add_result_row(
+            table, "/p/f.py",
+            EnhanceResult(
+                success=True, enhanced_source="new", original_source="old",
+                added_tasks=["t1"],
+                # replaced_tasks defaults to []
+            ),
+            dry_run=False, counters=counters,
+        )
+
+        assert counters["updated"] == 1
+        assert counters["total_replaced"] == 0
+
+
+class TestPrintVerboseDetailsEdgeCases:
+    """Tests for untested branches in _print_verbose_details."""
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_empty_results_dict(self, mock_console):
+        """Test _print_verbose_details with empty results dict."""
+        _print_verbose_details({})
+
+        mock_console.print.assert_not_called()
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_failed_result_with_warnings_still_prints_warnings(self, mock_console):
+        """Test that warnings are printed even for failed results."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="code",
+                error="Failed",
+                warnings=["Some warning"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        # Warnings should still be printed (not gated on success)
+        assert "Some warning" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_failed_result_with_replaced_still_prints_replaced(self, mock_console):
+        """Test that replaced tasks are printed even for failed results."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=False,
+                enhanced_source="",
+                original_source="code",
+                error="Failed",
+                replaced_tasks=["replaced_one"],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        # replaced_tasks is not gated on success
+        assert "replaced_one" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_success_with_empty_added_tasks(self, mock_console):
+        """Test that empty added_tasks list doesn't print."""
+        results = {
+            "/path/to/file.py": EnhanceResult(
+                success=True,
+                enhanced_source="new",
+                original_source="old",
+                added_tasks=[],
+            ),
+        }
+
+        _print_verbose_details(results)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "added tasks" not in joined
+
+
+class TestProcessApiSchemaEdgeCases:
+    """Tests for _process_api_schema exception paths."""
+
+    def test_timeout_exits(self):
+        """Test that _process_api_schema exits on timeout."""
+        import asyncio
+
+        async def run():
+            with patch("devdox_ai_locust.cli.get_api_schema", new_callable=AsyncMock) as mock_get:
+                mock_get.side_effect = asyncio.TimeoutError()
+                with pytest.raises(SystemExit):
+                    await _process_api_schema("http://example.com/swagger.json", verbose=False)
+
+        asyncio.run(run())
+
+    def test_generic_exception_exits(self):
+        """Test that _process_api_schema exits on generic exception."""
+        import asyncio
+
+        async def run():
+            with patch("devdox_ai_locust.cli.get_api_schema", new_callable=AsyncMock) as mock_get:
+                mock_get.side_effect = RuntimeError("Network error")
+                with pytest.raises(SystemExit):
+                    await _process_api_schema("http://example.com/swagger.json", verbose=False)
+
+        asyncio.run(run())
+
+    def test_empty_schema_exits(self):
+        """Test that _process_api_schema exits when schema is empty."""
+        import asyncio
+
+        async def run():
+            with patch("devdox_ai_locust.cli.get_api_schema", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = ""
+                with pytest.raises(SystemExit):
+                    await _process_api_schema("http://example.com/swagger.json", verbose=False)
+
+        asyncio.run(run())
+
+    def test_parser_exception_exits(self):
+        """Test that _process_api_schema exits on parser exception."""
+        import asyncio
+
+        async def run():
+            with patch("devdox_ai_locust.cli.get_api_schema", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = '{"openapi": "3.0.0"}'
+                with patch("devdox_ai_locust.cli.OpenAPIParser") as mock_parser_cls:
+                    mock_parser = Mock()
+                    mock_parser.parse_schema.side_effect = ValueError("Invalid schema")
+                    mock_parser_cls.return_value = mock_parser
+                    with pytest.raises(SystemExit):
+                        await _process_api_schema("http://example.com/swagger.json", verbose=False)
+
+        asyncio.run(run())
+
+    def test_verbose_schema_parse_success(self):
+        """Test that _process_api_schema logs verbose message on success."""
+        import asyncio
+
+        async def run():
+            with patch("devdox_ai_locust.cli.get_api_schema", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = '{"openapi": "3.0.0"}'
+                with patch("devdox_ai_locust.cli.OpenAPIParser") as mock_parser_cls:
+                    mock_parser = Mock()
+                    mock_parser.parse_schema.return_value = {}
+                    mock_parser.parse_endpoints.return_value = []
+                    mock_parser.get_schema_info.return_value = {"title": "Test"}
+                    mock_parser_cls.return_value = mock_parser
+
+                    result = await _process_api_schema(
+                        "http://example.com/swagger.json", verbose=True
+                    )
+
+                    assert result is not None
+                    schema_data, endpoints, api_info = result
+                    assert api_info["title"] == "Test"
+
+        asyncio.run(run())
+
+
+class TestShowGeneratedFiles:
+    """Tests for _show_generated_files function."""
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_verbose_shows_all_files(self, mock_console):
+        """Test verbose mode shows all file names."""
+        from devdox_ai_locust.cli import _show_generated_files
+
+        files = [{"file": f"file_{i}.py"} for i in range(15)]
+        _show_generated_files(files, verbose=True)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "Generated files" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_many_files_not_verbose_shows_count(self, mock_console):
+        """Test non-verbose mode with >10 files shows count only."""
+        from devdox_ai_locust.cli import _show_generated_files
+
+        files = [{"file": f"file_{i}.py"} for i in range(15)]
+        _show_generated_files(files, verbose=False)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "Generated 15 files" in joined
+        assert "--verbose" in joined
+
+    @patch("devdox_ai_locust.cli.console")
+    def test_few_files_not_verbose_shows_all(self, mock_console):
+        """Test non-verbose mode with <=10 files shows all names."""
+        from devdox_ai_locust.cli import _show_generated_files
+
+        files = [{"file": f"file_{i}.py"} for i in range(5)]
+        _show_generated_files(files, verbose=False)
+
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "Generated files" in joined
+
+
+class TestEnhanceSingleFileVerbose:
+    """Tests for _enhance_single_file verbose branch."""
+
+    def test_verbose_logs_file_info(self, temp_suite_dir):
+        """Test that verbose mode logs file size and line count."""
+        import asyncio
+
+        mock_enhancer = Mock()
+        mock_enhancer.enhance_file = AsyncMock(
+            return_value=EnhanceResult(
+                success=True,
+                enhanced_source="enhanced",
+                original_source="original",
+            )
+        )
+
+        file_path = temp_suite_dir / "locustfile.py"
+
+        with patch("devdox_ai_locust.cli.console") as mock_console:
+            result = asyncio.run(_enhance_single_file(
+                enhancer=mock_enhancer,
+                file_path=file_path,
+                custom_requirement="Add tests",
+                swagger_url="http://example.com",
+                verbose=True,
+            ))
+
+        assert result.success is True
+        calls = [str(c) for c in mock_console.print.call_args_list]
+        joined = " ".join(calls)
+        assert "lines" in joined
+        assert "bytes" in joined

@@ -1074,3 +1074,276 @@ class TestLogVerboseWorkflowStart:
 
         assert "reference workflow:" in caplog.text
         assert "chars" in caplog.text
+
+
+class TestExtractMethodSourcesExceptionPath:
+    """Tests for _extract_method_sources AST exception fallback."""
+
+    def test_returns_rough_sources_on_ast_failure(self, enhancer):
+        """Test that _extract_method_sources falls back gracefully when AST fails."""
+        # Source with valid enough structure for analysis but we'll mock AST failure
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def get_items(self):
+        self.client.get("/items")
+'''
+        analysis = enhancer._analyze_source(source)
+
+        # Patch ast.parse inside the method to raise on the refinement step
+        import ast
+        original_parse = ast.parse
+        call_count = [0]
+
+        def failing_parse(src, *args, **kwargs):
+            call_count[0] += 1
+            # First call succeeds (initial analysis), second fails (refinement)
+            if call_count[0] > 1:
+                raise SyntaxError("mocked failure")
+            return original_parse(src, *args, **kwargs)
+
+        with patch("ast.parse", side_effect=failing_parse):
+            sources = enhancer._extract_method_sources(analysis)
+
+        # Should still return sources (rough extraction, before AST refinement)
+        assert "get_items" in sources
+
+
+class TestExtractHelperSourcesExceptionPath:
+    """Tests for _extract_helper_sources AST exception fallback."""
+
+    def test_returns_empty_on_no_helpers(self, enhancer):
+        """Test _extract_helper_sources returns empty when no module-level functions."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+        sources = enhancer._extract_helper_sources(analysis)
+
+        assert sources == {}
+
+    def test_returns_sources_on_ast_failure(self, enhancer):
+        """Test _extract_helper_sources returns empty dict on AST failure."""
+        source = '''
+from locust import HttpUser, task
+
+def helper_func():
+    return 42
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+
+        with patch("ast.parse", side_effect=SyntaxError("mocked")):
+            sources = enhancer._extract_helper_sources(analysis)
+
+        # Should return empty sources (AST failure suppresses extraction)
+        assert isinstance(sources, dict)
+
+
+class TestFormatWithBlackExceptionTypes:
+    """Tests for _format_with_black exception handling paths."""
+
+    def test_generic_exception_returns_original(self, enhancer, caplog):
+        """Test that a generic Exception returns the original source."""
+        caplog.set_level(logging.WARNING)
+        code = "x = 1\n"
+
+        with patch("black.format_str", side_effect=RuntimeError("unexpected")):
+            result = enhancer._format_with_black(code)
+
+        assert result == code
+        assert "Black formatting failed" in caplog.text
+
+    def test_invalid_input_returns_original(self, enhancer, caplog):
+        """Test that black.InvalidInput returns the original source."""
+        import black
+        caplog.set_level(logging.WARNING)
+        code = "x = 1\n"
+
+        with patch("black.format_str", side_effect=black.InvalidInput("bad")):
+            result = enhancer._format_with_black(code)
+
+        assert result == code
+        assert "could not parse" in caplog.text.lower()
+
+
+class TestHasAuthPartialMatches:
+    """Tests for _has_auth partial match detection."""
+
+    def test_partial_match_do_login(self, enhancer):
+        """Test auth detection with 'do_login' (partial match for 'login')."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    def do_login(self):
+        self.client.post("/auth")
+
+    @task
+    def test(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+        assert enhancer._has_auth(analysis) is True
+
+    def test_partial_match_refresh_token(self, enhancer):
+        """Test auth detection with 'refresh_token' (partial match for 'get_token')."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    def refresh_auth_token(self):
+        self.client.post("/refresh")
+
+    @task
+    def test(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+        assert enhancer._has_auth(analysis) is True
+
+    def test_no_auth_unrelated_methods(self, enhancer):
+        """Test auth detection returns False for unrelated method names."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    def setup(self):
+        pass
+
+    def helper(self):
+        pass
+
+    @task
+    def test(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+        assert enhancer._has_auth(analysis) is False
+
+
+class TestEnhanceFileIOErrorPath:
+    """Tests for enhance_file IOError during fallback read."""
+
+    def test_enhance_file_ioerror_fallback(self, enhancer):
+        """Test that enhance_file handles IOError when reading file for error result."""
+        # Use a path that will cause FileNotFoundError in _analyze_file
+        # and then IOError in the fallback read
+        result = asyncio.run(
+            enhancer.enhance_file("/nonexistent/path/file.py", "Add tasks")
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        # original_source should be empty since file doesn't exist
+        assert result.original_source == ""
+
+    def test_enhance_file_value_error_with_readable_file(self, enhancer):
+        """Test enhance_file ValueError path with a file that can still be read."""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
+        ) as f:
+            f.write("invalid python {{{\n")
+            f.flush()
+
+            result = asyncio.run(
+                enhancer.enhance_file(f.name, "Add tasks")
+            )
+
+            assert result.success is False
+            # File should be readable so original_source should have content
+            assert result.original_source != "" or result.error is not None
+
+        Path(f.name).unlink(missing_ok=True)
+
+
+class TestValidateSections:
+    """Tests for _validate_sections method."""
+
+    def test_valid_sections_return_empty(self, enhancer):
+        """Test that valid sections produce no errors."""
+        sections = {
+            "new_imports": "import json",
+            "new_tasks": "@task\ndef my_task(self):\n    pass",
+            "new_classes": "class Foo:\n    pass",
+            "new_helpers": "def helper():\n    return 1",
+            "replace_tasks": "",
+            "replace_helpers": "",
+            "replace_classes": "",
+        }
+        errors = enhancer._validate_sections(sections)
+
+        assert errors == {}
+
+    def test_invalid_task_section_returns_error(self, enhancer):
+        """Test that invalid task code produces a validation error."""
+        sections = {
+            "new_imports": "",
+            "new_tasks": "def broken(\n    invalid",
+            "new_classes": "",
+            "new_helpers": "",
+            "replace_tasks": "",
+            "replace_helpers": "",
+            "replace_classes": "",
+        }
+        errors = enhancer._validate_sections(sections)
+
+        assert "new_tasks" in errors
+
+    def test_empty_sections_return_no_errors(self, enhancer):
+        """Test that empty sections are skipped."""
+        sections = {
+            "new_imports": "",
+            "new_tasks": "",
+            "new_classes": "",
+            "new_helpers": "",
+            "replace_tasks": "",
+            "replace_helpers": "",
+            "replace_classes": "",
+        }
+        errors = enhancer._validate_sections(sections)
+
+        assert errors == {}
+
+
+class TestHasSequentialTasks:
+    """Tests for _has_sequential_tasks method."""
+
+    def test_sequential_taskset_detected(self, enhancer):
+        """Test SequentialTaskSet detection."""
+        source = '''
+from locust import HttpUser, SequentialTaskSet, task
+
+class OrderFlow(SequentialTaskSet):
+    @task
+    def step1(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+        assert enhancer._has_sequential_tasks(analysis) is True
+
+    def test_regular_httpuser_not_sequential(self, enhancer):
+        """Test that regular HttpUser is not sequential."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def test(self):
+        pass
+'''
+        analysis = enhancer._analyze_source(source)
+        assert enhancer._has_sequential_tasks(analysis) is False

@@ -495,3 +495,75 @@ class TestBuildMessages:
         assert messages[0]["content"] == "system prompt"
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "user prompt"
+
+
+class TestMakeApiCallEdgeCases:
+    """Tests for _make_api_call edge cases."""
+
+    def test_none_message_returns_none(self, client):
+        """Test _make_api_call returns None when message is None."""
+        async def run():
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = None
+
+            mock_together = AsyncMock()
+            mock_together.chat.completions.create = AsyncMock(return_value=mock_response)
+
+            async with client:
+                client._client = mock_together
+                return await client.call("system", "user")
+
+        result = asyncio.run(run())
+        assert result == ""
+
+    def test_raw_mode_skips_cleaning(self, client):
+        """Test _make_api_call with raw=True returns content without cleaning."""
+        raw_content = "<code>print('hello')</code> Some extra text"
+
+        async def run():
+            mock_response = Mock()
+            mock_response.choices = [Mock()]
+            mock_response.choices[0].message = Mock()
+            mock_response.choices[0].message.content = raw_content
+
+            mock_together = AsyncMock()
+            mock_together.chat.completions.create = AsyncMock(return_value=mock_response)
+
+            async with client:
+                client._client = mock_together
+                messages = TogetherAIClient._build_messages("system", "user")
+                return await client._make_api_call(messages, raw=True)
+
+        result = asyncio.run(run())
+        # Raw mode should return the content as-is (stripped)
+        assert result == raw_content.strip()
+
+    def test_retryable_error_with_backoff(self, client):
+        """Test retryable error triggers backoff sleep before retry."""
+        call_count = 0
+
+        async def run():
+            nonlocal call_count
+
+            async def mock_create(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count < 2:
+                    raise Exception("rate_limit: too many requests")
+                mock_response = Mock()
+                mock_response.choices = [Mock()]
+                mock_response.choices[0].message = Mock()
+                mock_response.choices[0].message.content = "success"
+                return mock_response
+
+            mock_together = AsyncMock()
+            mock_together.chat.completions.create = mock_create
+
+            async with client:
+                client._client = mock_together
+                return await client.call("system", "user")
+
+        result = asyncio.run(run())
+        assert call_count == 2
+        assert "success" in result

@@ -523,3 +523,212 @@ class DecoratedUser(HttpUser):
 
         assert len(result.user_classes) == 1
         assert result.user_classes[0].name == "DecoratedUser"
+
+
+class TestTaskWeightEdgeCases:
+    """Tests for _get_task_weight non-integer and non-constant args."""
+
+    def test_task_with_string_arg(self, analyzer):
+        """Test @task('3') returns weight 1 (non-int constant ignored)."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task("3")
+    def my_task(self):
+        pass
+'''
+        result = analyzer.analyze_source(source)
+
+        # @task("3") has args but first arg is not int, so returns 1
+        assert len(result.user_classes) == 1
+        assert result.user_classes[0].task_methods[0].weight == 1
+
+    def test_task_with_float_arg(self, analyzer):
+        """Test @task(3.14) returns weight 1 (float is not int)."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task(3.14)
+    def my_task(self):
+        pass
+'''
+        result = analyzer.analyze_source(source)
+
+        assert result.user_classes[0].task_methods[0].weight == 1
+
+    def test_task_with_variable_arg(self, analyzer):
+        """Test @task(WEIGHT_VAR) returns weight 1 (Name, not Constant)."""
+        source = '''
+from locust import HttpUser, task
+
+WEIGHT_VAR = 5
+
+class User(HttpUser):
+    @task(WEIGHT_VAR)
+    def my_task(self):
+        pass
+'''
+        result = analyzer.analyze_source(source)
+
+        assert result.user_classes[0].task_methods[0].weight == 1
+
+    def test_task_empty_parens(self, analyzer):
+        """Test @task() with empty parens returns weight 1."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task()
+    def my_task(self):
+        pass
+'''
+        result = analyzer.analyze_source(source)
+
+        assert result.user_classes[0].task_methods[0].weight == 1
+
+
+class TestExtractFirstStringArgEdgeCases:
+    """Tests for _extract_first_string_arg edge cases."""
+
+    def test_http_call_no_args(self, analyzer):
+        """Test self.client.get() with no arguments returns None path."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        self.client.get()
+'''
+        result = analyzer.analyze_source(source)
+
+        task = result.user_classes[0].task_methods[0]
+        assert task.http_method == "GET"
+        assert task.http_path is None
+
+    def test_http_call_variable_arg(self, analyzer):
+        """Test self.client.get(some_variable) returns None path."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        url = "/users"
+        self.client.get(url)
+'''
+        result = analyzer.analyze_source(source)
+
+        task = result.user_classes[0].task_methods[0]
+        assert task.http_method == "GET"
+        assert task.http_path is None
+
+
+class TestDetectHttpCallEdgeCases:
+    """Tests for _detect_http_call edge cases."""
+
+    def test_self_client_custom_method(self, analyzer):
+        """Test self.client.custom_method() is not detected as HTTP."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        self.client.custom_method("/path")
+'''
+        result = analyzer.analyze_source(source)
+
+        task = result.user_classes[0].task_methods[0]
+        assert task.http_method is None
+        assert task.http_path is None
+
+    def test_non_self_client_get(self, analyzer):
+        """Test other.client.get() is not detected."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        other = object()
+        result = get("/users")
+'''
+        result = analyzer.analyze_source(source)
+
+        task = result.user_classes[0].task_methods[0]
+        assert task.http_method is None
+
+    def test_self_session_get(self, analyzer):
+        """Test self.session.get() is not detected (wrong attribute)."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def my_task(self):
+        self.session.get("/users")
+'''
+        result = analyzer.analyze_source(source)
+
+        task = result.user_classes[0].task_methods[0]
+        assert task.http_method is None
+
+
+class TestIsNameMainCheckEdgeCases:
+    """Tests for _is_name_main_check edge cases."""
+
+    def test_not_equal_main_check(self, analyzer):
+        """Test if __name__ != '__main__' is NOT detected."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def test(self):
+        pass
+
+if __name__ != "__main__":
+    pass
+'''
+        result = analyzer.analyze_source(source)
+
+        assert result.main_block_line is None
+
+    def test_simple_if_condition(self, analyzer):
+        """Test a simple if (not a Compare) is not detected."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task
+    def test(self):
+        pass
+
+if True:
+    pass
+'''
+        result = analyzer.analyze_source(source)
+
+        assert result.main_block_line is None
+
+
+class TestMultipleDecorators:
+    """Tests for functions with multiple decorators."""
+
+    def test_task_with_additional_decorator(self, analyzer):
+        """Test task method with multiple decorators."""
+        source = '''
+from locust import HttpUser, task
+
+class User(HttpUser):
+    @task(5)
+    def my_task(self):
+        self.client.get("/api")
+'''
+        result = analyzer.analyze_source(source)
+
+        assert len(result.user_classes[0].task_methods) == 1
+        assert result.user_classes[0].task_methods[0].weight == 5

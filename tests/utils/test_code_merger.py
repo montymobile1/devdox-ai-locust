@@ -786,3 +786,271 @@ class TestFixMisalignedDef:
         assert result is not None
         fixed_lines, _ = result
         assert fixed_lines[0] == "    async def bar(self):\n"
+
+
+class TestSyntaxErrorFallbacks:
+    """Tests for AST SyntaxError fallback paths in code_merger."""
+
+    def test_find_method_in_class_syntax_error(self, merger):
+        """Test _find_method_in_class returns (None, None) on SyntaxError."""
+        broken_lines = ["class Foo(\n", "    def bar(self):\n", "        pass\n"]
+        result = merger._find_method_in_class(broken_lines, 0, 2, "bar")
+
+        assert result == (None, None)
+
+    def test_find_module_function_boundaries_syntax_error(self, merger):
+        """Test _find_module_function_boundaries returns (None, None) on SyntaxError."""
+        broken_lines = ["def broken(\n", "    pass\n"]
+        result = merger._find_module_function_boundaries(broken_lines, "broken")
+
+        assert result == (None, None)
+
+    def test_find_class_boundaries_syntax_error(self, merger):
+        """Test _find_class_boundaries returns (None, None) on SyntaxError."""
+        broken_lines = ["class Broken(\n", "    pass\n"]
+        result = merger._find_class_boundaries(broken_lines, "Broken")
+
+        assert result == (None, None)
+
+    def test_split_code_into_functions_regex_fallback(self, merger):
+        """Test _split_code_into_functions falls back to regex on SyntaxError."""
+        # Code that is invalid Python but has recognizable def statements
+        broken_code = "def func_a():\n    pass\n\ndef func_b():\n    pass\n    unterminated = '\n"
+        segments = merger._split_code_into_functions(broken_code)
+
+        names = [name for name, _ in segments]
+        assert "func_a" in names
+        assert "func_b" in names
+
+    def test_split_code_into_classes_regex_fallback(self, merger):
+        """Test _split_code_into_classes falls back to regex on SyntaxError."""
+        broken_code = "class Foo:\n    pass\n\nclass Bar:\n    pass\n    unterminated = '\n"
+        segments = merger._split_code_into_classes(broken_code)
+
+        names = [name for name, _ in segments]
+        assert "Foo" in names
+        assert "Bar" in names
+
+    def test_filter_methods_syntax_error(self, merger):
+        """Test _filter_methods returns full dedented code on SyntaxError."""
+        broken_code = "    def foo():\n        pass\n    unterminated = '\n"
+        result = merger._filter_methods(broken_code, ["foo"])
+
+        # Should return the dedented full code block
+        assert "def foo" in result
+
+    def test_extract_names_from_code_regex_fallback_functions(self, merger):
+        """Test _extract_names_from_code falls back to regex for functions."""
+        broken_code = "def helper_a():\n    pass\n    unterminated = '\n"
+        names = merger._extract_names_from_code(broken_code, "function")
+
+        assert "helper_a" in names
+
+    def test_extract_names_from_code_regex_fallback_classes(self, merger):
+        """Test _extract_names_from_code falls back to regex for classes."""
+        broken_code = "class MyClass:\n    pass\n    unterminated = '\n"
+        names = merger._extract_names_from_code(broken_code, "class")
+
+        assert "MyClass" in names
+
+
+class TestEdgeCasePaths:
+    """Tests for edge case paths in code_merger that improve coverage."""
+
+    def test_detect_indentation_default(self, merger):
+        """Test _detect_indentation returns default 4-space when no def/@ found."""
+        lines = ["class Foo:\n", "    x = 1\n", "    y = 2\n"]
+        # x = 1 doesn't start with 'def ' or '@', so default is returned
+        # Actually 'x = 1' line doesn't match def or @, let's use lines with no methods
+        lines_no_methods = ["class Foo:\n", "\n", "\n"]
+        result = merger._detect_indentation(lines_no_methods, 0, 2)
+
+        assert result == "    "
+
+    def test_detect_indentation_finds_decorator(self, merger):
+        """Test _detect_indentation detects indent from @ decorator."""
+        lines = [
+            "class Foo:\n",
+            "        @task\n",
+            "        def bar(self):\n",
+            "            pass\n",
+        ]
+        result = merger._detect_indentation(lines, 0, 3)
+
+        assert result == "        "
+
+    def test_reindent_no_indent_unit(self, merger):
+        """Test _reindent when source code has no indentation (empty indent unit)."""
+        code = "x = 1\ny = 2\n"
+        result = merger._reindent(code, "    ")
+
+        # All lines should get target_indent prepended
+        for line in result.splitlines():
+            if line.strip():
+                assert line.startswith("    ")
+
+    def test_pick_target_class_fallback(self, analyzer):
+        """Test _pick_target_class falls back to first class when none has tasks."""
+        source = '''from locust import HttpUser, task, between
+
+class EmptyUser(HttpUser):
+    wait_time = between(1, 2)
+
+class AnotherUser(HttpUser):
+    wait_time = between(1, 2)
+'''
+        analysis = analyzer.analyze_source(source)
+        merger = LocustCodeMerger(analysis)
+
+        target = merger._pick_target_class()
+        # Should fall back to first user class
+        assert target.name == "EmptyUser"
+
+    def test_find_class_node_at_no_match(self):
+        """Test _find_class_node_at returns None when no class at that line."""
+        import ast
+        source = "class Foo:\n    pass\n"
+        tree = ast.parse(source)
+
+        result = LocustCodeMerger._find_class_node_at(tree, 999)
+        assert result is None
+
+    def test_node_start_line_without_decorators(self):
+        """Test _node_start_line for a node without decorators."""
+        import ast
+        source = "def foo():\n    pass\n"
+        tree = ast.parse(source)
+        func_node = tree.body[0]
+
+        result = LocustCodeMerger._node_start_line(func_node)
+        assert result == 0
+
+    def test_node_start_line_with_decorator(self):
+        """Test _node_start_line accounts for decorators."""
+        import ast
+        source = "@my_decorator\ndef foo():\n    pass\n"
+        tree = ast.parse(source)
+        func_node = tree.body[0]
+
+        result = LocustCodeMerger._node_start_line(func_node)
+        assert result == 0  # Decorator is on line 1, so 0-based is 0
+
+    def test_extract_names_from_code_unknown_kind(self, merger):
+        """Test _extract_names_from_code returns [] for unknown kind."""
+        result = merger._extract_names_from_code("x = 1\n", "unknown")
+        assert result == []
+
+    def test_extract_names_regex_unknown_kind(self, merger):
+        """Test _extract_names_regex returns [] for unknown kind."""
+        result = merger._extract_names_regex("x = 1\n", "unknown")
+        assert result == []
+
+    def test_merge_imports_at_line_zero(self, analyzer):
+        """Test _merge_imports inserts at line 0 when no existing imports."""
+        source = '''
+class Foo:
+    pass
+'''
+        analysis = analyzer.analyze_source(source)
+        merger = LocustCodeMerger(analysis)
+
+        lines = list(source.splitlines(keepends=True))
+        updated_lines, added = merger._merge_imports(
+            lines, "import json\n"
+        )
+
+        assert "import json" in added
+        # The import should be near the top
+        joined = "".join(updated_lines)
+        assert "import json" in joined
+
+    def test_filter_methods_no_match(self, merger):
+        """Test _filter_methods returns full code when no names match."""
+        code = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        result = merger._filter_methods(code, ["nonexistent"])
+
+        # When no kept_segments, returns full dedented code
+        assert "def foo" in result
+        assert "def bar" in result
+
+    def test_find_main_block_line_not_found(self, merger):
+        """Test _find_main_block_line returns None when no __main__ block."""
+        lines = ["import os\n", "x = 1\n"]
+        result = merger._find_main_block_line(lines)
+
+        assert result is None
+
+    def test_find_main_block_line_found(self, merger):
+        """Test _find_main_block_line finds the __main__ guard."""
+        lines = ["import os\n", "\n", 'if __name__ == "__main__":\n', "    pass\n"]
+        result = merger._find_main_block_line(lines)
+
+        assert result == 2
+
+    def test_find_first_class_line_not_found(self, merger):
+        """Test _find_first_class_line returns None with no classes."""
+        lines = ["import os\n", "x = 1\n"]
+        result = merger._find_first_class_line(lines)
+
+        assert result is None
+
+    def test_find_first_class_line_found(self, merger):
+        """Test _find_first_class_line finds the first class statement."""
+        lines = ["import os\n", "\n", "class Foo:\n", "    pass\n"]
+        result = merger._find_first_class_line(lines)
+
+        assert result == 2
+
+    def test_validate_merged_code_valid(self, merger):
+        """Test _validate_merged_code returns (True, None) for valid code."""
+        is_valid, error = merger._validate_merged_code("x = 1\n")
+
+        assert is_valid is True
+        assert error is None
+
+    def test_validate_merged_code_invalid(self, merger):
+        """Test _validate_merged_code returns (False, error) for invalid code."""
+        is_valid, error = merger._validate_merged_code("def broken(\n")
+
+        assert is_valid is False
+        assert error is not None
+        assert "line" in error
+
+    def test_normalize_import(self, merger):
+        """Test _normalize_import collapses whitespace."""
+        result = merger._normalize_import("  from   os   import   path  ")
+        assert result == "from os import path"
+
+    def test_detect_indent_unit_no_indented_lines(self, merger):
+        """Test _detect_indent_unit returns '' when no indented lines."""
+        result = merger._detect_indent_unit("x = 1\ny = 2\n")
+        assert result == ""
+
+    def test_detect_indent_unit_tabs(self, merger):
+        """Test _detect_indent_unit detects tab indentation."""
+        result = merger._detect_indent_unit("def foo():\n\tpass\n")
+        assert result == "\t"
+
+    def test_basic_dedent(self, merger):
+        """Test _basic_dedent strips common leading whitespace."""
+        code = "    x = 1\n    y = 2\n"
+        result = merger._basic_dedent(code)
+        assert result == "x = 1\ny = 2\n"
+
+    def test_split_code_into_functions_regex_directly(self, merger):
+        """Test _split_code_into_functions_regex with function kind."""
+        code = "def alpha():\n    return 1\n\ndef beta():\n    return 2\n"
+        segments = merger._split_code_into_functions_regex(code, "function")
+
+        names = [name for name, _ in segments]
+        assert "alpha" in names
+        assert "beta" in names
+
+    def test_split_code_into_functions_regex_class_kind(self, merger):
+        """Test _split_code_into_functions_regex with class kind."""
+        code = "class Alpha:\n    pass\n\nclass Beta:\n    pass\n"
+        segments = merger._split_code_into_functions_regex(code, "class")
+
+        names = [name for name, _ in segments]
+        assert "Alpha" in names
+        assert "Beta" in names
