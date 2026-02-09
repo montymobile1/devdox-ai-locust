@@ -430,7 +430,7 @@ class LocustCodeMerger:
         self,
         lines: List[str],
         class_start: int,
-        class_end: int,
+        class_end: int, #NOSONAR
         method_name: str,
     ) -> Tuple[Optional[int], Optional[int]]:
         """
