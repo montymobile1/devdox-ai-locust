@@ -265,7 +265,7 @@ class TestSwaggerUrlFormats:
         request = SwaggerProcessingRequest(
             swagger_url="http://localhost:8080/swagger.json"
         )
-        assert request.swagger_url.startswith("http://")
+        assert request.swagger_url.startswith("http://") # NOSONAR — test fixture, no real HTTP call
 
     def test_accepts_url_with_port(self):
         """Should accept URLs with port numbers."""
@@ -296,9 +296,9 @@ class TestSwaggerUrlFormats:
     def test_accepts_ip_address_url(self):
         """Should accept IP address URLs."""
         request = SwaggerProcessingRequest(
-            swagger_url="http://192.168.1.100:3000/swagger.json"
+            swagger_url="http://192.168.1.100:3000/swagger.json" #NOSONAR This is a test fixture, not a real call
         )
-        assert "192.168.1.100" in request.swagger_url
+        assert "192.168.1.100" in request.swagger_url #NOSONAR This is a test fixture, not a real call
 
 
 # =============================================================================

@@ -103,7 +103,7 @@ class LocustTestEnhancer:
         following the same pattern used by ``HybridLocustGenerator``.
         """
         prompt_dir = Path(__file__).parent / "prompt"
-        return jinja2.Environment(
+        return jinja2.Environment(   # NOSONAR — renders plain-text AI prompts, not HTML
             loader=jinja2.FileSystemLoader(str(prompt_dir)),
             trim_blocks=True,
             lstrip_blocks=True,
