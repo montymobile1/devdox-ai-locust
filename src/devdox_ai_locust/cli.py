@@ -920,8 +920,7 @@ async def _generate_single_gap_workflow(
     new_path = workflows_dir / f"{gap_tag}_workflow.py"
 
     if not dry_run:
-        with open(new_path, "w", encoding="utf-8") as f:
-            f.write(gen_result.enhanced_source)
+        await asyncio.to_thread(new_path.write_text, gen_result.enhanced_source, encoding="utf-8")
 
     if verbose:
         new_lines = gen_result.enhanced_source.count("\n") + 1
@@ -952,8 +951,9 @@ async def _generate_gap_workflows(
     reference_source = None
     if suite["workflows"]:
         try:
-            with open(suite["workflows"][0], "r", encoding="utf-8") as f:
-                reference_source = f.read()
+            reference_source = await asyncio.to_thread(
+                suite["workflows"][0].read_text, encoding="utf-8"
+            )
         except IOError:
             pass
 
