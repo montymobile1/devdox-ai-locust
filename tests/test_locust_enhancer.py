@@ -2,6 +2,8 @@
 Tests for LocustTestEnhancer module.
 """
 
+import asyncio
+import logging
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 from pathlib import Path
@@ -12,6 +14,7 @@ from devdox_ai_locust.locust_enhancer import (
     EnhanceResult,
 )
 from devdox_ai_locust.utils.ai_client import AIEnhancementConfig
+from devdox_ai_locust.utils.code_merger import MergeResult
 
 
 @pytest.fixture
@@ -768,3 +771,244 @@ class TestSyntaxValidation:
 
         # Should return original sections when AI fails
         assert result["new_tasks"] == "broken"
+
+
+class TestLogVerboseAnalysis:
+    """Tests for _log_verbose_analysis helper."""
+
+    def test_logs_class_and_task_counts(
+        self, verbose_enhancer, sample_locust_source, caplog
+    ):
+        """Test that class, task, and method counts are logged."""
+        caplog.set_level(logging.DEBUG)
+        analysis = verbose_enhancer._analyze_source(sample_locust_source)
+
+        verbose_enhancer._log_verbose_analysis(analysis)
+
+        assert "[analysis] 1 class(es)" in caplog.text
+        assert "2 @task method(s)" in caplog.text
+
+    def test_logs_per_class_breakdown(
+        self, verbose_enhancer, sample_locust_source, caplog
+    ):
+        """Test that per-class breakdown with parents and task names is logged."""
+        caplog.set_level(logging.DEBUG)
+        analysis = verbose_enhancer._analyze_source(sample_locust_source)
+
+        verbose_enhancer._log_verbose_analysis(analysis)
+
+        assert "class APIUser" in caplog.text
+        assert "get_users" in caplog.text
+
+    def test_logs_auth_and_sequential_flags(
+        self, verbose_enhancer, sample_locust_source, caplog
+    ):
+        """Test that auth and sequential task flags are logged."""
+        caplog.set_level(logging.DEBUG)
+        analysis = verbose_enhancer._analyze_source(sample_locust_source)
+
+        verbose_enhancer._log_verbose_analysis(analysis)
+
+        assert "auth detected:" in caplog.text
+        assert "sequential tasks:" in caplog.text
+
+    def test_logs_source_size(
+        self, verbose_enhancer, sample_locust_source, caplog
+    ):
+        """Test that source size in chars and lines is logged."""
+        caplog.set_level(logging.DEBUG)
+        analysis = verbose_enhancer._analyze_source(sample_locust_source)
+
+        verbose_enhancer._log_verbose_analysis(analysis)
+
+        assert "[analysis] source size:" in caplog.text
+        assert "chars" in caplog.text
+        assert "lines" in caplog.text
+
+
+class TestFetchApiSchemaContext:
+    """Tests for _fetch_api_schema_context helper."""
+
+    def test_returns_empty_string_when_no_url(self, verbose_enhancer, caplog):
+        """Test returns empty string and logs skip when URL is None."""
+        caplog.set_level(logging.DEBUG)
+
+        result = asyncio.run(
+            verbose_enhancer._fetch_api_schema_context(None)
+        )
+
+        assert result == ""
+        assert "no swagger URL provided" in caplog.text
+
+    def test_returns_schema_on_success(self, enhancer):
+        """Test returns schema summary when fetch succeeds."""
+        with patch.object(
+            LocustTestEnhancer,
+            "_fetch_api_schema_summary",
+            return_value="API: Test v1\nEndpoints:\n- GET /users",
+        ) as mock_fetch:
+            result = asyncio.run(
+                enhancer._fetch_api_schema_context(
+                    "https://example.com/swagger.json"
+                )
+            )
+
+            assert "API: Test v1" in result
+            mock_fetch.assert_called_once_with(
+                "https://example.com/swagger.json"
+            )
+
+    def test_returns_empty_on_fetch_error(self, enhancer, caplog):
+        """Test returns empty string and logs warning on fetch failure."""
+        caplog.set_level(logging.WARNING)
+        with patch.object(
+            LocustTestEnhancer,
+            "_fetch_api_schema_summary",
+            side_effect=Exception("connection failed"),
+        ):
+            result = asyncio.run(
+                enhancer._fetch_api_schema_context(
+                    "https://example.com/swagger.json"
+                )
+            )
+
+            assert result == ""
+            assert "Could not fetch API schema" in caplog.text
+
+
+class TestLogVerboseAiSections:
+    """Tests for _log_verbose_ai_sections helper."""
+
+    def test_logs_populated_section_sizes(self, verbose_enhancer, caplog):
+        """Test that populated section sizes are logged."""
+        caplog.set_level(logging.DEBUG)
+        sections = {
+            "new_imports": "import json",
+            "new_tasks": "def task(): pass",
+            "new_classes": "",
+            "new_helpers": "",
+            "replace_tasks": "",
+            "replace_helpers": "",
+            "replace_classes": "",
+        }
+
+        verbose_enhancer._log_verbose_ai_sections(sections)
+
+        assert "[ai-response] section sizes:" in caplog.text
+        assert "new_imports" in caplog.text
+        assert "EMPTY" in caplog.text  # from empty sections
+
+    def test_logs_all_empty_sections(self, verbose_enhancer, caplog):
+        """Test that all-empty sections are logged as EMPTY."""
+        caplog.set_level(logging.DEBUG)
+        sections = {k: "" for k in LocustTestEnhancer._SECTION_KEYS}
+
+        verbose_enhancer._log_verbose_ai_sections(sections)
+
+        # All sections should report EMPTY
+        empty_count = caplog.text.count("EMPTY")
+        assert empty_count == len(LocustTestEnhancer._SECTION_KEYS)
+
+
+class TestLogVerboseMergePreview:
+    """Tests for _log_verbose_merge_preview helper."""
+
+    def test_logs_add_and_replace_actions(self, verbose_enhancer, caplog):
+        """Test that add/replace actions are logged correctly."""
+        caplog.set_level(logging.DEBUG)
+        sections = {
+            "new_imports": "import os",
+            "new_tasks": "def t(): pass",
+            "new_classes": "",
+            "new_helpers": "",
+            "replace_tasks": "def t(): pass",
+            "replace_helpers": "",
+            "replace_classes": "",
+        }
+
+        verbose_enhancer._log_verbose_merge_preview(sections)
+
+        assert "[merge] about to:" in caplog.text
+        assert "add imports" in caplog.text
+        assert "add tasks" in caplog.text
+        assert "replace tasks" in caplog.text
+
+    def test_logs_nothing_for_empty_sections(self, verbose_enhancer, caplog):
+        """Test that empty sections produce (nothing) log."""
+        caplog.set_level(logging.DEBUG)
+        sections = {k: "" for k in LocustTestEnhancer._SECTION_KEYS}
+
+        verbose_enhancer._log_verbose_merge_preview(sections)
+
+        assert "(nothing)" in caplog.text
+
+
+class TestLogVerboseMergeResult:
+    """Tests for _log_verbose_merge_result helper."""
+
+    def test_logs_merge_counts(self, verbose_enhancer, caplog):
+        """Test that merge result counts are logged."""
+        caplog.set_level(logging.DEBUG)
+        merge_result = MergeResult(
+            merged_source="code",
+            added_imports=["import json"],
+            added_tasks=["task_a", "task_b"],
+            added_classes=[],
+            added_helpers=["helper_x"],
+            replaced_tasks=[],
+            replaced_helpers=[],
+            replaced_classes=[],
+            warnings=[],
+        )
+
+        verbose_enhancer._log_verbose_merge_result(merge_result)
+
+        assert "+1 imports" in caplog.text
+        assert "+2 tasks" in caplog.text
+        assert "+1 helpers" in caplog.text
+
+    def test_logs_individual_warnings(self, verbose_enhancer, caplog):
+        """Test that merge warnings are logged individually."""
+        caplog.set_level(logging.WARNING)
+        merge_result = MergeResult(
+            merged_source="code",
+            warnings=["duplicate import", "method conflict"],
+        )
+
+        verbose_enhancer._log_verbose_merge_result(merge_result)
+
+        assert "duplicate import" in caplog.text
+        assert "method conflict" in caplog.text
+
+
+class TestLogVerboseFormatResult:
+    """Tests for _log_verbose_format_result helper."""
+
+    def test_logs_line_increase(
+        self, verbose_enhancer, sample_locust_source, caplog
+    ):
+        """Test logging when formatted source has more lines."""
+        caplog.set_level(logging.DEBUG)
+        analysis = verbose_enhancer._analyze_source(sample_locust_source)
+        # Add extra lines to the formatted output
+        formatted = sample_locust_source + "\n\n# extra\n# lines\n"
+
+        verbose_enhancer._log_verbose_format_result(analysis, formatted)
+
+        assert "[format]" in caplog.text
+        assert "+" in caplog.text
+        assert "Black formatting applied" in caplog.text
+
+    def test_logs_line_decrease(
+        self, verbose_enhancer, sample_locust_source, caplog
+    ):
+        """Test logging when formatted source has fewer lines."""
+        caplog.set_level(logging.DEBUG)
+        analysis = verbose_enhancer._analyze_source(sample_locust_source)
+        # Shorter formatted output
+        formatted = "from locust import HttpUser\nclass U(HttpUser): pass\n"
+
+        verbose_enhancer._log_verbose_format_result(analysis, formatted)
+
+        assert "[format]" in caplog.text
+        assert "Black formatting applied" in caplog.text
