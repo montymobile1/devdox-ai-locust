@@ -2,6 +2,7 @@
 Tests for LocustCodeMerger module.
 """
 
+import logging
 import pytest
 
 from devdox_ai_locust.utils.locust_file_analyzer import (
@@ -651,3 +652,58 @@ class TestBackwardCompatibility:
         assert result.replaced_tasks == []
         assert result.replaced_helpers == []
         assert result.replaced_classes == []
+
+
+class TestLogSectionSizes:
+    """Tests for _log_section_sizes helper."""
+
+    def test_logs_populated_section_sizes(self, merger, caplog):
+        """Test that populated section sizes are logged correctly."""
+        caplog.set_level(logging.DEBUG)
+
+        merger._log_section_sizes(
+            new_imports="import json",
+            new_tasks="def task(): pass",
+            new_classes="",
+        )
+
+        assert "merge() called" in caplog.text
+        assert "new_imports=11" in caplog.text
+        assert "new_tasks=16" in caplog.text
+        assert "new_classes=0" in caplog.text
+
+    def test_handles_empty_and_none_sections(self, merger, caplog):
+        """Test that empty strings produce size 0."""
+        caplog.set_level(logging.DEBUG)
+
+        merger._log_section_sizes(
+            new_imports="", new_tasks="", new_classes="",
+        )
+
+        assert "new_imports=0" in caplog.text
+        assert "new_tasks=0" in caplog.text
+
+
+class TestValidateAndLogResult:
+    """Tests for _validate_and_log_result helper."""
+
+    def test_appends_warning_on_invalid_code(self, merger, caplog):
+        """Test that invalid code appends a warning."""
+        caplog.set_level(logging.WARNING)
+        warnings = []
+
+        merger._validate_and_log_result("def broken(\n  invalid", warnings)
+
+        assert len(warnings) == 1
+        assert "syntax errors" in warnings[0].lower()
+        assert "validation failed" in caplog.text
+
+    def test_logs_success_on_valid_code(self, merger, caplog):
+        """Test that valid code logs success without warnings."""
+        caplog.set_level(logging.DEBUG)
+        warnings = []
+
+        merger._validate_and_log_result("x = 1\n", warnings)
+
+        assert len(warnings) == 0
+        assert "passed syntax validation" in caplog.text

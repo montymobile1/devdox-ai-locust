@@ -113,82 +113,49 @@ class LocustCodeMerger:
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
 
-        # Log incoming section sizes for traceability.
-        self._logger.debug(
-            "merge() called — section sizes: "
-            "new_imports=%d, new_tasks=%d, new_classes=%d, new_helpers=%d, "
-            "replace_tasks=%d, replace_helpers=%d, replace_classes=%d",
-            len(new_imports.strip()) if new_imports else 0,
-            len(new_tasks.strip()) if new_tasks else 0,
-            len(new_classes.strip()) if new_classes else 0,
-            len(new_helpers.strip()) if new_helpers else 0,
-            len(replace_tasks.strip()) if replace_tasks else 0,
-            len(replace_helpers.strip()) if replace_helpers else 0,
-            len(replace_classes.strip()) if replace_classes else 0,
+        self._log_section_sizes(
+            new_imports=new_imports, new_tasks=new_tasks,
+            new_classes=new_classes, new_helpers=new_helpers,
+            replace_tasks=replace_tasks, replace_helpers=replace_helpers,
+            replace_classes=replace_classes,
         )
 
         warnings: List[str] = []
-        added_imports: List[str] = []
-        added_tasks: List[str] = []
-        added_classes: List[str] = []
-        added_helpers_list: List[str] = []
-        replaced_tasks_list: List[str] = []
-        replaced_helpers_list: List[str] = []
-        replaced_classes_list: List[str] = []
 
         # ---- Phase 1: Replace operations (largest scope first) ----
-
-        # 1a. Replace classes
-        if replace_classes and replace_classes.strip():
-            lines, replaced_names, rw = self._replace_classes(
-                lines, replace_classes
-            )
-            replaced_classes_list.extend(replaced_names)
-            warnings.extend(rw)
-
-        # 1b. Replace helpers
-        if replace_helpers and replace_helpers.strip():
-            lines, replaced_names, rw = self._replace_helpers(
-                lines, replace_helpers
-            )
-            replaced_helpers_list.extend(replaced_names)
-            warnings.extend(rw)
-
-        # 1c. Replace tasks
-        if replace_tasks and replace_tasks.strip():
-            lines, replaced_names, rw = self._replace_tasks(
-                lines, replace_tasks
-            )
-            replaced_tasks_list.extend(replaced_names)
-            warnings.extend(rw)
+        replaced_names: List[List[str]] = []
+        replace_ops = [
+            (replace_classes, self._replace_classes),
+            (replace_helpers, self._replace_helpers),
+            (replace_tasks, self._replace_tasks),
+        ]
+        for code, handler in replace_ops:
+            if code and code.strip():
+                lines, names, rw = handler(lines, code)
+                replaced_names.append(names)
+                warnings.extend(rw)
+            else:
+                replaced_names.append([])
+        replaced_classes_list, replaced_helpers_list, replaced_tasks_list = replaced_names
 
         # ---- Phase 2: Insert operations (existing behaviour) ----
-
-        # 2a. Merge imports first (affects line numbers least).
-        if new_imports and new_imports.strip():
-            lines, added_imports = self._merge_imports(lines, new_imports)
-
-        # 2b. Merge helpers (before classes, after imports).
-        if new_helpers and new_helpers.strip():
-            lines, added_helpers_list = self._merge_helpers(lines, new_helpers)
-
-        # 2c. Merge new tasks into an existing class.
-        if new_tasks and new_tasks.strip():
-            lines, added_tasks = self._merge_tasks(lines, new_tasks)
-
-        # 2d. Merge new classes (at end of file).
-        if new_classes and new_classes.strip():
-            lines, added_classes = self._merge_classes(lines, new_classes)
+        inserted_names: List[List[str]] = []
+        insert_ops = [
+            (new_imports, self._merge_imports),
+            (new_helpers, self._merge_helpers),
+            (new_tasks, self._merge_tasks),
+            (new_classes, self._merge_classes),
+        ]
+        for code, handler in insert_ops:
+            if code and code.strip():
+                lines, names = handler(lines, code)
+                inserted_names.append(names)
+            else:
+                inserted_names.append([])
+        added_imports, added_helpers_list, added_tasks, added_classes = inserted_names
 
         merged_source = "".join(lines)
-
-        # Validate the final output.
-        is_valid, error = self._validate_merged_code(merged_source)
-        if not is_valid:
-            warnings.append(f"Merged code has syntax errors: {error}")
-            self._logger.warning("Merged code validation failed: %s", error)
-        else:
-            self._logger.debug("Merged code passed syntax validation")
+        self._validate_and_log_result(merged_source, warnings)
 
         self._logger.info(
             "merge() complete — +%d imports, +%d tasks, +%d classes, "
@@ -215,6 +182,29 @@ class LocustCodeMerger:
             replaced_classes=replaced_classes_list,
             warnings=warnings,
         )
+
+    # ------------------------------------------------------------------
+    # Merge helpers
+    # ------------------------------------------------------------------
+
+    def _log_section_sizes(self, **sections: str) -> None:
+        """Log incoming section sizes for traceability."""
+        parts = ", ".join(
+            f"{name}={len(code.strip()) if code else 0}"
+            for name, code in sections.items()
+        )
+        self._logger.debug("merge() called — section sizes: %s", parts)
+
+    def _validate_and_log_result(
+        self, merged_source: str, warnings: List[str]
+    ) -> None:
+        """Validate the merged source and append a warning if invalid."""
+        is_valid, error = self._validate_merged_code(merged_source)
+        if not is_valid:
+            warnings.append(f"Merged code has syntax errors: {error}")
+            self._logger.warning("Merged code validation failed: %s", error)
+        else:
+            self._logger.debug("Merged code passed syntax validation")
 
     # ------------------------------------------------------------------
     # Replacement operations
