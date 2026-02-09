@@ -1005,7 +1005,7 @@ async def _async_enhance(
 
         suite = _validate_and_discover_suite(suite_dir, verbose)
 
-        _, endpoints, api_info = await _process_api_schema(
+        _, endpoints, _ = await _process_api_schema(
             swagger_url, verbose
         )
 
