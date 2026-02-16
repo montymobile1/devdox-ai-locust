@@ -1,0 +1,71 @@
+You are an expert Python developer specializing in Locust load testing frameworks. Your task is to generate a COMPLETE new Locust workflow file for an API tag that does not yet have test coverage.
+
+REQUIREMENT:
+{{ custom_requirement }}
+
+TAG TO COVER: {{ tag_name }}
+
+ENDPOINTS FOR THIS TAG:
+{% for ep in tag_endpoints %}
+- {{ ep.method | upper }} {{ ep.path }}{% if ep.summary %} — {{ ep.summary }}{% endif %}
+  {% if ep.parameters %}Parameters: {% for p in ep.parameters %}{{ p.name }} ({{ p.location.value }}, {{ "required" if p.required else "optional" }}){% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+  {% if ep.request_body %}Request Body: {{ ep.request_body.content_type }}{% if ep.request_body.required %} (required){% endif %}{% endif %}
+  {% if ep.responses %}Responses: {% for r in ep.responses %}{{ r.status_code }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+{% endfor %}
+
+{% if api_schema_summary %}
+API SCHEMA SUMMARY:
+{{ api_schema_summary }}
+{% endif %}
+
+{% if reference_workflow_source %}
+REFERENCE WORKFLOW (match this style exactly):
+```python
+{{ reference_workflow_source }}
+```
+{% endif %}
+
+{% if existing_imports_in_suite %}
+IMPORTS USED IN THE EXISTING SUITE:
+{% for imp in existing_imports_in_suite %}- {{ imp }}
+{% endfor %}
+{% endif %}
+
+STRICT REQUIREMENTS:
+
+1. GENERATE A COMPLETE WORKFLOW FILE: Output a full, runnable Python module with all necessary imports, class definitions, and @task methods.
+
+2. FOLLOW REFERENCE STYLE: If a reference workflow is provided above, match its patterns exactly:
+   - Same base class inheritance
+   - Same error handling patterns (catch_response, status code checks)
+   - Same logging style
+   - Same import organisation
+   - Same naming conventions for methods and variables
+   - Same docstring format
+
+3. COVER ALL ENDPOINTS: Generate at least one @task method for each endpoint listed above. If the requirement calls for additional scenarios (edge cases, negative tests, concurrent operations), add those as well.
+
+4. LOCUST BEST PRACTICES:
+   - Assign realistic task weights: higher weights (8-10) for common operations, lower weights (1-3) for edge cases
+   - Validate responses using status code checks
+   - Use descriptive method names that reflect the scenario being tested
+   - Use self.client methods (self.client.get, self.client.post, self.client.put, self.client.delete, self.client.patch)
+   - Use catch_response=True with context manager for detailed response validation
+   - Add meaningful failure messages that include expected vs actual status codes
+   - Store resource IDs from creation responses for use in subsequent tasks
+
+5. AUTHENTICATION: Assume authentication is already handled by the base class or on_start method. Do not add new authentication logic unless the requirement explicitly asks for it.
+
+6. CODE QUALITY:
+   - Every @task method must have a docstring explaining the scenario it tests
+   - Include proper error handling: do not let unhandled exceptions crash the load test
+   - Log important events using standard Python logging
+   - Generate realistic test data using Faker or inline helpers
+
+7. OUTPUT FORMAT: Return ONLY the complete Python file content. Do not wrap in markdown code blocks. Do not include explanations outside the code.
+
+OUTPUT:
+
+<code>
+# Complete workflow file content here
+</code>

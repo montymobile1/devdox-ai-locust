@@ -18,6 +18,11 @@ from devdox_ai_locust.hybrid_loctus_generator import (
     EnhancementResult,
     EnhancementProcessor,
 )
+from devdox_ai_locust.utils.response_parser import (
+    clean_response,
+    extract_code_from_response,
+    validate_python_code,
+)
 from devdox_ai_locust.locust_generator import TestDataConfig
 
 
@@ -546,7 +551,7 @@ class TestHybridLocustGeneratorAsync:
         with (
             patch.object(generator, "_call_ai_service") as mock_ai_call,
             patch.object(generator, "_extract_schema_patterns") as mock_extract,
-            patch.object(generator, "_validate_python_code") as mock_validate,
+            patch("devdox_ai_locust.utils.response_parser.validate_python_code") as mock_validate,
         ):
             mock_extract.return_value = "Schema patterns"
             mock_ai_call.return_value = "# Enhanced test data"
@@ -1604,19 +1609,15 @@ class TestEnhancementProcessor:
 class TestHybridLocustGeneratorUtils:
     """Test utility methods of HybridLocustGenerator."""
 
-    def test_clean_ai_response_markdown(self, mock_together_client):
+    def test_clean_ai_response_markdown(self):
         """Test cleaning AI response with markdown."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         response = "```python\nprint('hello')\n```"
-        cleaned = generator._clean_ai_response(response)
+        cleaned = clean_response(response)
 
         assert cleaned == "print('hello')"
 
-    def test_clean_ai_response_explanatory_text(self, mock_together_client):
+    def test_clean_ai_response_explanatory_text(self):
         """Test cleaning AI response with explanatory text."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         response = """Here's the code:
 
 import locust
@@ -1627,17 +1628,15 @@ class TestUser(HttpUser):
 
 This code creates a basic user class."""
 
-        cleaned = generator._clean_ai_response(response)
+        cleaned = clean_response(response)
 
         # Should remove explanatory text and keep only code
         assert "import locust" in cleaned
         assert "Here's the code:" not in cleaned
         assert "This code creates" not in cleaned
 
-    def test_extract_code_from_response(self, mock_together_client):
+    def test_extract_code_from_response(self):
         """Test extracting code from AI response."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         response = """Some explanation here.
 
 <code>
@@ -1647,61 +1646,51 @@ print('hello')
 
 More explanation."""
 
-        code = generator.extract_code_from_response(response)
+        code = extract_code_from_response(response)
 
         assert code == "import locust\nprint('hello')"
 
-    def test_extract_code_from_response_no_tags(self, mock_together_client):
+    def test_extract_code_from_response_no_tags(self):
         """Test extracting code when no code tags present."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         response = "import locust\nprint('hello')"
-        code = generator.extract_code_from_response(response)
+        code = extract_code_from_response(response)
 
         assert code == response.strip()
 
-    def test_extract_code_from_response_short_content(self, mock_together_client):
+    def test_extract_code_from_response_short_content(self):
         """Test extract_code_from_response with very short content."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         # Test with content too short (≤ 10 chars)
         response = "<code>x</code>"
-        result = generator.extract_code_from_response(response)
+        result = extract_code_from_response(response)
 
         # Should use full response when code is too short
         assert result == response.strip()
 
-    def test_extract_code_from_response_empty_code_block(self, mock_together_client):
+    def test_extract_code_from_response_empty_code_block(self):
         """Test extract_code_from_response with empty code block."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         # Test with empty code block
         response = "Some text <code></code> more text"
-        result = generator.extract_code_from_response(response)
+        result = extract_code_from_response(response)
 
         # Should use full response when code block is empty
         assert result == response.strip()
 
-    def test_validate_python_code_valid(self, mock_together_client):
+    def test_validate_python_code_valid(self):
         """Test validating valid Python code."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         valid_code = """
 def test_function():
     print("hello")
     return True
 """
 
-        is_valid = generator._validate_python_code(valid_code)
+        is_valid = validate_python_code(valid_code)
         assert is_valid is True
 
-    def test_validate_python_code_invalid(self, mock_together_client):
+    def test_validate_python_code_invalid(self):
         """Test validating invalid Python code."""
-        generator = HybridLocustGenerator(ai_client=mock_together_client)
-
         invalid_code = "def invalid_syntax(:"
 
-        is_valid = generator._validate_python_code(invalid_code)
+        is_valid = validate_python_code(invalid_code)
         assert is_valid is False
 
     def test_extract_schema_patterns(self, sample_endpoints, mock_together_client):

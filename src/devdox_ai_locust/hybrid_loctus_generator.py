@@ -5,7 +5,6 @@ Combines reliable template-based generation with LLM enhancement for creativity
 and domain-specific optimizations.
 """
 
-import re
 import asyncio
 import logging
 from typing import Dict, List, Any, Optional, Tuple
@@ -18,6 +17,11 @@ import shutil
 
 from devdox_ai_locust.utils.open_ai_parser import Endpoint
 from devdox_ai_locust.utils.file_creation import FileCreationConfig, SafeFileCreator
+from devdox_ai_locust.utils.response_parser import (
+    clean_response,
+    extract_code_from_response,
+    validate_python_code,
+)
 from devdox_ai_locust.locust_generator import LocustTestGenerator, TestDataConfig
 from together import AsyncTogether
 
@@ -689,7 +693,7 @@ class HybridLocustGenerator:
             # Render enhanced content
             prompt = template.render(**context)
             enhanced_content = await self._call_ai_service(prompt)
-            if enhanced_content and self._validate_python_code(enhanced_content):
+            if enhanced_content and validate_python_code(enhanced_content):
                 return enhanced_content
         except Exception as e:
             logger.warning(f"Test data enhancement failed: {e}")
@@ -749,8 +753,8 @@ class HybridLocustGenerator:
             if response.choices and response.choices[0].message:
                 content = response.choices[0].message.content.strip()
                 # Clean up the response
-                content = self._clean_ai_response(
-                    self.extract_code_from_response(content)
+                content = clean_response(
+                    extract_code_from_response(content)
                 )
                 return content
 
@@ -786,60 +790,6 @@ class HybridLocustGenerator:
 
         return ""
 
-    def extract_code_from_response(self, response_text: str) -> str:
-        # Extract content between <code> tags
-        pattern = r"<code>(.*?)</code>"
-        matches = re.findall(pattern, response_text, re.DOTALL)
-
-        if not matches:
-            logger.warning("No <code> tags found, using full response")
-            return response_text.strip()
-
-        content = max(matches, key=len).strip()
-
-        # Content too short - use full response
-        if not content or len(content) <= 10:
-            logger.warning(
-                f"Code in tags too short ({len(content)} chars), using full response"
-            )
-            return response_text.strip()
-
-        logger.debug(f"Extracted {len(content)} chars from <code> tags")
-        return str(content)
-
-    def _clean_ai_response(self, content: str) -> str:
-        """Clean and validate AI response"""
-        # Remove markdown code blocks if present
-        if content.startswith("```python") and content.endswith("```"):
-            content = content[9:-3].strip()
-        elif content.startswith("```") and content.endswith("```"):
-            content = content[3:-3].strip()
-
-        # Remove any explanatory text before/after code
-        lines = content.split("\n")
-        start_idx = 0
-        end_idx = len(lines)
-
-        # Find actual Python code start
-        for i, line in enumerate(lines):
-            if line.strip().startswith(
-                ("import ", "from ", "class ", "def ", '"""', "'''")
-            ):
-                start_idx = i
-                break
-
-        # Find actual Python code end (remove trailing explanations)
-        for i in range(len(lines) - 1, -1, -1):
-            line = lines[i].strip()
-            if (
-                line
-                and not line.startswith("#")
-                and not line.lower().startswith(("note:", "this", "the "))
-            ):
-                end_idx = i + 1
-                break
-
-        return "\n".join(lines[start_idx:end_idx])
 
     def _analyze_api_domain(
         self, endpoints: List[Endpoint], api_info: Dict[str, Any]
@@ -1066,10 +1016,3 @@ class HybridLocustGenerator:
             except Exception as e:
                 logger.warning(f"Failed to cleanup temp directory: {e}")
 
-    def _validate_python_code(self, content: str) -> bool:
-        """Validate Python code syntax"""
-        try:
-            compile(content, "<string>", "exec")
-            return True
-        except SyntaxError:
-            return False
