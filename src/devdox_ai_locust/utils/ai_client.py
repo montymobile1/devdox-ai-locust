@@ -6,13 +6,18 @@ with retry logic, error classification, concurrency control, and response parsin
 """
 
 import re
-import ast
 import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from together import AsyncTogether
+
+from devdox_ai_locust.utils.response_parser import (
+    clean_response as _clean_response,
+    extract_code_from_response as _extract_code_from_response,
+    validate_python_code as _validate_python_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -252,23 +257,7 @@ class TogetherAIClient:
         If no tags are found, or the content inside tags is too short
         (<= 10 chars), the full response is returned instead.
         """
-        pattern = r"<code>(.*?)</code>"
-        matches = re.findall(pattern, response_text, re.DOTALL)
-
-        if not matches:
-            logger.warning("No <code> tags found, using full response")
-            return response_text.strip()
-
-        content = max(matches, key=len).strip()
-
-        if not content or len(content) <= 10:
-            logger.warning(
-                f"Code in tags too short ({len(content)} chars), using full response"
-            )
-            return response_text.strip()
-
-        logger.debug(f"Extracted {len(content)} chars from <code> tags")
-        return str(content)
+        return _extract_code_from_response(response_text)
 
     @staticmethod
     def clean_response(content: str) -> str:
@@ -277,45 +266,12 @@ class TogetherAIClient:
         Strips markdown code fences and removes leading/trailing
         explanatory text that is not valid Python.
         """
-        # Remove markdown code blocks if present
-        if content.startswith("```python") and content.endswith("```"):
-            content = content[9:-3].strip()
-        elif content.startswith("```") and content.endswith("```"):
-            content = content[3:-3].strip()
-
-        lines = content.split("\n")
-        start_idx = 0
-        end_idx = len(lines)
-
-        # Find actual Python code start
-        for i, line in enumerate(lines):
-            if line.strip().startswith(
-                ("import ", "from ", "class ", "def ", '"""', "'''")
-            ):
-                start_idx = i
-                break
-
-        # Find actual Python code end (remove trailing explanations)
-        for i in range(len(lines) - 1, -1, -1):
-            line = lines[i].strip()
-            if (
-                line
-                and not line.startswith("#")
-                and not line.lower().startswith(("note:", "this", "the "))
-            ):
-                end_idx = i + 1
-                break
-
-        return "\n".join(lines[start_idx:end_idx])
+        return _clean_response(content)
 
     @staticmethod
     def validate_python_code(code: str) -> bool:
         """Check if *code* is syntactically valid Python."""
-        try:
-            compile(code, "<string>", "exec")
-            return True
-        except SyntaxError:
-            return False
+        return _validate_python_code(code)
 
     @staticmethod
     def extract_tagged_sections(response: str) -> dict[str, str]:
